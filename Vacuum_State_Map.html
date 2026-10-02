@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Vacuum State: Orbital Clock</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#eef0f5;--panel:#fff;--text:#161a24;--muted:#5b6475;--line:#d3d8e3;--chip:#e6e9f1;--on:#1f4fd8;--onText:#fff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#070a12;--panel:#0f1420;--text:#e3e9f7;--muted:#8d98b2;--line:#222b40;--chip:#192033;--on:#e8b64a;--onText:#14100a}}
+:root[data-theme="dark"]{--bg:#070a12;--panel:#0f1420;--text:#e3e9f7;--muted:#8d98b2;--line:#222b40;--chip:#192033;--on:#e8b64a;--onText:#14100a}
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-variant-numeric:tabular-nums}
+header{display:flex;justify-content:space-between;align-items:baseline;padding:8px 14px;gap:12px}
+h1{font-size:16px;margin:0;font-weight:650}
+#date{color:var(--muted)}
+#mapwrap{position:relative;flex:1;min-height:200px;background:#05070d;touch-action:none}
+canvas{display:block;width:100%;height:100%}
+#zoom{position:absolute;right:10px;top:10px;width:66px;display:flex;flex-direction:column;gap:6px}
+#zoom button{width:100%;height:40px;padding:0;font-size:13px}
+#zoom #zin,#zoom #zout{font-size:22px}
+#zoom [data-v]:first-of-type{margin-top:6px}
+#panel{background:var(--panel);border-top:1px solid var(--line);padding:10px 14px 12px;overflow-y:auto}
+button{font:inherit;color:var(--text);background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:7px 11px;cursor:pointer}
+button:focus-visible{outline:2px solid var(--on);outline-offset:2px}
+button.on{background:var(--on);color:var(--onText);border-color:var(--on)}
+button:disabled{opacity:.45;cursor:default}
+.row{display:flex;gap:6px;align-items:center;margin-bottom:8px}
+.row.t button{padding:7px 8px;font-size:14px;white-space:nowrap}
+#pp{min-width:62px}
+#speeds{display:flex;gap:5px}
+.lbl{color:var(--muted)}
+input[type=range]{accent-color:var(--on);flex:1;min-width:80px}
+#gv{min-width:48px;text-align:right}
+.big{flex:1;padding:10px;font-weight:650}
+#go{background:var(--on);color:var(--onText);border-color:var(--on)}
+#stop{background:#c0392b;color:#fff;border-color:#c0392b}
+#info{min-height:5.6em}
+#info div{margin-top:2px}
+#i1{font-weight:650}
+#i2,#i3{color:var(--muted)}
+#i4{color:var(--text);font-weight:600}
+</style>
+</head>
+<body>
+<header><h1>Vacuum State: Orbital Clock</h1><span id="date"></span></header>
+<div id="mapwrap"><canvas id="map"></canvas>
+<div id="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">&minus;</button>
+<button data-v="1.8">Inner</button><button data-v="3.6">Belt</button><button data-v="6.2">Jupiter</button><button data-v="31">All</button><button id="center">Center</button></div></div>
+<div id="panel">
+<div class="row t"><button id="pp">Pause</button><button id="reset">Reset</button><span id="speeds"></span></div>
+<div class="row"><span class="lbl">Thrust</span><input type="range" id="gs" min="0" max="12" step="0.5" value="3"><b id="gv">3.0 g</b></div>
+<div class="row"><button id="go" class="big">Launch</button><button id="stop" class="big">Stop</button></div>
+<div id="info"><div id="i1"></div><div id="i2"></div><div id="i3"></div><div id="i4"></div></div>
+</div>
+<script>
+const BODIES=[
+{n:'Sun',a:0,P:0,L:0,c:'#ffd45e',r:8},
+{n:'Mercury',a:.387,P:87.97,L:252.25,c:'#b3aca4',r:2.5},
+{n:'Venus',a:.723,P:224.70,L:181.98,c:'#e8c88a',r:3.5},
+{n:'Earth',a:1,P:365.256,L:100.46,c:'#5aa7ff',r:3.8},
+{n:'Mars',a:1.524,P:686.98,L:355.45,c:'#e0663f',r:3.2},
+{n:'Vesta',a:2.362,P:1325.4,L:60,c:'#cfc7bb',r:3,st:1},
+{n:'Ceres',a:2.77,P:1681.6,L:240,c:'#9fd0c3',r:3.4,st:1},
+{n:'Jupiter',a:5.203,P:4332.59,L:34.40,c:'#d9a874',r:6.5},
+{n:'Saturn',a:9.537,P:10759.2,L:49.94,c:'#e7d29a',r:5.8},
+{n:'Uranus',a:19.19,P:30688.5,L:313.23,c:'#8ee0e0',r:4.5},
+{n:'Neptune',a:30.07,P:60182,L:304.88,c:'#5f7cf0',r:4.5}];
+const J2000=Date.UTC(2000,0,1,12);
+const SPEEDS=[['1s = 10 min',10/1440],['1s = 1 hr',1/24],['1s = 12 hr',.5]];
+const nowT=()=>(Date.now()-J2000)/864e5;
+let t=nowT(),speed=SPEEDS[0][1],paused=false,pxAU=0,panX=0,panY=0,last=performance.now(),hits=[];
+const $=id=>document.getElementById(id);
+const cv=$('map'),cx=cv.getContext('2d');
+
+function ang(b,tt){return (b.L+360*tt/b.P)*Math.PI/180}
+function pos(b,tt){if(!b.a)return[0,0];const q=ang(b,tt);return[b.a*Math.cos(q),b.a*Math.sin(q)]}
+function bvel(b,tt){if(!b.a)return[0,0];const q=ang(b,tt),w=2*Math.PI/b.P;return[-b.a*w*Math.sin(q),b.a*w*Math.cos(q)]}
+
+// ---- UI ----
+SPEEDS.forEach(([l,v])=>{const b=document.createElement('button');b.textContent=l;b.dataset.s=v;b.onclick=()=>{speed=v;paused=false;ui()};$('speeds').appendChild(b)});
+$('pp').onclick=()=>{paused=!paused;ui()};
+$('reset').onclick=()=>{ship={at:3,plan:null,leaving:-1,g:ship.g,tgt:null,goal:null};t=nowT();speed=SPEEDS[0][1];paused=false;ui()};
+$('zin').onclick=()=>zoomAt(W/2,H/2,1.5);
+$('zout').onclick=()=>zoomAt(W/2,H/2,1/1.5);
+$('center').onclick=()=>{const s=shipNow(t);pxAU=fitPx(1.8)*2;panX=-s.x*pxAU;panY=-s.y*pxAU};
+document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>fitTo(+b.dataset.v));
+function fitPx(R){return Math.min(W,H)/2*.92/R}
+function fitTo(R){pxAU=fitPx(R);panX=panY=0}
+function zoomAt(px,py,f){const nz=Math.max(fitPx(31)*.6,Math.min(4000,pxAU*f));f=nz/pxAU;
+ panX=(px-W/2)-(px-W/2-panX)*f;panY=(py-H/2)-(py-H/2-panY)*f;pxAU=nz}
+function ui(){
+ $('pp').textContent=paused?'Play':'Pause';
+ document.querySelectorAll('#speeds button').forEach(b=>b.classList.toggle('on',+b.dataset.s===speed&&!paused));
+}
+let W=0,H=0,dpr=1;
+function resize(){dpr=window.devicePixelRatio||1;const r=cv.getBoundingClientRect();W=r.width;H=r.height;cv.width=W*dpr;cv.height=H*dpr;if(!pxAU)fitTo(31)}
+new ResizeObserver(resize).observe($('mapwrap'));window.addEventListener('resize',resize);
+
+// ---- physics ----
+const G0=9.80665,AUM=1.495978707e11,DAY=86400,KMS=AUM/1000/DAY,C_KMS=299792.458,KM_AU=149597870.7;
+const DOCKR=0.02, VDOCK=5; // AU, km/s relative speed allowed for docking
+const gAU=g=>g*G0*DAY*DAY/AUM;
+const mag=(x,y)=>Math.hypot(x,y);
+let ship={at:3,plan:null,leaving:-1,g:3,tgt:null,goal:null},preview=null;
+function tgtState(tg,tt){
+ if(tg.body!=null){const b=BODIES[tg.body],p=pos(b,tt),v=bvel(b,tt);return{x:p[0],y:p[1],vx:v[0],vy:v[1]}}
+ return{x:tg.x,y:tg.y,vx:0,vy:0};
+}
+function shipNow(tt){
+ if(ship.at>=0){const s=tgtState({body:ship.at},tt);s.ax=s.ay=s.a=0;return s}
+ return stateAt(ship.plan,tt);
+}
+function segEnd(s){const u=s.dur;return{x:s.x+s.vx*u+.5*s.ax*u*u,y:s.y+s.vy*u+.5*s.ay*u*u,vx:s.vx+s.ax*u,vy:s.vy+s.ay*u}}
+function stateAt(p,tt){
+ for(const s of p.segs){
+  if(tt<s.t0+s.dur){const u=Math.max(tt-s.t0,0);
+   return{x:s.x+s.vx*u+.5*s.ax*u*u,y:s.y+s.vy*u+.5*s.ay*u*u,vx:s.vx+s.ax*u,vy:s.vy+s.ay*u,ax:s.ax,ay:s.ay,a:mag(s.ax,s.ay)}}
+ }
+ const e=p.end,u=tt-p.tEnd;
+ return{x:e.x+e.vx*u,y:e.y+e.vy*u,vx:e.vx,vy:e.vy,ax:0,ay:0,a:0};
+}
+// Two equal-length burns: speed up toward the target, then brake so we arrive matching the target's velocity.
+function solvePlan(st,t0,tg,g){
+ const Amax=gAU(g);
+ const coef=T=>{const tau=T/2,q=tgtState(tg,t0+T);
+  const a1x=(q.x-st.x-1.5*st.vx*tau-.5*q.vx*tau)/(tau*tau),a1y=(q.y-st.y-1.5*st.vy*tau-.5*q.vy*tau)/(tau*tau);
+  const a2x=(q.vx-st.vx-a1x*tau)/tau,a2y=(q.vy-st.vy-a1y*tau)/tau;
+  return{a1x,a1y,a2x,a2y,q,m:Math.max(mag(a1x,a1y),mag(a2x,a2y))}};
+ let T=0.01,prev=T;
+ while(T<6000&&coef(T).m>Amax){prev=T;T*=1.03}
+ if(T>=6000)return null;
+ let lo=prev,hi=T;for(let i=0;i<40;i++){const mid=(lo+hi)/2;if(coef(mid).m>Amax)lo=mid;else hi=mid}
+ const c=coef(hi),tau=hi/2;
+ const s1={t0,dur:tau,x:st.x,y:st.y,vx:st.vx,vy:st.vy,ax:c.a1x,ay:c.a1y},e1=segEnd(s1);
+ const s2={t0:t0+tau,dur:tau,x:e1.x,y:e1.y,vx:e1.vx,vy:e1.vy,ax:c.a2x,ay:c.a2y};
+ return{segs:[s1,s2],t0,T:hi,tEnd:t0+hi,tgt:tg,dock:tg.body!=null?tg.body:-1,end:{x:c.q.x,y:c.q.y,vx:c.q.vx,vy:c.q.vy}};
+}
+// Stop: burn directly against current velocity until absolute speed is zero.
+function stopPlan(st,t0,g){
+ const v=mag(st.vx,st.vy);if(v*KMS<1e-4)return null;
+ const Amax=gAU(g);
+ if(Amax<=0)return{segs:[],t0,T:0,tEnd:t0,tgt:null,dock:-1,end:{x:st.x,y:st.y,vx:st.vx,vy:st.vy}};
+ const s={t0,dur:v/Amax,x:st.x,y:st.y,vx:st.vx,vy:st.vy,ax:-st.vx/v*Amax,ay:-st.vy/v*Amax};
+ return{segs:[s],t0,T:s.dur,tEnd:t0+s.dur,tgt:null,dock:-1,end:segEnd(s)};
+}
+function previewPlan(){
+ const tg=ship.tgt;if(!tg)return null;
+ if(ship.at>=0&&tg.body===ship.at)return null;
+ return solvePlan(shipNow(t),t,tg,ship.g);
+}
+function beginPlan(p){
+ if(ship.at>=0){ship.leaving=ship.at;ship.at=-1}
+ ship.plan=p;paused=false;ui();
+}
+function engage(){const p=previewPlan();if(p){beginPlan(p);ship.goal={tgt:ship.tgt}}}
+function coastPlan(st,t0){return{segs:[],t0,T:0,tEnd:t0,tgt:null,dock:-1,end:{x:st.x,y:st.y,vx:st.vx,vy:st.vy}}}
+// re-plan the engaged course from the current state (used when thrust setting changes)
+function replan(){
+ if(ship.at>=0||!ship.goal)return;
+ const st=shipNow(t);
+ const p=ship.goal.stop?stopPlan(st,t,ship.g):solvePlan(st,t,ship.goal.tgt,ship.g);
+ if(!p&&ship.goal.stop)ship.goal=null;
+ ship.plan=p||coastPlan(st,t);
+}
+function doStop(){
+ if(ship.at>=0)return;
+ const p=stopPlan(shipNow(t),t,ship.g);ship.tgt=null;if(p){ship.plan=p;ship.goal={stop:true}}
+}
+function dockAt(i){ship.goal=null;ship.at=i;ship.plan=null;ship.leaving=-1;if(ship.tgt&&ship.tgt.body===i)ship.tgt=null}
+function shipTick(){
+ if(ship.at>=0)return;
+ const p=ship.plan;
+ if(p.dock>=0&&t>=p.tEnd){dockAt(p.dock);return}
+ if(p.segs.length&&p.dock<0&&t>=p.tEnd)ship.goal=null;
+ const s=stateAt(p,t);
+ if(ship.leaving>=0){const q=pos(BODIES[ship.leaving],t);if(Math.hypot(s.x-q[0],s.y-q[1])>DOCKR*2)ship.leaving=-1}
+ for(let i=1;i<BODIES.length;i++){
+  if(i===ship.leaving)continue;
+  const b=tgtState({body:i},t);
+  if(Math.hypot(s.x-b.x,s.y-b.y)<DOCKR&&Math.hypot(s.vx-b.vx,s.vy-b.vy)*KMS<VDOCK){dockAt(i);return}
+ }
+}
+$('gs').oninput=e=>{ship.g=+e.target.value;$('gv').textContent=ship.g.toFixed(1)+' g';replan()};
+$('go').onclick=engage;
+$('stop').onclick=doStop;
+
+// ---- formatting ----
+const fmtD=d=>d<1/24?Math.max(d*1440,0).toFixed(1)+' min':d<1?(d*24).toFixed(1)+' h':d<365?d.toFixed(2)+' days':(d/365.256).toFixed(2)+' yr';
+const fmtKm=d=>Math.round(d*KM_AU).toLocaleString('en-US')+' km';
+const fmtV=v=>(v>=100?Math.round(v).toLocaleString('en-US'):v.toFixed(1))+' km/s';
+function fmtReal(sec){
+ sec=Math.max(sec,0);
+ if(sec<60)return Math.round(sec)+' s';
+ if(sec<3600)return Math.floor(sec/60)+' min '+Math.round(sec%60)+' s';
+ if(sec<172800)return Math.floor(sec/3600)+' h '+Math.round(sec%3600/60)+' min';
+ return (sec/86400).toFixed(1)+' days';
+}
+const tgtName=tg=>tg.body!=null?BODIES[tg.body].n:'Deep space point';
+
+// ---- drawing ----
+function scr(x,y){return[W/2+panX+x*pxAU,H/2+panY+y*pxAU]}
+function strokePath(p,kind){
+ const t1=Math.max(t,p.t0),t2=p.tEnd;if(t2<=t1)return;
+ cx.beginPath();for(let k=0;k<=48;k++){const s=stateAt(p,t1+(t2-t1)*k/48),q=scr(s.x,s.y);k?cx.lineTo(q[0],q[1]):cx.moveTo(q[0],q[1])}
+ const e=p.tgt?scr(p.end.x,p.end.y):null;
+ if(kind==='plan'){ // possible course: light blue dashed
+  cx.setLineDash([5,5]);cx.strokeStyle='#7fd1ff';cx.lineWidth=1.5;cx.stroke();cx.setLineDash([]);
+  if(e){cx.beginPath();cx.arc(e[0],e[1],7,0,7);cx.stroke()}
+ }else{ // current course: neon green / light green, 50% opaque
+  cx.globalAlpha=.5;cx.lineWidth=2.5;
+  cx.setLineDash([9,9]);cx.strokeStyle='#39ff14';cx.stroke();
+  cx.lineDashOffset=9;cx.strokeStyle='#b6ffc8';cx.stroke();
+  cx.setLineDash([]);cx.lineDashOffset=0;
+  if(e){cx.beginPath();cx.arc(e[0],e[1],7,0,7);cx.strokeStyle='#39ff14';cx.stroke()}
+  cx.globalAlpha=1;
+ }
+}
+const sameTgt=(a,b)=>a&&b&&(a.body!=null?a.body===b.body:(a===b));
+function drawShip(){
+ if(preview&&!(ship.at<0&&sameTgt(ship.plan.tgt,ship.tgt)&&t<ship.plan.tEnd))strokePath(preview,'plan');
+ if(ship.at<0)strokePath(ship.plan,'cur');
+ const s=shipNow(t);let [x,y]=scr(s.x,s.y);
+ const v=mag(s.vx,s.vy);
+ if(ship.at>=0){ // docked: no ship icon, green ring on the docked body
+  cx.beginPath();cx.arc(x,y,BODIES[ship.at].r+11,0,7);cx.strokeStyle='#2ecc71';cx.lineWidth=2.5;cx.stroke();return}
+ const thrusting=s.a>0;
+ const rot=thrusting?Math.atan2(s.ay,s.ax):(v>1e-9?Math.atan2(s.vy,s.vx):-Math.PI/2);
+ cx.save();cx.translate(x,y);cx.rotate(rot);
+ if(thrusting){ // red line: from ship centre, away from the direction of acceleration, about one ship length
+  cx.beginPath();cx.moveTo(0,0);cx.lineTo(-12,0);cx.strokeStyle='#ff3b30';cx.lineWidth=2;cx.stroke()}
+ cx.beginPath();cx.moveTo(7,0);cx.lineTo(-5,5);cx.lineTo(-5,-5);cx.closePath();cx.fillStyle='#fff';cx.fill();
+ cx.restore();
+ if(ship.at<0){cx.fillStyle='#fff';cx.font='12px system-ui,sans-serif';cx.fillText('Ship: '+fmtV(v*KMS),12,20)}
+}
+function drawMap(){
+ cx.setTransform(dpr,0,0,dpr,0,0);cx.clearRect(0,0,W,H);
+ hits=[];const tb=ship.tgt&&ship.tgt.body;
+ BODIES.forEach((b,i)=>{
+  if(!b.a)return;
+  cx.beginPath();cx.arc(W/2+panX,H/2+panY,b.a*pxAU,0,7);
+  cx.strokeStyle=i===tb?'#3a4a78':'#161e33';cx.lineWidth=1;cx.stroke();
+ });
+ BODIES.forEach((b,i)=>{
+  let x=W/2+panX,y=H/2+panY,R=0;
+  if(b.a){const q=ang(b,t);R=b.a*pxAU;x+=R*Math.cos(q);y+=R*Math.sin(q)}
+  hits.push([x,y,i]);
+  const sel=i===tb;
+  cx.fillStyle=b.c;cx.beginPath();
+  if(b.st){const r=b.r+1;cx.moveTo(x,y-r);cx.lineTo(x+r,y);cx.lineTo(x,y+r);cx.lineTo(x-r,y);cx.closePath()}
+  else cx.arc(x,y,b.r,0,7);
+  cx.fill();
+  if(sel){cx.beginPath();cx.arc(x,y,b.r+6,0,7);cx.strokeStyle='#ffc857';cx.lineWidth=2;cx.stroke()}
+  if(sel||R>22||!b.a){cx.fillStyle=sel?'#ffc857':'#8d98b2';cx.font='12px system-ui,sans-serif';cx.fillText(b.n,x+b.r+7,y+4)}
+ });
+ if(ship.tgt&&ship.tgt.body==null){
+  const [x,y]=scr(ship.tgt.x,ship.tgt.y);cx.strokeStyle='#ffc857';cx.lineWidth=1.5;
+  cx.beginPath();cx.arc(x,y,6,0,7);cx.moveTo(x-11,y);cx.lineTo(x+11,y);cx.moveTo(x,y-11);cx.lineTo(x,y+11);cx.stroke();
+ }
+ drawShip();
+}
+function shipUI(){
+ const s=shipNow(t),v=mag(s.vx,s.vy)*KMS,tg=ship.tgt,dk=ship.at>=0;
+ let a='',b='',c='',e='';
+ if(!tg)a=(dk?'Docked at '+BODIES[ship.at].n+'. ':'')+'Tap a planet or empty space to plot a course. Double-tap to launch.';
+ else{
+  const q=tgtState(tg,t),d=Math.hypot(q.x-s.x,q.y-s.y);
+  a='Target: '+tgtName(tg);b='Distance: '+fmtKm(d);
+  if(preview){c='Travel time (ETA): '+fmtD(preview.T)+' game time';c+=' / '+fmtReal(preview.T/speed)+' real time'}
+  else c='No route within 6000 days at this thrust';
+ }
+ if(!dk)e='Ship speed: '+fmtV(v)+' ('+(v/C_KMS*100).toFixed(2)+'% c), '+(s.a>0?'thrusting':'coasting');
+ else if(tg)e='Docked at '+BODIES[ship.at].n;
+ $('i1').textContent=a;$('i2').textContent=b;$('i3').textContent=c;$('i4').textContent=e;
+ $('go').textContent=dk?'Launch':'Redirect';$('go').disabled=!preview;
+ $('stop').disabled=dk||v<1e-4;
+}
+
+// ---- input: drag pans, pinch/wheel zoom, tap sets course target, double-tap engages ----
+const ptrs=new Map();let moved=false,pinchD=0,tapStart=null,lastTap=null;
+const rel=(x,y)=>{const r=cv.getBoundingClientRect();return[x-r.left,y-r.top]};
+cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+ if(ptrs.size===1){moved=false;tapStart={x:e.clientX,y:e.clientY}}
+ else{tapStart=null;moved=true;const [p,q]=[...ptrs.values()];pinchD=Math.hypot(p.x-q.x,p.y-q.y)}});
+cv.addEventListener('pointermove',e=>{
+ const p=ptrs.get(e.pointerId);if(!p)return;
+ const ox=p.x,oy=p.y;p.x=e.clientX;p.y=e.clientY;
+ if(ptrs.size===1){
+  if(tapStart&&Math.hypot(p.x-tapStart.x,p.y-tapStart.y)>8)moved=true;
+  if(moved){panX+=p.x-ox;panY+=p.y-oy}
+ }else if(ptrs.size===2){
+  const [a,b]=[...ptrs.values()],d=Math.hypot(a.x-b.x,a.y-b.y),[mx,my]=rel((a.x+b.x)/2,(a.y+b.y)/2);
+  if(pinchD>0)zoomAt(mx,my,d/pinchD);
+  pinchD=d;panX+=(p.x-ox)/2;panY+=(p.y-oy)/2;
+ }});
+function up(e){
+ if(e.type==='pointerup'&&ptrs.size===1&&!moved&&tapStart){
+  const [x,y]=rel(e.clientX,e.clientY);
+  // generous pick radius for bodies; anything else becomes a point in empty space
+  let best=null,bd=48;hits.forEach(h=>{if(!h[2])return;const d=Math.hypot(h[0]-x,h[1]-y);if(d<bd){bd=d;best=h[2]}});
+  ship.tgt=best!==null?{body:best}:{x:(x-W/2-panX)/pxAU,y:(y-H/2-panY)/pxAU};
+  const n=performance.now();
+  if(lastTap&&n-lastTap.t<350&&Math.hypot(lastTap.x-x,lastTap.y-y)<36){lastTap=null;engage()}
+  else lastTap={t:n,x,y};
+ }
+ ptrs.delete(e.pointerId);if(ptrs.size>0){moved=true;tapStart=null}pinchD=0}
+cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+cv.addEventListener('wheel',e=>{e.preventDefault();const [x,y]=rel(e.clientX,e.clientY);zoomAt(x,y,e.deltaY<0?1.15:1/1.15)},{passive:false});
+
+function frame(now){
+ const dt=Math.min((now-last)/1000,.1);last=now;
+ if(!paused){let rem=speed*dt;while(rem>1e-12){const h=Math.min(rem,.005);t+=h;rem-=h;shipTick()}}
+ $('date').textContent=new Date(J2000+t*864e5).toISOString().slice(0,16).replace('T',' ')+' UTC';
+ preview=previewPlan();
+ drawMap();shipUI();
+ requestAnimationFrame(frame);
+}
+resize();ui();requestAnimationFrame(frame);
+</script>
+</body>
+</html>
