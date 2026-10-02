@@ -1,0 +1,85 @@
+-- Vacuum State: Module 3 schema
+-- Accounts come from Supabase's built-in auth.users table.
+
+create table public.characters (
+  id uuid primary key default gen_random_uuid(),
+  account_id uuid not null unique references auth.users(id) on delete cascade,
+  name text not null unique check (char_length(name) between 3 and 24),
+  created_at timestamptz not null default now()
+);
+
+create table public.ships (
+  id uuid primary key default gen_random_uuid(),
+  character_id uuid not null references public.characters(id) on delete cascade,
+  ship_type text not null default 'starter',
+  state text not null default 'docked' check (state in ('docked','traveling')),
+  docked_at text,          -- body NAME, e.g. 'Earth'
+  plan jsonb,              -- flight plan from physics.js while traveling
+  thrust_g numeric not null default 3 check (thrust_g > 0 and thrust_g <= 12),
+  created_at timestamptz not null default now(),
+  check (
+    (state = 'docked' and docked_at is not null)
+    or (state = 'traveling' and plan is not null)
+  )
+);
+create index ships_character_idx on public.ships (character_id);
+
+create table public.scheduled_actions (
+  id uuid primary key default gen_random_uuid(),
+  character_id uuid not null references public.characters(id) on delete cascade,
+  ship_id uuid not null references public.ships(id) on delete cascade,
+  action_type text not null,                 -- 'travel' for now
+  payload jsonb not null default '{}'::jsonb,
+  status text not null default 'pending'
+    check (status in ('pending','resolved','cancelled','failed')),
+  created_at timestamptz not null default now(),
+  resolve_at timestamptz not null,           -- real-world time it comes due
+  resolved_at timestamptz,
+  result jsonb
+);
+-- the query the resolver runs constantly
+create index actions_due_idx on public.scheduled_actions (status, resolve_at);
+-- a ship can have only ONE pending action at a time
+create unique index one_pending_per_ship
+  on public.scheduled_actions (ship_id) where status = 'pending';
+
+create table public.event_log (
+  id bigint generated always as identity primary key,
+  character_id uuid not null references public.characters(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  kind text not null,
+  message text not null,
+  data jsonb,
+  is_read boolean not null default false
+);
+create index events_char_idx on public.event_log (character_id, created_at desc);
+
+create table public.game_state (
+  key text primary key,
+  value jsonb not null
+);
+
+-- SECURITY: players may READ their own rows. Nobody can write from the
+-- browser. Only our server functions (which bypass these rules) can write.
+alter table public.characters enable row level security;
+alter table public.ships enable row level security;
+alter table public.scheduled_actions enable row level security;
+alter table public.event_log enable row level security;
+alter table public.game_state enable row level security;
+
+create policy "read own character" on public.characters
+  for select using (account_id = (select auth.uid()));
+
+create policy "read own ships" on public.ships
+  for select using (character_id in
+    (select id from public.characters where account_id = (select auth.uid())));
+
+create policy "read own actions" on public.scheduled_actions
+  for select using (character_id in
+    (select id from public.characters where account_id = (select auth.uid())));
+
+create policy "read own events" on public.event_log
+  for select using (character_id in
+    (select id from public.characters where account_id = (select auth.uid())));
+
+-- game_state has no policy on purpose: private to the server.
