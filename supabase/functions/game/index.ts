@@ -446,7 +446,7 @@ async function departures(db, user) {
 
 async function me(db, user) {
   const ch = await getCharacter(db, user);
-  const out = { game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, character: ch };
+  const out = { game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, speed: CLOCK.scale / 60, dev: await isDev(db, user), character: ch };
   const { data: locs } = await db.from('locations').select('id,name,anchor_body,kind,offset_au,is_default');
   out.locations = locs ?? [];
   if (ch) {
@@ -459,6 +459,51 @@ async function me(db, user) {
     out.ships = ships.data; out.actions = actions.data; out.events = events.data;
   }
   return json(out);
+}
+
+// ---------- speed control (developer button) ----------
+// The clock settings live in the database (game_state key 'clock'), so every request
+// uses the same speed. 1x = scale 60. Changing speed re-bases the clock (game time does
+// NOT jump) and re-times any trip in flight.
+const DEFAULT_CLOCK = { ...CLOCK };
+const BASE_SCALE = 60;
+const SPEEDS = [1, 2, 10]; // the cycle: 1x -> 2x -> 10x -> 1x
+
+async function loadClock(db) {
+  const { data, error } = await db.from('game_state').select('value').eq('key', 'clock').maybeSingle();
+  if (error) throw error;
+  Object.assign(CLOCK, DEFAULT_CLOCK, data?.value ?? {});
+}
+
+async function isDev(db, user) {
+  const { data, error } = await db.from('game_state').select('value').eq('key', 'dev_accounts').maybeSingle();
+  if (error) throw error;
+  return Array.isArray(data?.value) && data.value.includes(user.id);
+}
+
+async function cycleSpeed(db, user) {
+  if (!(await isDev(db, user))) return json({ error: 'not_allowed' }, 403);
+  const current = Math.round((CLOCK.scale / BASE_SCALE) * 1000) / 1000;
+  const next = SPEEDS[(SPEEDS.indexOf(current) + 1) % SPEEDS.length]; // unknown speed -> falls back to 1x
+  const newClock = rescale(CLOCK, Date.now(), next * BASE_SCALE);
+  const { error } = await db.from('game_state').upsert({ key: 'clock', value: newClock });
+  if (error) throw error;
+  Object.assign(CLOCK, newClock);
+
+  // Trips already in flight keep their game-time arrival; only the real-time due date moves.
+  const { data: pending, error: pe } = await db.from('scheduled_actions').select('id,payload').eq('status', 'pending');
+  if (pe) throw pe;
+  let retimed = 0;
+  for (const a of pending ?? []) {
+    const arriveT = Number(a.payload?.arriveT);
+    if (!Number.isFinite(arriveT)) continue;
+    const { error: ue } = await db.from('scheduled_actions')
+      .update({ resolve_at: new Date(realMsAt(arriveT)).toISOString() })
+      .eq('id', a.id).eq('status', 'pending');
+    if (ue) throw ue;
+    retimed++;
+  }
+  return json({ ok: true, speed: next, scale: CLOCK.scale, game_days: gameDaysAt(Date.now()), real_ms: Date.now(), trips_retimed: retimed });
 }
 
 Deno.serve(async (req) => {
@@ -479,11 +524,13 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'bad_json' }, 400); }
 
   try {
+    await loadClock(db);
     switch (body.action) {
       case 'me': return await me(db, user);
       case 'create_character': return await createCharacter(db, user, body);
       case 'queue_travel': return await queueTravel(db, user, body);
       case 'departures': return await departures(db, user);
+      case 'cycle_speed': return await cycleSpeed(db, user);
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
