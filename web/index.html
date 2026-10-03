@@ -137,7 +137,7 @@ function render() {
   const ship = (last.ships || [])[0];
   $('ship').textContent = !ship ? 'No ship' :
     ship.state === 'docked' ? 'Docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
-    'Traveling (thrust ' + ship.thrust_g + ' g)';
+    (ship.state === 'hopping' ? 'Hopping between locations' : 'Traveling') + ' (thrust ' + ship.thrust_g + ' g)';
   $('go').disabled = !ship || ship.state !== 'docked';
   const evs = $('evs'); evs.replaceChildren();
   (last.events || []).forEach(e => evs.appendChild(li(new Date(e.created_at).toLocaleString() + ' - ' + e.message)));
