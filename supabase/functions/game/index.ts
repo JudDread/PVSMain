@@ -302,6 +302,14 @@ async function createCharacter(db, user, body) {
   return json({ ok: true, character: ch });
 }
 
+// Time for a hop between two locations at the same body.
+// d = distance between them (AU) = difference of their offsets from the body.
+// Accelerate for half the way, brake for the other half: t = 2 * sqrt(d / a).
+function hopDurationDays(offsetA, offsetB, g) {
+  const d = Math.abs(offsetA - offsetB);
+  return 2 * Math.sqrt(d / gToAuDay2(g));
+}
+
 // body.to = a LOCATION id (e.g. 'luna', 'mars'). The flight is planned to the
 // location's anchor body; the ship docks at the chosen location on arrival.
 async function queueTravel(db, user, body) {
@@ -319,10 +327,35 @@ async function queueTravel(db, user, body) {
   if (!(to.anchor_body in BODY_INDEX) || BODY_INDEX[to.anchor_body] < 1) return json({ error: 'bad_destination' }, 400);
   if (!(from.anchor_body in BODY_INDEX)) return json({ error: 'bad_origin' }, 400);
   if (from.id === to.id) return json({ error: 'already_here' }, 400);
-  // Same planet: that is a short "hop", built in the next step.
-  if (from.anchor_body === to.anchor_body) return json({ error: 'same_body_hop_not_built_yet' }, 400);
-
   const departT = gameDaysAt(Date.now());
+
+  // Same planet: a short "hop" (accelerate half way, brake the rest).
+  if (from.anchor_body === to.anchor_body) {
+    const dur = hopDurationDays(Number(from.offset_au), Number(to.offset_au), Number(ship.thrust_g));
+    if (!(dur > 0)) return json({ error: 'bad_destination' }, 400);
+    const hopAt = new Date(realMsAt(departT + dur)).toISOString();
+    const { data: hop, error: h1 } = await db.from('scheduled_actions').insert({
+      character_id: ch.id, ship_id: ship.id, action_type: 'hop',
+      payload: { from: from.id, to: to.anchor_body, to_location: to.id, departT, arriveT: departT + dur },
+      resolve_at: hopAt,
+    }).select().single();
+    if (h1) {
+      if (h1.code === '23505') return json({ error: 'ship_busy' }, 409);
+      throw h1;
+    }
+    const { error: h2 } = await db.from('ships')
+      .update({ state: 'hopping', plan: null, location_id: null })
+      .eq('id', ship.id).eq('state', 'docked');
+    if (h2) {
+      await db.from('scheduled_actions').update({ status: 'failed' }).eq('id', hop.id);
+      throw h2;
+    }
+    return json({
+      ok: true, kind: 'hop', action_id: hop.id, from: from.name, to: to.name, resolve_at: hopAt,
+      duration_game_days: dur, duration_real_minutes: dur * 1440 / CLOCK.scale, sun_danger: false,
+    });
+  }
+
   const r = planTravel({
     from: { body: bodyId(from.anchor_body) },
     to: { body: bodyId(to.anchor_body) },
