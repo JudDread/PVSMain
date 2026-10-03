@@ -98,7 +98,7 @@ button:disabled{opacity:.45}
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script type="module">
-import { BODIES, bodyPos, stateAt, J2000_MS } from '../shared/physics.js';
+import { BODIES, bodyPos, stateAt, planTravel, J2000_MS } from '../shared/physics.js';
 
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
 const $ = id => document.getElementById(id);
@@ -218,18 +218,40 @@ function createMap(cv, hooks) {
       if (b.n === selB) { ctx.strokeStyle = '#e8b64a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, rad + 6, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
       if (b.n === selB || b.a * view.s > 18) { ctx.fillStyle = '#9fb0d4'; ctx.fillText(b.n, x + rad + 5, y); }
     });
-    if (sp) {
-      if (sp.plan) {
-        ctx.strokeStyle = '#e8b64a99'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.beginPath();
-        for (let k = 0; k <= 80; k++) {
-          const s = stateAt(sp.plan, sp.plan.t0 + sp.plan.T * k / 80);
-          k ? ctx.lineTo(X(s.x), Y(s.y)) : ctx.moveTo(X(s.x), Y(s.y));
-        }
-        ctx.stroke(); ctx.setLineDash([]);
+    /* course lines: blue = preview while choosing, green = launched */
+    const path = (plan, ta, col, lw) => {
+      ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.setLineDash([6, 5]); ctx.beginPath();
+      for (let k = 0; k <= 80; k++) {
+        const s = stateAt(plan, ta + (plan.tEnd - ta) * k / 80);
+        k ? ctx.lineTo(X(s.x), Y(s.y)) : ctx.moveTo(X(s.x), Y(s.y));
       }
+      ctx.stroke(); ctx.setLineDash([]);
+    };
+    const ring = (plan, col) => {   /* where the ship will MEET the target, not where it is now */
+      ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X(plan.end.x), Y(plan.end.y), 7, 0, 7); ctx.stroke();
+    };
+    const pv = hooks.preview();
+    if (pv) { path(pv, pv.t0, '#4aa8ff', 2); ring(pv, '#4aa8ff'); }
+    if (sp && sp.plan) {
+      const ta = Math.max(gd, sp.plan.t0);
+      if (ta < sp.plan.tEnd) {
+        path(sp.plan, ta, '#3dff6a', 2.5); ring(sp.plan, '#3dff6a');
+        const d = stateAt(sp.plan, ta + (sp.plan.tEnd - ta) * ((Date.now() % 4000) / 4000));
+        ctx.fillStyle = '#ffd23d'; ctx.beginPath(); ctx.arc(X(d.x), Y(d.y), 4, 0, 7); ctx.fill();
+      }
+    }
+    if (sp) {
       const x = X(sp.x), y = Y(sp.y);
-      ctx.strokeStyle = '#fff'; ctx.fillStyle = '#e8b64a'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.lineTo(x + 5, y + 5); ctx.lineTo(x - 5, y + 5); ctx.closePath(); ctx.fill(); ctx.stroke();
+      let ang = -Math.PI / 2;                                   /* docked: point up */
+      if (sp.vx != null && Math.hypot(sp.vx, sp.vy) > 1e-9) ang = Math.atan2(-sp.vy, sp.vx);   /* point along travel */
+      if (sp.a > 0) {                                           /* red exhaust line: opposite to acceleration */
+        ctx.strokeStyle = '#ff4a3d'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, y);
+        ctx.lineTo(x + 24 * Math.cos(Math.atan2(sp.ay, -sp.ax)), y + 24 * Math.sin(Math.atan2(sp.ay, -sp.ax))); ctx.stroke();
+      }
+      ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+      ctx.strokeStyle = '#e8b64a'; ctx.fillStyle = '#f2f5ff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-6, -5.5); ctx.lineTo(-6, 5.5); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.restore();
     }
     /* scale bar */
     const want = 110 / view.s, nice = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
@@ -239,7 +261,13 @@ function createMap(cv, hooks) {
     ctx.beginPath(); ctx.moveTo(10, h - 18); ctx.lineTo(10 + px, h - 18); ctx.stroke();
     ctx.fillText(nice >= 1 ? nice + ' AU' : (nice * 149.598).toPrecision(2) + ' million km', 10, h - 24);
   }
-  setInterval(() => { if (cv.offsetParent) draw(); }, 400);
+  let lastDraw = 0;   /* redraw fast (10/s) only while a launched course is animating, else every 0.4 s */
+  const _draw = draw;
+  setInterval(() => {
+    if (!cv.offsetParent) return;
+    const sp = hooks.ship();
+    if ((sp && sp.plan) || Date.now() - lastDraw > 400) { lastDraw = Date.now(); _draw(); }
+  }, 100);
   return { preset, need, resize };
 }
 
@@ -290,7 +318,7 @@ function drawDeps() {
 function shipPoint() {
   const ship = last && (last.ships || [])[0]; if (!ship) return null;
   const gd = curGd();
-  if (ship.state === 'traveling' && ship.plan) { const s = stateAt(ship.plan, gd); return { x: s.x, y: s.y, plan: ship.plan }; }
+  if (ship.state === 'traveling' && ship.plan) { const s = stateAt(ship.plan, gd); return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: ship.plan }; }
   let body = null;
   if (ship.state === 'docked') { const l = (last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; }
   else if (ship.state === 'hopping') { const a = (last.actions || []).find(x => x.status === 'pending'); body = a && a.payload && a.payload.to; }
@@ -298,8 +326,27 @@ function shipPoint() {
   const p = bodyPos(BODIES[i], gd); return { x: p[0], y: p[1], plan: null };
 }
 
+/* Blue preview course for the highlighted destination. Display only: same shared physics as the server,
+   recomputed every 3 s because the planets move. The real flight is planned by the server at launch. */
+let pv = { key: '', plan: null };
+function previewPlan() {
+  const ship = last && (last.ships || [])[0];
+  if (!ship || ship.state !== 'docked' || !deps || !deps.docked) return null;
+  const d = (deps.departures || []).find(x => x.id === selected); if (!d) return null;
+  const l = (last.locations || []).find(x => x.id === ship.location_id);
+  if (!l || l.anchor_body === d.anchor_body) return null;      /* same-body hop: no course line */
+  const key = selected + '|' + Math.floor(Date.now() / 3000);
+  if (pv.key !== key) {
+    const r = planTravel({ from: { body: BODIES.findIndex(b => b.n === l.anchor_body) },
+      to: { body: BODIES.findIndex(b => b.n === d.anchor_body) }, departT: curGd(), g: Number(ship.thrust_g) });
+    pv = { key, plan: r.ok ? r.plan : null };
+  }
+  return pv.plan;
+}
+
 const map = createMap($('map'), {
   ship: shipPoint,
+  preview: previewPlan,
   selectedBody,
   pick: name => {
     const d = deps && deps.departures && deps.departures.find(x => x.anchor_body === name && x.is_default);
