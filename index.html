@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vacuum State - Test Page</title>
+<style>
+body{font:16px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:12px;max-width:640px}
+h1{font-size:18px;margin:0 0 10px}h2{font-size:15px;margin:0 0 8px;color:#e8b64a}
+section{background:#131a2a;border:1px solid #222b40;border-radius:8px;padding:10px;margin-bottom:10px}
+input,select,button{font:inherit;padding:8px;margin:3px 0;border-radius:6px;border:1px solid #333d57;background:#192033;color:#e3e9f7;max-width:100%;box-sizing:border-box}
+input{width:100%}
+button{background:#e8b64a;color:#14100a;border:0;font-weight:600;margin-right:6px}
+button.alt{background:#2a3350;color:#e3e9f7}
+.muted{color:#8d98b2}.err{color:#ff7b6b}.ok{color:#6be08f}
+ul{margin:4px 0;padding-left:18px}
+#msg{min-height:1.4em;margin-bottom:8px}
+</style>
+</head>
+<body>
+<h1>Vacuum State: Test Page</h1>
+<div id="msg"></div>
+
+<section id="cfg" hidden>
+  <h2>One-time setup</h2>
+  <div class="muted">Paste your Supabase publishable (anon) key. Never use the secret / service_role key.</div>
+  <input id="key" placeholder="paste key here" autocomplete="off">
+  <button id="savekey">Save key</button>
+</section>
+
+<section id="auth" hidden>
+  <h2>Account</h2>
+  <input id="email" type="email" placeholder="email" autocomplete="username">
+  <input id="pw" type="password" placeholder="password (8+ characters)" autocomplete="current-password">
+  <button id="login">Log in</button><button id="signup" class="alt">Register</button>
+</section>
+
+<section id="game" hidden>
+  <div class="muted" id="who"></div>
+  <h2>Game time</h2><div id="gtime"></div>
+
+  <div id="nochar" hidden>
+    <h2>Create character</h2>
+    <input id="cname" placeholder="character name (3-24 chars)">
+    <button id="mk">Create</button>
+  </div>
+
+  <div id="haschar" hidden>
+    <h2>Ship</h2><div id="ship"></div>
+    <h2>Travel</h2>
+    <select id="dest"></select>
+    <button id="go">Launch</button>
+    <h2>Actions</h2><ul id="acts"></ul>
+    <h2>Event log</h2><ul id="evs"></ul>
+  </div>
+  <button id="out" class="alt">Log out</button>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
+const $ = id => document.getElementById(id);
+const J2000 = Date.UTC(2000, 0, 1, 12);
+let sb = null, last = null, timer = null, lastNudge = 0, destCount = -1;
+const BODY_ORDER = setInterval(() => { if (last && sb) refresh(); }, 15000);
+init();
+</script>
+</body>
+</html>
