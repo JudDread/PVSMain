@@ -310,6 +310,29 @@ function hopDurationDays(offsetA, offsetB, g) {
   return 2 * Math.sqrt(d / gToAuDay2(g));
 }
 
+// How long would a trip from location `from` to location `to` take if it left now?
+// Returns {ok, days, sun_danger} or {ok:false, reason}. NOTHING is saved.
+// `cache` remembers long flights per destination body, because every location at
+// the same body has the same flight (only the final hop differs).
+function estimateTrip(from, to, departT, g, cache) {
+  if (from.id === to.id) return { ok: false, reason: 'already_here' };
+  if (!(to.anchor_body in BODY_INDEX) || BODY_INDEX[to.anchor_body] < 1) return { ok: false, reason: 'bad_destination' };
+  if (!(from.anchor_body in BODY_INDEX)) return { ok: false, reason: 'bad_origin' };
+  if (from.anchor_body === to.anchor_body) {
+    const days = hopDurationDays(Number(from.offset_au), Number(to.offset_au), g);
+    return days > 0 ? { ok: true, days, sun_danger: false } : { ok: false, reason: 'bad_destination' };
+  }
+  let r = cache[to.anchor_body];
+  if (!r) {
+    r = cache[to.anchor_body] = planTravel({
+      from: { body: bodyId(from.anchor_body) },
+      to: { body: bodyId(to.anchor_body) },
+      departT, g,
+    });
+  }
+  return r.ok ? { ok: true, days: r.durationDays, sun_danger: r.sunDanger } : { ok: false, reason: r.reason };
+}
+
 // body.to = a LOCATION id (e.g. 'luna', 'mars'). The flight is planned to the
 // location's anchor body; the ship docks at the chosen location on arrival.
 async function queueTravel(db, user, body) {
@@ -389,6 +412,38 @@ async function queueTravel(db, user, body) {
   });
 }
 
+// "departures": where can my docked ship go right now, and how long would each trip take?
+// Read-only: nothing is saved. The server does the maths; the page only displays it.
+async function departures(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  await resolveFor(db, ch.id);
+  const { data: ship, error: se } = await db.from('ships').select('*').eq('character_id', ch.id).order('created_at').limit(1).maybeSingle();
+  if (se) throw se;
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  const out = { ok: true, game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, docked: ship.state === 'docked', from: null, departures: [] };
+  if (!out.docked) return json(out);
+
+  const from = await getLocation(db, ship.location_id);
+  if (!from) return json({ error: 'bad_origin' }, 400);
+  out.from = from.id;
+  const { data: locs, error: le } = await db.from('locations').select('*');
+  if (le) throw le;
+  const departT = out.game_days, g = Number(ship.thrust_g), cache = {};
+  for (const to of locs ?? []) {
+    const est = estimateTrip(from, to, departT, g, cache);
+    if (!est.ok) continue; // the place we are at, or a place we cannot reach
+    out.departures.push({
+      id: to.id, name: to.name, anchor_body: to.anchor_body, kind: to.kind, is_default: to.is_default,
+      eta_game_days: est.days,
+      eta_real_minutes: est.days * 1440 / CLOCK.scale,
+      sun_danger: est.sun_danger,
+    });
+  }
+  out.departures.sort((a, b) => a.eta_real_minutes - b.eta_real_minutes);
+  return json(out);
+}
+
 async function me(db, user) {
   const ch = await getCharacter(db, user);
   const out = { game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, character: ch };
@@ -428,6 +483,7 @@ Deno.serve(async (req) => {
       case 'me': return await me(db, user);
       case 'create_character': return await createCharacter(db, user, body);
       case 'queue_travel': return await queueTravel(db, user, body);
+      case 'departures': return await departures(db, user);
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
