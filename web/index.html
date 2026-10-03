@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vacuum State - Test Page</title>
 <style>
-body{font:16px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:12px;max-width:640px}
+[hidden]{display:none!important}
+body{font:16px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:12px}
+#cfg,#auth{max-width:640px}
 h1{font-size:18px;margin:0 0 10px}h2{font-size:15px;margin:0 0 8px;color:#e8b64a}
 section{background:#131a2a;border:1px solid #222b40;border-radius:8px;padding:10px;margin-bottom:10px}
 input,select,button{font:inherit;padding:8px;margin:3px 0;border-radius:6px;border:1px solid #333d57;background:#192033;color:#e3e9f7;max-width:100%;box-sizing:border-box}
@@ -14,13 +16,29 @@ button{background:#e8b64a;color:#14100a;border:0;font-weight:600;margin-right:6p
 button.alt{background:#2a3350;color:#e3e9f7}
 .muted{color:#8d98b2}.err{color:#ff7b6b}.ok{color:#6be08f}
 ul{margin:4px 0;padding-left:18px}
-#deps{max-height:340px;overflow-y:auto;border:1px solid #222b40;border-radius:6px;margin:4px 0}
+#msg{min-height:1.4em;margin-bottom:8px}
+button:disabled{opacity:.45}
+/* screens + nav */
+#nav{display:flex;gap:6px;margin:6px 0}
+#nav button.on{background:#e8b64a;color:#14100a}
+/* travel screen: portrait = stacked, landscape = map beside list */
+.travel{display:flex;flex-direction:column;gap:8px}
+.mapwrap{position:relative;height:55vh;min-height:260px}
+#map{width:100%;height:100%;display:block;touch-action:none;background:#070a12;border:1px solid #222b40;border-radius:8px}
+.zb{position:absolute;top:6px;left:6px}
+.zb button{padding:4px 9px;font-size:13px;margin:0 4px 0 0;background:#2a3350cc;color:#e3e9f7;border:1px solid #444f70}
+.side{display:flex;flex-direction:column;min-width:0}
+#deps{max-height:300px;overflow-y:auto;border:1px solid #222b40;border-radius:6px;margin:4px 0}
 .grp{background:#0f1523;color:#e8b64a;font-size:13px;padding:5px 8px;position:sticky;top:0}
 .row{display:flex;justify-content:space-between;gap:8px;padding:10px 8px;border-top:1px solid #1c2438;cursor:pointer}
 .row.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
 .eta{white-space:nowrap;color:#6be08f}
-button:disabled{opacity:.45}
-#msg{min-height:1.4em;margin-bottom:8px}
+@media (orientation:landscape){
+  .travel{flex-direction:row;height:calc(100vh - 190px);min-height:240px}
+  .mapwrap{flex:1;height:auto;min-width:0}
+  .side{width:330px;flex:none}
+  #deps{max-height:none;flex:1}
+}
 </style>
 </head>
 <body>
@@ -53,9 +71,25 @@ button:disabled{opacity:.45}
 
   <div id="haschar" hidden>
     <h2>Ship</h2><div id="ship"></div>
-    <h2>Travel</h2>
-    <div id="deps" class="muted">Loading destinations...</div>
-    <button id="go" disabled>Launch</button>
+    <nav id="nav" hidden></nav>
+
+    <!-- SCREEN: travel (map + departure list). Other screens get their own div like this one. -->
+    <div id="scr-travel" class="travel">
+      <div class="mapwrap">
+        <canvas id="map"></canvas>
+        <div class="zb">
+          <button id="zInner" title="Inner planets">Inner</button>
+          <button id="zSys" title="Whole system">System</button>
+          <button id="zShip" title="Centre on my ship, very close">Ship</button>
+        </div>
+      </div>
+      <div class="side">
+        <h2>Travel</h2>
+        <div id="deps" class="muted">Loading destinations...</div>
+        <button id="go" disabled>Launch</button>
+      </div>
+    </div>
+
     <h2>Actions</h2><ul id="acts"></ul>
     <h2>Event log</h2><ul id="evs"></ul>
   </div>
@@ -63,18 +97,153 @@ button:disabled{opacity:.45}
 </section>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
+<script type="module">
+import { BODIES, bodyPos, stateAt, J2000_MS } from '../shared/physics.js';
+
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
 const $ = id => document.getElementById(id);
-const J2000 = Date.UTC(2000, 0, 1, 12);
 let sb = null, last = null, timer = null, lastNudge = 0;
+let deps = null, depsAt = 0, selected = null, depsLoading = false;
+
 function locName(id) {
   const l = ((last && last.locations) || []).find(x => x.id === id);
   return l ? l.name : (id || '?');
 }
-/* Departure list: the SERVER works out every ETA (op "departures"); we only display it. */
-let deps = null, depsAt = 0, selected = null;
-let depsLoading = false;
+function curGd() { return last ? last.game_days + (Date.now() - last.real_ms) * last.scale / 864e5 : null; }
+
+/* ---------- screen registry: add a screen = a div + addScreen(...) ---------- */
+const screens = {};
+let current = null;
+function addScreen(name, title, el, hooks) { screens[name] = { title, el, ...(hooks || {}) }; }
+function openScreen(name) {
+  current = name;
+  Object.entries(screens).forEach(([n, s]) => s.el.hidden = n !== name);
+  const nav = $('nav'); nav.replaceChildren();
+  nav.hidden = Object.keys(screens).length < 2;
+  Object.entries(screens).forEach(([n, s]) => {
+    const b = document.createElement('button'); b.textContent = s.title;
+    b.className = n === name ? 'on' : 'alt'; b.onclick = () => openScreen(n); nav.appendChild(b);
+  });
+  if (screens[name].onShow) screens[name].onShow();
+}
+
+/* ---------- MAP component (display only, TRUE scale: pixels per AU) ---------- */
+function createMap(cv, hooks) {
+  const ctx = cv.getContext('2d');
+  let w = 0, h = 0, dpr = 1, raf = 0, inited = false, moved = 0, t0 = 0, hits = [];
+  const view = { cx: 0, cy: 0, s: 100, follow: false };
+  const MIN_S = () => Math.min(w, h) / 2 / 40;      /* whole system plus margin */
+  const MAX_S = () => Math.min(w, h) / 0.002;       /* ~0.002 AU across */
+  const clamp = s => Math.max(MIN_S(), Math.min(MAX_S(), s));
+  const need = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+
+  function preset(kind) {
+    if (!w) return;
+    const m = Math.min(w, h);
+    if (kind === 'inner') { view.cx = 0; view.cy = 0; view.s = m / 2 / 1.8; view.follow = false; }
+    else if (kind === 'sys') { view.cx = 0; view.cy = 0; view.s = m / 2 / 32; view.follow = false; }
+    else { const p = hooks.ship(); if (!p) return; view.follow = true; view.s = m / 0.04; }
+    need();
+  }
+  function resize() {
+    const r = cv.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) return;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = r.width; h = r.height; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    if (!inited) { inited = true; preset('inner'); }
+    need();
+  }
+  new ResizeObserver(resize).observe(cv);
+
+  function zoomAt(p, f) {
+    if (view.follow) p = { x: w / 2, y: h / 2 };
+    const wx = view.cx + (p.x - w / 2) / view.s, wy = view.cy - (p.y - h / 2) / view.s;
+    view.s = clamp(view.s * f);
+    view.cx = wx - (p.x - w / 2) / view.s; view.cy = wy + (p.y - h / 2) / view.s;
+  }
+  const pos = e => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const ptrs = new Map();
+  cv.addEventListener('pointerdown', e => {
+    cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, pos(e));
+    if (ptrs.size === 1) { moved = 0; t0 = Date.now(); } else moved = 99;
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!ptrs.has(e.pointerId)) return;
+    const p = pos(e), o = ptrs.get(e.pointerId);
+    if (ptrs.size === 1) {
+      const dx = p.x - o.x, dy = p.y - o.y; moved += Math.abs(dx) + Math.abs(dy);
+      if (moved > 8) { view.follow = false; view.cx -= dx / view.s; view.cy += dy / view.s; }
+    } else if (ptrs.size === 2) {
+      const q = [...ptrs.entries()].find(([id]) => id !== e.pointerId)[1];
+      const d0 = Math.hypot(o.x - q.x, o.y - q.y), d1 = Math.hypot(p.x - q.x, p.y - q.y);
+      const mo = { x: (o.x + q.x) / 2, y: (o.y + q.y) / 2 }, mn = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+      if (!view.follow) { view.cx -= (mn.x - mo.x) / view.s; view.cy += (mn.y - mo.y) / view.s; }
+      if (d0 > 0) zoomAt(mn, d1 / d0);
+    }
+    ptrs.set(e.pointerId, p); need();
+  });
+  const up = e => {
+    if (ptrs.size === 1 && e.type === 'pointerup' && moved < 8 && Date.now() - t0 < 600) tap(pos(e));
+    ptrs.delete(e.pointerId);
+  };
+  cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+  cv.addEventListener('wheel', e => { e.preventDefault(); zoomAt(pos(e), Math.exp(-e.deltaY * 0.0015)); need(); }, { passive: false });
+
+  function tap(p) {
+    let best = null, bd = 26;
+    hits.forEach(k => { const d = Math.hypot(k.x - p.x, k.y - p.y); if (d < bd) { bd = d; best = k; } });
+    if (best) hooks.pick(best.name);
+  }
+
+  function draw() {
+    const gd = curGd(); if (gd == null || !w) return;
+    const sp = hooks.ship();
+    if (view.follow && sp) { view.cx = sp.x; view.cy = sp.y; }
+    const X = x => w / 2 + (x - view.cx) * view.s, Y = y => h / 2 - (y - view.cy) * view.s;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#070a12'; ctx.fillRect(0, 0, w, h);
+    ctx.lineWidth = 1; ctx.strokeStyle = '#1d2740';
+    BODIES.forEach(b => {
+      if (!b.a) return; const r = b.a * view.s; if (r > 2e5) return;
+      ctx.beginPath(); ctx.arc(X(0), Y(0), r, 0, 7); ctx.stroke();
+    });
+    hits = []; const selB = hooks.selectedBody();
+    ctx.font = '12px system-ui,sans-serif'; ctx.textBaseline = 'middle';
+    BODIES.forEach(b => {
+      const p = b.a ? bodyPos(b, gd) : [0, 0], x = X(p[0]), y = Y(p[1]);
+      if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
+      const rad = Math.max(2.5, b.r * 0.7);
+      ctx.fillStyle = b.c; ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
+      if (b.a) hits.push({ x, y, name: b.n });
+      if (b.n === selB) { ctx.strokeStyle = '#e8b64a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, rad + 6, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
+      if (b.n === selB || b.a * view.s > 18) { ctx.fillStyle = '#9fb0d4'; ctx.fillText(b.n, x + rad + 5, y); }
+    });
+    if (sp) {
+      if (sp.plan) {
+        ctx.strokeStyle = '#e8b64a99'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.beginPath();
+        for (let k = 0; k <= 80; k++) {
+          const s = stateAt(sp.plan, sp.plan.t0 + sp.plan.T * k / 80);
+          k ? ctx.lineTo(X(s.x), Y(s.y)) : ctx.moveTo(X(s.x), Y(s.y));
+        }
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+      const x = X(sp.x), y = Y(sp.y);
+      ctx.strokeStyle = '#fff'; ctx.fillStyle = '#e8b64a'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.lineTo(x + 5, y + 5); ctx.lineTo(x - 5, y + 5); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    /* scale bar */
+    const want = 110 / view.s, nice = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
+      .filter(v => v <= want).pop() || 0.001;
+    const px = nice * view.s;
+    ctx.strokeStyle = '#8d98b2'; ctx.fillStyle = '#8d98b2'; ctx.lineWidth = 2; ctx.textBaseline = 'alphabetic';
+    ctx.beginPath(); ctx.moveTo(10, h - 18); ctx.lineTo(10 + px, h - 18); ctx.stroke();
+    ctx.fillText(nice >= 1 ? nice + ' AU' : (nice * 149.598).toPrecision(2) + ' million km', 10, h - 24);
+  }
+  setInterval(() => { if (cv.offsetParent) draw(); }, 400);
+  return { preset, need, resize };
+}
+
+/* ---------- travel screen: departure list ---------- */
 async function loadDeps() {
   if (depsLoading) return;
   depsLoading = true;
@@ -82,16 +251,19 @@ async function loadDeps() {
   catch (e) { say('Error: ' + e.message, 'err'); }
   finally { depsLoading = false; }
 }
+function selectedBody() {
+  const d = deps && deps.departures && deps.departures.find(x => x.id === selected);
+  return d ? d.anchor_body : null;
+}
 function drawDeps() {
   const box = $('deps'), go = $('go');
   box.replaceChildren();
   if (!deps || !deps.docked) {
     box.textContent = 'Destinations appear when your ship is docked.';
-    go.disabled = true; go.textContent = 'Launch'; return;
+    go.disabled = true; go.textContent = 'Launch'; map.need(); return;
   }
   const list = deps.departures || [];
   if (!list.some(d => d.id === selected)) selected = null;
-  /* group by body; groups ordered by their fastest trip, rows by ETA */
   const groups = {};
   list.forEach(d => (groups[d.anchor_body] = groups[d.anchor_body] || []).push(d));
   Object.entries(groups)
@@ -111,8 +283,44 @@ function drawDeps() {
   const pick = list.find(d => d.id === selected);
   go.disabled = !pick;
   go.textContent = pick ? 'Launch to ' + pick.name + ' (' + fmt(pick.eta_real_minutes * 60) + ')' : 'Pick a destination';
+  map.need();
 }
 
+/* where is the ship right now? (from its stored plan, or from the body it sits at) */
+function shipPoint() {
+  const ship = last && (last.ships || [])[0]; if (!ship) return null;
+  const gd = curGd();
+  if (ship.state === 'traveling' && ship.plan) { const s = stateAt(ship.plan, gd); return { x: s.x, y: s.y, plan: ship.plan }; }
+  let body = null;
+  if (ship.state === 'docked') { const l = (last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; }
+  else if (ship.state === 'hopping') { const a = (last.actions || []).find(x => x.status === 'pending'); body = a && a.payload && a.payload.to; }
+  const i = BODIES.findIndex(b => b.n === body); if (i < 1) return null;
+  const p = bodyPos(BODIES[i], gd); return { x: p[0], y: p[1], plan: null };
+}
+
+const map = createMap($('map'), {
+  ship: shipPoint,
+  selectedBody,
+  pick: name => {
+    const d = deps && deps.departures && deps.departures.find(x => x.anchor_body === name && x.is_default);
+    if (d) { selected = d.id; drawDeps(); } else say(name + ' is not a destination from here.', 'muted');
+  },
+});
+$('zInner').onclick = () => map.preset('inner');
+$('zSys').onclick = () => map.preset('sys');
+$('zShip').onclick = () => map.preset('ship');
+
+addScreen('travel', 'Travel', $('scr-travel'), {
+  onShow: () => { map.resize(); map.need(); },
+  update: ship => {
+    if (ship && ship.state === 'docked') {
+      if (!deps || !deps.docked || deps.from !== ship.location_id || Date.now() - depsAt > 30000) loadDeps();
+    } else if (deps && deps.docked) { deps = null; drawDeps(); }
+    map.need();
+  },
+});
+
+/* ---------- shared helpers + app shell ---------- */
 function say(t, cls) { const m = $('msg'); m.textContent = t || ''; m.className = cls || ''; }
 const li = t => { const e = document.createElement('li'); e.textContent = t; return e; };
 function getKey() { try { return localStorage.getItem('pvs_key'); } catch (e) { return null; } }
@@ -126,10 +334,7 @@ async function call(action, extra) {
   }
   return data;
 }
-
-function show(which) {
-  ['cfg', 'auth', 'game'].forEach(id => $(id).hidden = id !== which);
-}
+function show(which) { ['cfg', 'auth', 'game'].forEach(id => $(id).hidden = id !== which); }
 
 async function init() {
   const k = getKey();
@@ -138,7 +343,6 @@ async function init() {
   const { data } = await sb.auth.getSession();
   if (data.session) enterGame(data.session); else show('auth');
 }
-
 async function enterGame(session) {
   show('game');
   $('who').textContent = 'Logged in as ' + session.user.email;
@@ -146,18 +350,15 @@ async function enterGame(session) {
   clearInterval(timer);
   timer = setInterval(tick, 1000);
 }
-
 async function refresh() {
   try { last = await call('me'); render(); }
   catch (e) { say('Error: ' + e.message, 'err'); }
 }
-
 function fmt(sec) {
   sec = Math.max(0, Math.round(sec));
   const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
   return (h ? h + 'h ' : '') + m + 'm ' + s + 's';
 }
-
 function render() {
   if (!last) return;
   const hasChar = !!last.character;
@@ -167,19 +368,16 @@ function render() {
   $('ship').textContent = !ship ? 'No ship' :
     ship.state === 'docked' ? 'Docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
     'Traveling (thrust ' + ship.thrust_g + ' g)';
-  /* refresh the departure list when docked (ETAs drift as planets move) */
-  if (ship && ship.state === 'docked') {
-    if (!deps || !deps.docked || deps.from !== ship.location_id || Date.now() - depsAt > 30000) loadDeps();
-  } else if (deps && deps.docked) { deps = null; drawDeps(); }
+  if (!current) openScreen('travel');
+  const s = screens[current]; if (s && s.update) s.update(ship);
   const evs = $('evs'); evs.replaceChildren();
   (last.events || []).forEach(e => evs.appendChild(li(new Date(e.created_at).toLocaleString() + ' - ' + e.message)));
   tick();
 }
-
 function tick() {
   if (!last) return;
-  const gd = last.game_days + (Date.now() - last.real_ms) * last.scale / 864e5;
-  $('gtime').textContent = new Date(J2000 + gd * 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC (game)';
+  const gd = curGd();
+  $('gtime').textContent = new Date(J2000_MS + gd * 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC (game)';
   const acts = $('acts'); acts.replaceChildren();
   (last.actions || []).forEach(a => {
     const left = (new Date(a.resolve_at) - Date.now()) / 1000;
