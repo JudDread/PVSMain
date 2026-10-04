@@ -117,7 +117,7 @@ button:disabled{opacity:.45}
       <div class="tcol">
         <h2 id="ttitle">Market</h2>
         <div id="tinfo" class="muted"></div>
-        <div class="muted hint">Press and hold (or double-tap) a good to compare other destinations.</div>
+        <div class="muted hint">Long press a good to compare other destinations.</div>
         <div id="mlist" class="muted">Loading market...</div>
       </div>
       <div class="tcol">
@@ -413,6 +413,7 @@ addScreen('travel', 'Fly', $('scr-travel'), {
 
 /* ---------- trade screen: market list, buy/sell, cargo (display only: the server decides every trade) ---------- */
 let mk = null, mkAt = 0, mkLoading = false, tsel = null, tbusy = false;
+let cargoBest = null, cargoBestLoc = null, cargoBusy = false;
 let routesFor = null, routesLoc = null, routesData = null, routesBusy = false, longFired = false, lastTap = { id: null, t: 0 };
 const money = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const whole = n => Math.round(Number(n)).toLocaleString();
@@ -426,8 +427,20 @@ async function loadMarket() {
     if (last && last.character) last.character.credits = mk.credits;
     setShipLine(); drawTrade();
     if (routesFor) loadRoutes();
+    if (mk.docked && (mk.cargo || []).length) loadCargoBest(); else { cargoBest = null; cargoBestLoc = null; }
   } catch (e) { say('Error: ' + e.message, 'err'); }
   finally { mkLoading = false; }
+}
+// best place to sell each carried good (server action cargo_routes); shown under each cargo item
+async function loadCargoBest() {
+  if (cargoBusy || !sb) return;
+  cargoBusy = true;
+  try {
+    const d = await call('cargo_routes');
+    cargoBest = {}; cargoBestLoc = d.docked ? d.location_id : null;
+    (d.items || []).forEach(x => { cargoBest[x.good_id] = x; });
+  } catch (e) { cargoBest = null; cargoBestLoc = null; }
+  finally { cargoBusy = false; drawTrade(); }
 }
 const selGood = () => (mk && mk.goods || []).find(g => g.good_id === tsel) || null;
 const ownQty = id => { const c = mk && (mk.cargo || []).find(x => x.good_id === id); return c ? c.quantity : 0; };
@@ -457,6 +470,14 @@ async function loadRoutes() {
   } catch (e) { if (routesFor === id) routesData = { error: e.message }; }
   finally { routesBusy = false; drawTrade(); if (routesFor && routesFor !== id) loadRoutes(); }
 }
+// why can't I buy any? (only used when the server says the max load is 0)
+function maxZeroReason(d) {
+  const g = (mk && mk.goods || []).find(x => x.good_id === d.good_id);
+  if (!g) return 'Sold out';
+  if ((mk.hold_size - mk.hold_used + 1e-9) / g.hold_per_unit < 1) return 'Hold full';
+  if (mk.credits / g.buy_price < 1) return 'Low funds';
+  return 'Sold out';
+}
 function routesBox() {
   const box = el('div', 'routes'), d = routesData;
   if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return box; }
@@ -464,11 +485,12 @@ function routesBox() {
   else if (!d.docked) box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.'));
   else {
     box.appendChild(el('div', '', 'Buy ' + d.name + ' here at ' + money(d.buy_here) + '. Max load: ' + whole(d.max_load) + ' ' + d.unit + '.'));
-    if (d.hypothetical) box.appendChild(el('div', 'muted', 'You cannot buy any right now (credits, hold space or stock), so the figures below are for 1 unit.'));
+    const why = d.hypothetical ? maxZeroReason(d) : null;
+    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the figures below are for 1 unit.'));
     if (!d.rows.length) box.appendChild(el('div', 'muted', 'No other place trades this good.'));
     else {
       const hd = el('div', 'rhead');
-      hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', d.hypothetical ? 'For 1' : 'Max load'), el('span', 'num', 'Per min'));
+      hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', d.hypothetical ? why : (mk && mk.hold_used > 0 ? 'For ' + whole(d.max_load) : 'Max load')), el('span', 'num', 'Per min'));
       box.appendChild(hd);
       d.rows.forEach(x => {
         const r = el('div', 'rrow');
@@ -523,7 +545,7 @@ function drawTrade() {
   if (!mk.docked) box.textContent = 'You can trade when your ship is docked.';
   else if (!goods.length) box.textContent = 'Nothing is traded here.';
   else {
-    const hd = el('div', 'mhead'); hd.append(el('span', '', 'Good'), el('span', 'num', 'You pay'), el('span', 'num', 'You get'), el('span', 'num', 'Stock'));
+    const hd = el('div', 'mhead'); hd.append(el('span', '', 'Good'), el('span', 'num', 'Buy for'), el('span', 'num', 'Sell at'), el('span', 'num', 'Stock'));
     box.appendChild(hd);
     goods.forEach(g => {
       const r = el('div', 'mrow' + (g.good_id === tsel ? ' sel' : ''));
@@ -544,7 +566,14 @@ function drawTrade() {
         right.appendChild(el('span', 'get', 'sells here for ' + money(g.sell_price)));
         if (c.profit_each != null) right.appendChild(el('span', 'sub ' + tone(c.profit_each), sgn(c.profit_each) + ' each, ' + sgn(c.profit_total) + ' for ' + c.quantity));
       }
-      r.append(cell('', c.quantity + ' x ' + c.name, c.avg_cost != null ? 'paid ' + money(c.avg_cost) + ' each' : 'cost unknown'), right);
+      const left = cell('', c.quantity + ' x ' + c.name, c.avg_cost != null ? 'paid ' + money(c.avg_cost) + ' each' : 'cost unknown');
+      const cb = cargoBest && cargoBestLoc === mk.location_id ? cargoBest[c.good_id] : null;
+      if (cb && cb.best) {
+        const b = cb.best;
+        left.appendChild(el('span', 'sub ' + tone(b.ppm),
+          'Best: ' + b.name + ' (' + fmt(b.eta_real_minutes * 60) + '), ' + sgn(b.profit_total) + (cb.cost_known ? '' : ' income') + ', ' + sgn(b.ppm) + '/min' + (b.sun_danger ? ' near the Sun!' : '')));
+      } else if (cb) left.appendChild(el('span', 'sub muted', 'No other place buys this.'));
+      r.append(left, right);
       if (g) r.onclick = () => { tsel = g.good_id; drawTrade(); };
       cbox.appendChild(r);
     });
