@@ -517,7 +517,7 @@ async function getShip(db, characterId) {
 
 // What the ship carries, with names and hold space. Also returns hold_used.
 async function loadCargo(db, ship) {
-  const { data: rows, error } = await db.from('ship_cargo').select('good_id,quantity').eq('ship_id', ship.id);
+  const { data: rows, error } = await db.from('ship_cargo').select('good_id,quantity,avg_cost').eq('ship_id', ship.id);
   if (error) throw error;
   const ids = (rows ?? []).map(r => r.good_id);
   let goods = [];
@@ -531,7 +531,8 @@ async function loadCargo(db, ship) {
     const g = goods.find(x => x.id === r.good_id) || {};
     const per = Number(g.hold_per_unit ?? 1);
     holdUsed += r.quantity * per;
-    return { good_id: r.good_id, name: g.name ?? r.good_id, unit: g.unit ?? 'unit', hold_per_unit: per, quantity: r.quantity };
+    return { good_id: r.good_id, name: g.name ?? r.good_id, unit: g.unit ?? 'unit', hold_per_unit: per, quantity: r.quantity,
+      avg_cost: r.avg_cost == null ? null : Number(r.avg_cost) };
   });
   cargo.sort((a, b) => a.name.localeCompare(b.name));
   return { cargo, hold_used: Math.round(holdUsed * 1000) / 1000 };
@@ -559,7 +560,74 @@ async function market(db, user) {
     hold_per_unit: Number(r.hold_per_unit), target_stock: Number(r.target_stock), stock: Number(r.stock),
     mid_price: Number(r.mid_price), buy_price: Number(r.buy_price), sell_price: Number(r.sell_price),
   }));
+  // For each item in the hold: what it would sell for here, and the profit or loss against what was paid.
+  const r2 = n => Math.round(n * 100) / 100;
+  for (const c of out.cargo) {
+    const g = out.goods.find(x => x.good_id === c.good_id);
+    c.sell_here = g ? g.sell_price : null;
+    c.profit_each = (g && c.avg_cost != null) ? r2(g.sell_price - c.avg_cost) : null;
+    c.profit_total = (g && c.avg_cost != null) ? r2((g.sell_price - c.avg_cost) * c.quantity) : null;
+  }
   return json(out);
+}
+
+// "routes": body = { good: 'water_ice' }. If I bought this good HERE and flew to each other place that
+// trades it, what would I make? Profit per unit, profit for a max load, trip time, and profit per minute
+// (ppm = profit for the load / real minutes of travel). Read-only. Uses today's prices and today's ETA.
+async function routes(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const good = String(body.good ?? '');
+  if (!/^[a-z0-9_]{1,64}$/.test(good)) return json({ error: 'unknown_good' }, 400);
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  if (ship.state !== 'docked') return json({ ok: true, docked: false, rows: [] });
+
+  const { data: gd, error: ge } = await db.from('goods').select('id,name,unit,hold_per_unit').eq('id', good).maybeSingle();
+  if (ge) throw ge;
+  if (!gd) return json({ error: 'unknown_good' }, 400);
+  const { data: prices, error: pe } = await db.rpc('market_prices_for_good', { p_character: ch.id, p_good: good });
+  if (pe) throw pe;
+  const here = (prices ?? []).find(p => p.location_id === ship.location_id);
+  if (!here) return json({ error: 'no_market' }, 400);
+
+  const { hold_used } = await loadCargo(db, ship);
+  const per = Number(gd.hold_per_unit);
+  const buyHere = Number(here.buy_price);
+  // Max load = the most you could buy right now (same limits as the Max buy button).
+  const maxLoad = Math.max(0, Math.floor(Math.min(
+    Number(here.stock), Number(ch.credits) / buyHere, (Number(ship.hold_size) - hold_used + 1e-9) / per)));
+  const qty = maxLoad > 0 ? maxLoad : 1; // nothing affordable: rank by a single unit and say so
+  const r2 = n => Math.round(n * 100) / 100;
+
+  const from = await getLocation(db, ship.location_id);
+  if (!from) return json({ error: 'bad_origin' }, 400);
+  const { data: locs, error: le } = await db.from('locations').select('*');
+  if (le) throw le;
+  const departT = gameDaysAt(Date.now()), g = Number(ship.thrust_g), cache = {};
+  const rows = [];
+  for (const p of prices ?? []) {
+    if (p.location_id === ship.location_id) continue;
+    const to = (locs ?? []).find(l => l.id === p.location_id);
+    if (!to) continue;
+    const est = estimateTrip(from, to, departT, g, cache);
+    if (!est.ok) continue;
+    const etaMin = est.days * 1440 / CLOCK.scale;
+    const unit = r2(Number(p.sell_price) - buyHere);
+    const total = r2(unit * qty);
+    rows.push({
+      location_id: p.location_id, name: p.location_name, anchor_body: to.anchor_body,
+      sell_price: Number(p.sell_price), stock: Number(p.stock), target_stock: Number(p.target_stock),
+      eta_real_minutes: etaMin, sun_danger: est.sun_danger,
+      profit_each: unit, profit_load: total, ppm: etaMin > 0 ? r2(total / etaMin) : 0,
+    });
+  }
+  rows.sort((a, b) => b.ppm - a.ppm);
+  return json({
+    ok: true, docked: true, good_id: good, name: gd.name, unit: gd.unit,
+    buy_here: buyHere, max_load: maxLoad, load_used: qty, hypothetical: maxLoad === 0, rows,
+  });
 }
 
 // "buy" / "sell": body = { good: 'water_ice', quantity: 10 }. Whole units only.
@@ -602,6 +670,7 @@ Deno.serve(async (req) => {
       case 'departures': return await departures(db, user);
       case 'cycle_speed': return await cycleSpeed(db, user);
       case 'market': return await market(db, user);
+      case 'routes': return await routes(db, user, body);
       case 'buy': return await trade(db, user, body, 'buy');
       case 'sell': return await trade(db, user, body, 'sell');
       default: return json({ error: 'unknown_action' }, 400);
