@@ -506,6 +506,76 @@ async function cycleSpeed(db, user) {
   return json({ ok: true, speed: next, scale: CLOCK.scale, game_days: gameDaysAt(Date.now()), real_ms: Date.now(), trips_retimed: retimed });
 }
 
+// ---------- trading (step 4b) ----------
+// Prices, stock and the buy/sell maths all live in the database (migration 008).
+// The server only checks who is asking, calls the SQL functions, and passes the result on.
+async function getShip(db, characterId) {
+  const { data, error } = await db.from('ships').select('*').eq('character_id', characterId).order('created_at').limit(1).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+// What the ship carries, with names and hold space. Also returns hold_used.
+async function loadCargo(db, ship) {
+  const { data: rows, error } = await db.from('ship_cargo').select('good_id,quantity').eq('ship_id', ship.id);
+  if (error) throw error;
+  const ids = (rows ?? []).map(r => r.good_id);
+  let goods = [];
+  if (ids.length) {
+    const { data, error: ge } = await db.from('goods').select('id,name,unit,hold_per_unit').in('id', ids);
+    if (ge) throw ge;
+    goods = data ?? [];
+  }
+  let holdUsed = 0;
+  const cargo = (rows ?? []).map(r => {
+    const g = goods.find(x => x.id === r.good_id) || {};
+    const per = Number(g.hold_per_unit ?? 1);
+    holdUsed += r.quantity * per;
+    return { good_id: r.good_id, name: g.name ?? r.good_id, unit: g.unit ?? 'unit', hold_per_unit: per, quantity: r.quantity };
+  });
+  cargo.sort((a, b) => a.name.localeCompare(b.name));
+  return { cargo, hold_used: Math.round(holdUsed * 1000) / 1000 };
+}
+
+// "market": prices and stock where my docked ship is, plus my cargo and credits. Read-only.
+async function market(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  const { cargo, hold_used } = await loadCargo(db, ship);
+  const out = {
+    ok: true, docked: ship.state === 'docked', location_id: null, location_name: null,
+    credits: Number(ch.credits), hold_size: Number(ship.hold_size), hold_used, cargo, goods: [],
+  };
+  if (!out.docked) return json(out);
+  const loc = await getLocation(db, ship.location_id);
+  out.location_id = ship.location_id; out.location_name = loc ? loc.name : ship.location_id;
+  const { data, error } = await db.rpc('market_view', { p_character: ch.id, p_location: ship.location_id });
+  if (error) throw error;
+  out.goods = (data ?? []).map(r => ({
+    good_id: r.good_id, name: r.good_name, category: r.category, unit: r.unit,
+    hold_per_unit: Number(r.hold_per_unit), target_stock: Number(r.target_stock), stock: Number(r.stock),
+    mid_price: Number(r.mid_price), buy_price: Number(r.buy_price), sell_price: Number(r.sell_price),
+  }));
+  return json(out);
+}
+
+// "buy" / "sell": body = { good: 'water_ice', quantity: 10 }. Whole units only.
+async function trade(db, user, body, kind) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const good = String(body.good ?? '');
+  const qty = Number(body.quantity);
+  if (!/^[a-z0-9_]{1,64}$/.test(good)) return json({ error: 'unknown_good' }, 400);
+  if (!Number.isInteger(qty) || qty < 1 || qty > 1000000) return json({ error: 'bad_quantity' }, 400);
+  await resolveFor(db, ch.id); // a ship that has just arrived can trade at once
+  const { data, error } = await db.rpc(kind === 'buy' ? 'trade_buy' : 'trade_sell', { p_character: ch.id, p_good: good, p_quantity: qty });
+  if (error) throw error;
+  return json(data, data && data.ok ? 200 : 400);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
@@ -531,6 +601,9 @@ Deno.serve(async (req) => {
       case 'queue_travel': return await queueTravel(db, user, body);
       case 'departures': return await departures(db, user);
       case 'cycle_speed': return await cycleSpeed(db, user);
+      case 'market': return await market(db, user);
+      case 'buy': return await trade(db, user, body, 'buy');
+      case 'sell': return await trade(db, user, body, 'sell');
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
