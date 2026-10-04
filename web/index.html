@@ -117,13 +117,13 @@ button:disabled{opacity:.45}
       <div class="tcol">
         <h2 id="ttitle">Market</h2>
         <div id="tinfo" class="muted"></div>
-        <div class="muted hint">Long press a good to compare other destinations.</div>
+        <div class="muted hint">Long press a good (or a cargo item) to compare destinations.</div>
         <div id="mlist" class="muted">Loading market...</div>
       </div>
       <div class="tcol">
         <div id="tpanel" hidden>
           <h2 id="tgood">Buy / sell</h2>
-          <div>Quantity (whole units): <input id="qty" type="number" inputmode="numeric" min="1" step="1" value="1"></div>
+          <div>Quantity (whole units): <input id="qty" type="number" inputmode="numeric" min="0" step="1" value="1"></div>
           <div class="chips" id="chips"></div>
           <button id="buyb">Buy</button><button id="sellb" class="alt">Sell</button>
           <div id="tpreview" class="muted"></div>
@@ -414,6 +414,7 @@ addScreen('travel', 'Fly', $('scr-travel'), {
 /* ---------- trade screen: market list, buy/sell, cargo (display only: the server decides every trade) ---------- */
 let mk = null, mkAt = 0, mkLoading = false, tsel = null, tbusy = false;
 let cargoBest = null, cargoBestLoc = null, cargoBusy = false;
+let cdFor = null, cdLoc = null, cdData = null, cdBusy = false; // dropdown under a CARGO item
 let routesFor = null, routesLoc = null, routesData = null, routesBusy = false, longFired = false, lastTap = { id: null, t: 0 };
 const money = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const whole = n => Math.round(Number(n)).toLocaleString();
@@ -427,6 +428,7 @@ async function loadMarket() {
     if (last && last.character) last.character.credits = mk.credits;
     setShipLine(); drawTrade();
     if (routesFor) loadRoutes();
+    if (cdFor) loadCargoDrop();
     if (mk.docked && (mk.cargo || []).length) loadCargoBest(); else { cargoBest = null; cargoBestLoc = null; }
   } catch (e) { say('Error: ' + e.message, 'err'); }
   finally { mkLoading = false; }
@@ -444,6 +446,7 @@ async function loadCargoBest() {
 }
 const selGood = () => (mk && mk.goods || []).find(g => g.good_id === tsel) || null;
 const ownQty = id => { const c = mk && (mk.cargo || []).find(x => x.good_id === id); return c ? c.quantity : 0; };
+function qtyRaw() { const v = $('qty').value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 ? q : NaN; }
 function qtyVal() { const q = Number($('qty').value); return Number.isInteger(q) && q >= 1 ? q : 0; }
 function maxBuy(g) {
   const free = mk.hold_size - mk.hold_used;
@@ -470,14 +473,14 @@ async function loadRoutes() {
   } catch (e) { if (routesFor === id) routesData = { error: e.message }; }
   finally { routesBusy = false; drawTrade(); if (routesFor && routesFor !== id) loadRoutes(); }
 }
-// why can't I buy any? (only used when the server says the max load is 0)
-function maxZeroReason(d) {
-  const g = (mk && mk.goods || []).find(x => x.good_id === d.good_id);
+// why can't I buy any of this good right now?
+function buyBlockReason(g) {
   if (!g) return 'Sold out';
   if ((mk.hold_size - mk.hold_used + 1e-9) / g.hold_per_unit < 1) return 'Hold full';
   if (mk.credits / g.buy_price < 1) return 'Low funds';
   return 'Sold out';
 }
+function maxZeroReason(d) { return buyBlockReason((mk && mk.goods || []).find(x => x.good_id === d.good_id)); }
 function routesBox() {
   const box = el('div', 'routes'), d = routesData;
   if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return box; }
@@ -486,7 +489,7 @@ function routesBox() {
   else {
     box.appendChild(el('div', '', 'Buy ' + d.name + ' here at ' + money(d.buy_here) + '. Max load: ' + whole(d.max_load) + ' ' + d.unit + '.'));
     const why = d.hypothetical ? maxZeroReason(d) : null;
-    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the figures below are for 1 unit.'));
+    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the load columns show N/A.'));
     if (!d.rows.length) box.appendChild(el('div', 'muted', 'No other place trades this good.'));
     else {
       const hd = el('div', 'rhead');
@@ -498,8 +501,8 @@ function routesBox() {
           cell('', x.name, 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
           cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
           cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-          cell('num ' + tone(x.profit_load), sgn(x.profit_load)),
-          cell('num ' + tone(x.ppm), sgn(x.ppm)));
+          d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.profit_load), sgn(x.profit_load)),
+          d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
         box.appendChild(r);
       });
       box.appendChild(el('div', 'muted hint', 'Sorted by profit per minute of travel. Snapshot: prices there change while you fly.'));
@@ -508,28 +511,76 @@ function routesBox() {
   const b = el('button', 'alt', 'Close'); b.onclick = closeRoutes; box.appendChild(b);
   return box;
 }
-// long press (half a second) or double-tap on a good opens its destinations list
-function wireGoodRow(r, g) {
+
+// ---- the same kind of dropdown under a CARGO item: "if I sold what I carry at each place?" ----
+async function openCargoDrop(id) { cdFor = id; cdLoc = mk ? mk.location_id : null; cdData = null; drawTrade(); await loadCargoDrop(); }
+function closeCargoDrop() { cdFor = null; cdData = null; drawTrade(); }
+async function loadCargoDrop() {
+  if (!cdFor || !sb || cdBusy) return;
+  cdBusy = true;
+  const id = cdFor;
+  try {
+    const d = await call('cargo_dest', { good: id });
+    if (cdFor === id) cdData = d;
+  } catch (e) { if (cdFor === id) cdData = { error: e.message }; }
+  finally { cdBusy = false; drawTrade(); if (cdFor && cdFor !== id) loadCargoDrop(); }
+}
+function cargoDropBox() {
+  const box = el('div', 'routes'), d = cdData;
+  if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return box; }
+  if (d.error) box.appendChild(el('div', 'err', 'Could not load: ' + d.error));
+  else if (!d.docked) box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.'));
+  else {
+    box.appendChild(el('div', '', 'Selling your ' + whole(d.quantity) + ' ' + d.name + (d.cost_known ? ' (paid ' + money(d.avg_cost) + ' each).' : '. Cost unknown, so the figures show income, not profit.')));
+    if (!d.rows.length) box.appendChild(el('div', 'muted', 'No place trades this good.'));
+    else {
+      const hd = el('div', 'rhead');
+      hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', 'For ' + whole(d.quantity)), el('span', 'num', 'Per min'));
+      box.appendChild(hd);
+      d.rows.forEach(x => {
+        const r = el('div', 'rrow');
+        r.append(
+          cell('', x.is_here ? x.name + ' (here)' : x.name, x.is_here ? 'no travel' : 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
+          cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
+          cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
+          cell('num ' + tone(x.profit_total), sgn(x.profit_total)),
+          x.is_here ? cell('num muted', 'now') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
+        box.appendChild(r);
+      });
+      box.appendChild(el('div', 'muted hint', 'Here first, then by profit per minute of travel. Snapshot: prices there change while you fly.'));
+    }
+  }
+  const b = el('button', 'alt', 'Close'); b.onclick = closeCargoDrop; box.appendChild(b);
+  return box;
+}
+// long press (half a second) or double-tap on a row opens its destinations list
+function wireRow(r, key, o) {
   let tm = null, sx = 0, sy = 0;
   const stop = () => clearTimeout(tm);
   r.addEventListener('contextmenu', e => e.preventDefault());
   r.addEventListener('pointerdown', e => {
     longFired = false; sx = e.clientX; sy = e.clientY; stop();
-    tm = setTimeout(() => { longFired = true; openRoutes(g.good_id); }, 500);
+    tm = setTimeout(() => { longFired = true; o.open(); }, 500);
   });
   r.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > 10) stop(); });
   ['pointerup', 'pointercancel', 'pointerleave'].forEach(n => r.addEventListener(n, stop));
   r.onclick = () => {
     if (longFired) { longFired = false; return; }
     const now = Date.now();
-    if (lastTap.id === g.good_id && now - lastTap.t < 450) {
+    if (lastTap.id === key && now - lastTap.t < 450) {
       lastTap = { id: null, t: 0 };
-      if (routesFor === g.good_id) closeRoutes(); else openRoutes(g.good_id);
+      if (o.isOpen()) o.close(); else o.open();
       return;
     }
-    lastTap = { id: g.good_id, t: now };
-    tsel = g.good_id; drawTrade();
+    lastTap = { id: key, t: now };
+    o.tap();
   };
+}
+function wireGoodRow(r, g) {
+  wireRow(r, 'm:' + g.good_id, { open: () => openRoutes(g.good_id), close: closeRoutes, isOpen: () => routesFor === g.good_id, tap: () => { tsel = g.good_id; drawTrade(); } });
+}
+function wireCargoRow(r, c, g) {
+  wireRow(r, 'c:' + c.good_id, { open: () => openCargoDrop(c.good_id), close: closeCargoDrop, isOpen: () => cdFor === c.good_id, tap: () => { if (g) { tsel = g.good_id; drawTrade(); } } });
 }
 
 function drawTrade() {
@@ -541,6 +592,7 @@ function drawTrade() {
   const goods = mk.goods || [];
   if (!goods.some(g => g.good_id === tsel)) tsel = goods.length ? goods[0].good_id : null;
   if (routesFor && (!mk.docked || mk.location_id !== routesLoc || !goods.some(x => x.good_id === routesFor))) { routesFor = null; routesData = null; }
+  if (cdFor && (!mk.docked || mk.location_id !== cdLoc || !(mk.cargo || []).some(x => x.good_id === cdFor))) { cdFor = null; cdData = null; }
   box.className = (mk.docked && goods.length) ? '' : 'muted'; cbox.className = (mk.cargo || []).length ? '' : 'muted';
   if (!mk.docked) box.textContent = 'You can trade when your ship is docked.';
   else if (!goods.length) box.textContent = 'Nothing is traded here.';
@@ -569,13 +621,15 @@ function drawTrade() {
       const left = cell('', c.quantity + ' x ' + c.name, c.avg_cost != null ? 'paid ' + money(c.avg_cost) + ' each' : 'cost unknown');
       const cb = cargoBest && cargoBestLoc === mk.location_id ? cargoBest[c.good_id] : null;
       if (cb && cb.best) {
-        const b = cb.best;
-        left.appendChild(el('span', 'sub ' + tone(b.ppm),
-          'Best: ' + b.name + ' (' + fmt(b.eta_real_minutes * 60) + '), ' + sgn(b.profit_total) + (cb.cost_known ? '' : ' income') + ', ' + sgn(b.ppm) + '/min' + (b.sun_danger ? ' near the Sun!' : '')));
-      } else if (cb) left.appendChild(el('span', 'sub muted', 'No other place buys this.'));
+        const b = cb.best, inc = cb.cost_known ? '' : ' income';
+        left.appendChild(el('span', 'sub ' + tone(b.is_here ? b.profit_total : b.ppm), b.is_here
+          ? 'Best: sell here, ' + sgn(b.profit_total) + inc
+          : 'Best: ' + b.name + ' (' + fmt(b.eta_real_minutes * 60) + '), ' + sgn(b.profit_total) + inc + ', ' + sgn(b.ppm) + '/min' + (b.sun_danger ? ' near the Sun!' : '')));
+      } else if (cb) left.appendChild(el('span', 'sub muted', 'No place buys this.'));
       r.append(left, right);
-      if (g) r.onclick = () => { tsel = g.good_id; drawTrade(); };
+      wireCargoRow(r, c, g);
       cbox.appendChild(r);
+      if (cdFor === c.good_id) cbox.appendChild(cargoDropBox());
     });
   } else cbox.textContent = 'Empty';
   const g = selGood();
@@ -586,18 +640,19 @@ function drawChips(g) {
   const ch = $('chips'); ch.replaceChildren();
   const add = (label, q) => { const b = el('button', 'alt', label); b.onclick = () => { $('qty').value = q; drawPreview(); }; ch.appendChild(b); };
   add('1', 1); add('10', 10);
-  if (g) { add('Max buy (' + maxBuy(g) + ')', Math.max(1, maxBuy(g))); add('Sell all (' + ownQty(g.good_id) + ')', Math.max(1, ownQty(g.good_id))); }
+  if (g) { add('Max buy (' + maxBuy(g) + ')', maxBuy(g)); add('Sell all (' + ownQty(g.good_id) + ')', ownQty(g.good_id)); }
 }
 function drawPreview() {
-  const g = selGood(), q = qtyVal(), pv = $('tpreview');
+  const g = selGood(), q = qtyRaw(), pv = $('tpreview');
   pv.replaceChildren();
-  $('buyb').disabled = $('sellb').disabled = !g || !q || tbusy;
+  $('buyb').disabled = $('sellb').disabled = !g || !(q >= 1) || tbusy;
   if (!g) return;
-  if (!q) { pv.textContent = 'Enter a whole number of 1 or more.'; return; }
+  if (isNaN(q)) { pv.textContent = 'Enter a whole number (0 or more).'; return; }
   pv.append(
     el('div', '', 'Buy ' + q + ' ' + g.name + ': about ' + money(q * g.buy_price) + ' (hold space ' + r2(q * g.hold_per_unit) + ')'),
     el('div', '', 'Sell ' + q + ' ' + g.name + ': about ' + money(q * g.sell_price) + ' (you have ' + ownQty(g.good_id) + ')'),
     el('div', '', 'The server works out the exact price when you press the button.'));
+  if (maxBuy(g) === 0) pv.appendChild(el('div', 'muted', 'You cannot buy any right now: ' + buyBlockReason(g).toLowerCase() + '.'));
 }
 function tradeError(e) {
   const d = e.data || {}, m = e.message;
