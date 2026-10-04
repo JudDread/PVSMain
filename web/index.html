@@ -39,6 +39,19 @@ button:disabled{opacity:.45}
   .side{width:330px;flex:none}
   #deps{max-height:none;flex:1}
 }
+/* trade screen */
+.trade{display:flex;flex-wrap:wrap;gap:10px}
+.tcol{flex:1 1 320px;min-width:0}
+.mhead,.mrow{display:grid;grid-template-columns:1fr 84px 84px 72px;gap:6px;padding:8px}
+.mhead{font-size:12px;color:#8d98b2;border-bottom:1px solid #222b40}
+.mrow{border-top:1px solid #1c2438;cursor:pointer}
+.mrow.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
+.num{text-align:right;white-space:nowrap}
+.sub{display:block;font-size:12px;color:#8d98b2}
+.pay{color:#e8b64a}.get{color:#6be08f}
+#qty{width:110px}
+.chips button{padding:4px 9px;font-size:13px;margin:2px 4px 2px 0}
+#tlist,#mlist,#clist{border:1px solid #222b40;border-radius:6px;margin:4px 0}
 </style>
 </head>
 <body>
@@ -88,6 +101,26 @@ button:disabled{opacity:.45}
         <h2>Travel</h2>
         <div id="deps" class="muted">Loading destinations...</div>
         <button id="go" disabled>Launch</button>
+      </div>
+    </div>
+
+    <!-- SCREEN: trade (market at the place where the ship is docked, buy/sell, cargo) -->
+    <div id="scr-trade" class="trade" hidden>
+      <div class="tcol">
+        <h2 id="ttitle">Market</h2>
+        <div id="tinfo" class="muted"></div>
+        <div id="mlist" class="muted">Loading market...</div>
+      </div>
+      <div class="tcol">
+        <div id="tpanel" hidden>
+          <h2 id="tgood">Buy / sell</h2>
+          <div>Quantity (whole units): <input id="qty" type="number" inputmode="numeric" min="1" step="1" value="1"></div>
+          <div class="chips" id="chips"></div>
+          <button id="buyb">Buy</button><button id="sellb" class="alt">Sell</button>
+          <div id="tpreview" class="muted"></div>
+        </div>
+        <h2>Cargo</h2>
+        <div id="clist" class="muted">Empty</div>
       </div>
     </div>
 
@@ -359,13 +392,123 @@ $('zInner').onclick = () => map.preset('inner');
 $('zSys').onclick = () => map.preset('sys');
 $('zShip').onclick = () => map.preset('ship');
 
-addScreen('travel', 'Travel', $('scr-travel'), {
+addScreen('travel', 'Fly', $('scr-travel'), {
   onShow: () => { map.resize(); map.need(); },
   update: ship => {
     if (ship && ship.state === 'docked') {
       if (!deps || !deps.docked || deps.from !== ship.location_id || Date.now() - depsAt > 30000) loadDeps();
     } else if (deps && deps.docked) { deps = null; drawDeps(); }
     map.need();
+  },
+});
+
+/* ---------- trade screen: market list, buy/sell, cargo (display only: the server decides every trade) ---------- */
+let mk = null, mkAt = 0, mkLoading = false, tsel = null, tbusy = false;
+const money = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const whole = n => Math.round(Number(n)).toLocaleString();
+const r2 = n => Math.round(Number(n) * 100) / 100;
+
+async function loadMarket() {
+  if (mkLoading || !sb) return;
+  mkLoading = true;
+  try {
+    mk = await call('market'); mkAt = Date.now();
+    if (last && last.character) last.character.credits = mk.credits;
+    setShipLine(); drawTrade();
+  } catch (e) { say('Error: ' + e.message, 'err'); }
+  finally { mkLoading = false; }
+}
+const selGood = () => (mk && mk.goods || []).find(g => g.good_id === tsel) || null;
+const ownQty = id => { const c = mk && (mk.cargo || []).find(x => x.good_id === id); return c ? c.quantity : 0; };
+function qtyVal() { const q = Number($('qty').value); return Number.isInteger(q) && q >= 1 ? q : 0; }
+function maxBuy(g) {
+  const free = mk.hold_size - mk.hold_used;
+  return Math.max(0, Math.floor(Math.min(g.stock, mk.credits / g.buy_price, (free + 1e-9) / g.hold_per_unit)));
+}
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function cell(cls, main, sub) { const c = el('span', cls, main); if (sub) c.appendChild(el('span', 'sub', sub)); return c; }
+
+function drawTrade() {
+  const box = $('mlist'), cbox = $('clist'), panel = $('tpanel');
+  box.replaceChildren(); cbox.replaceChildren();
+  if (!mk) { box.textContent = 'Loading market...'; panel.hidden = true; return; }
+  $('tinfo').textContent = 'Credits ' + money(mk.credits) + '   |   Hold ' + r2(mk.hold_used) + ' / ' + r2(mk.hold_size);
+  $('ttitle').textContent = mk.docked ? 'Market at ' + mk.location_name : 'Market';
+  const goods = mk.goods || [];
+  if (!goods.some(g => g.good_id === tsel)) tsel = goods.length ? goods[0].good_id : null;
+  box.className = (mk.docked && goods.length) ? '' : 'muted'; cbox.className = (mk.cargo || []).length ? '' : 'muted';
+  if (!mk.docked) box.textContent = 'You can trade when your ship is docked.';
+  else if (!goods.length) box.textContent = 'Nothing is traded here.';
+  else {
+    const hd = el('div', 'mhead'); hd.append(el('span', '', 'Good'), el('span', 'num', 'You pay'), el('span', 'num', 'You get'), el('span', 'num', 'Stock'));
+    box.appendChild(hd);
+    goods.forEach(g => {
+      const r = el('div', 'mrow' + (g.good_id === tsel ? ' sel' : ''));
+      r.append(cell('', g.name, 'per ' + g.unit), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), 'target ' + whole(g.target_stock)));
+      r.onclick = () => { tsel = g.good_id; drawTrade(); };
+      box.appendChild(r);
+    });
+  }
+  panel.hidden = !(mk.docked && goods.length);
+  if ((mk.cargo || []).length) {
+    mk.cargo.forEach(c => {
+      const g = goods.find(x => x.good_id === c.good_id);
+      const r = el('div', 'row' + (g && g.good_id === tsel ? ' sel' : ''));
+      r.append(el('span', '', c.quantity + ' x ' + c.name), el('span', g ? 'get' : 'muted', g ? 'sells here for ' + money(g.sell_price) : 'not sold here'));
+      if (g) r.onclick = () => { tsel = g.good_id; drawTrade(); };
+      cbox.appendChild(r);
+    });
+  } else cbox.textContent = 'Empty';
+  const g = selGood();
+  $('tgood').textContent = g ? g.name : 'Buy / sell';
+  drawChips(g); drawPreview();
+}
+function drawChips(g) {
+  const ch = $('chips'); ch.replaceChildren();
+  const add = (label, q) => { const b = el('button', 'alt', label); b.onclick = () => { $('qty').value = q; drawPreview(); }; ch.appendChild(b); };
+  add('1', 1); add('10', 10);
+  if (g) { add('Max buy (' + maxBuy(g) + ')', Math.max(1, maxBuy(g))); add('Sell all (' + ownQty(g.good_id) + ')', Math.max(1, ownQty(g.good_id))); }
+}
+function drawPreview() {
+  const g = selGood(), q = qtyVal(), pv = $('tpreview');
+  pv.replaceChildren();
+  $('buyb').disabled = $('sellb').disabled = !g || !q || tbusy;
+  if (!g) return;
+  if (!q) { pv.textContent = 'Enter a whole number of 1 or more.'; return; }
+  pv.append(
+    el('div', '', 'Buy ' + q + ' ' + g.name + ': about ' + money(q * g.buy_price) + ' (hold space ' + r2(q * g.hold_per_unit) + ')'),
+    el('div', '', 'Sell ' + q + ' ' + g.name + ': about ' + money(q * g.sell_price) + ' (you have ' + ownQty(g.good_id) + ')'),
+    el('div', '', 'The server works out the exact price when you press the button.'));
+}
+function tradeError(e) {
+  const d = e.data || {}, m = e.message;
+  if (m === 'not_enough_hold') return 'Not enough room in the hold (free ' + r2(d.hold_free || 0) + ', needed ' + r2(d.hold_needed || 0) + ').';
+  if (m === 'not_enough_credits') return 'Not enough credits (cost ' + money(d.cost || 0) + ', you have ' + money(d.credits || 0) + ').';
+  if (m === 'not_enough_stock') return 'The market only has ' + whole(d.available || 0) + ' available.';
+  if (m === 'not_enough_cargo') return 'You only have ' + (d.have || 0) + ' of that.';
+  if (m === 'not_docked') return 'You must be docked to trade.';
+  if (m === 'no_market') return 'This place does not trade that.';
+  if (m === 'bad_quantity') return 'Enter a whole number of 1 or more.';
+  return 'Error: ' + m;
+}
+async function doTrade(kind) {
+  const g = selGood(), q = qtyVal(); if (!g || !q || tbusy) return;
+  tbusy = true; drawPreview();
+  try {
+    const r = await call(kind, { good: g.good_id, quantity: q });
+    say((kind === 'buy' ? 'Bought ' : 'Sold ') + q + ' ' + g.name + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).', 'ok');
+  } catch (e) { say(tradeError(e), 'err'); }
+  finally { tbusy = false; await loadMarket(); drawPreview(); }
+}
+$('buyb').onclick = () => doTrade('buy');
+$('sellb').onclick = () => doTrade('sell');
+$('qty').addEventListener('input', drawPreview);
+
+addScreen('trade', 'Trade', $('scr-trade'), {
+  onShow: () => { loadMarket(); },
+  update: ship => {
+    const docked = !!(ship && ship.state === 'docked');
+    if (!mk || mk.docked !== docked || (docked && mk.location_id !== ship.location_id) || Date.now() - mkAt > 20000) loadMarket();
   },
 });
 
@@ -379,7 +522,9 @@ async function call(action, extra) {
   if (error) {
     let d = null;
     try { d = await error.context.json(); } catch (e) {}
-    throw new Error(d && d.error ? d.error : error.message);
+    const err = new Error(d && d.error ? d.error : error.message);
+    err.data = d;
+    throw err;
   }
   return data;
 }
@@ -416,14 +561,19 @@ function render() {
   $('nochar').hidden = hasChar; $('haschar').hidden = !hasChar;
   if (!hasChar) return;
   const ship = (last.ships || [])[0];
-  $('ship').textContent = !ship ? 'No ship' :
-    ship.state === 'docked' ? 'Docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
-    'Traveling (thrust ' + ship.thrust_g + ' g)';
+  setShipLine();
   if (!current) openScreen('travel');
   const s = screens[current]; if (s && s.update) s.update(ship);
   const evs = $('evs'); evs.replaceChildren();
   (last.events || []).forEach(e => evs.appendChild(li(new Date(e.created_at).toLocaleString() + ' - ' + e.message)));
   tick();
+}
+function setShipLine() {
+  const ship = last && (last.ships || [])[0];
+  const cr = last && last.character ? '  |  Credits ' + money(last.character.credits) : '';
+  $('ship').textContent = (!ship ? 'No ship' :
+    ship.state === 'docked' ? 'Docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
+    'Traveling (thrust ' + ship.thrust_g + ' g)') + cr;
 }
 function tick() {
   if (!last) return;
@@ -459,7 +609,7 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-$('out').onclick = async () => { await sb.auth.signOut(); clearInterval(timer); last = null; deps = null; selected = null; show('auth'); };
+$('out').onclick = async () => { await sb.auth.signOut(); clearInterval(timer); last = null; deps = null; selected = null; mk = null; tsel = null; show('auth'); };
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
   catch (e) { say('Error: ' + e.message, 'err'); }
