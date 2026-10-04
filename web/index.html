@@ -51,6 +51,12 @@ button:disabled{opacity:.45}
 .pay{color:#e8b64a}.get{color:#6be08f}
 #qty{width:110px}
 .chips button{padding:4px 9px;font-size:13px;margin:2px 4px 2px 0}
+.pop{background:#0f1523;border-top:1px solid #1c2438;border-left:3px solid #e8b64a;padding:6px 8px}
+.pop.sell{border-left-color:#6be08f}
+.poptitle{font-weight:600}
+.poprow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poprow input{width:110px;margin:3px 0}
+.popinfo{font-size:13px}
 #tlist,#mlist,#clist{border:1px solid #222b40;border-radius:6px;margin:4px 0}
 .sub.win,.win{color:#6be08f}.sub.lose,.lose{color:#ff7b6b}
 .hint{font-size:12px;margin:2px 0}
@@ -117,18 +123,12 @@ button:disabled{opacity:.45}
       <div class="tcol">
         <h2 id="ttitle">Market</h2>
         <div id="tinfo" class="muted"></div>
-        <div class="muted hint">Long press a good (or a cargo item) to compare destinations.</div>
+        <div class="muted hint">Tap a good to buy it. Long press to compare destinations.</div>
         <div id="mlist" class="muted">Loading market...</div>
       </div>
       <div class="tcol">
-        <div id="tpanel" hidden>
-          <h2 id="tgood">Buy / sell</h2>
-          <div>Quantity (whole units): <input id="qty" type="number" inputmode="numeric" min="0" step="1" value="1"></div>
-          <div class="chips" id="chips"></div>
-          <button id="buyb">Buy</button><button id="sellb" class="alt">Sell</button>
-          <div id="tpreview" class="muted"></div>
-        </div>
         <h2>Cargo</h2>
+        <div class="muted hint">Tap a cargo item to sell it. Long press to compare destinations.</div>
         <div id="clist" class="muted">Empty</div>
       </div>
     </div>
@@ -413,6 +413,7 @@ addScreen('travel', 'Fly', $('scr-travel'), {
 
 /* ---------- trade screen: market list, buy/sell, cargo (display only: the server decides every trade) ---------- */
 let mk = null, mkAt = 0, mkLoading = false, tsel = null, tbusy = false;
+let csel = null, popLoc = null, buyEdited = false, sellEdited = false, redrawPending = false; // csel = selected CARGO item
 let cargoBest = null, cargoBestLoc = null, cargoBusy = false;
 let cdFor = null, cdLoc = null, cdData = null, cdBusy = false; // dropdown under a CARGO item
 let routesFor = null, routesLoc = null, routesData = null, routesBusy = false, longFired = false, lastTap = { id: null, t: 0 };
@@ -446,8 +447,6 @@ async function loadCargoBest() {
 }
 const selGood = () => (mk && mk.goods || []).find(g => g.good_id === tsel) || null;
 const ownQty = id => { const c = mk && (mk.cargo || []).find(x => x.good_id === id); return c ? c.quantity : 0; };
-function qtyRaw() { const v = $('qty').value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 ? q : NaN; }
-function qtyVal() { const q = Number($('qty').value); return Number.isInteger(q) && q >= 1 ? q : 0; }
 function maxBuy(g) {
   const free = mk.hold_size - mk.hold_used;
   return Math.max(0, Math.floor(Math.min(g.stock, mk.credits / g.buy_price, (free + 1e-9) / g.hold_per_unit)));
@@ -459,7 +458,7 @@ const sgn = n => (Number(n) > 0 ? '+' : '') + money(n);
 const tone = n => Number(n) > 0 ? 'win' : Number(n) < 0 ? 'lose' : 'muted';
 
 async function openRoutes(id) {
-  routesFor = id; routesLoc = mk ? mk.location_id : null; routesData = null; tsel = id;
+  routesFor = id; routesLoc = mk ? mk.location_id : null; routesData = null; if (tsel !== id) buyEdited = false; tsel = id;
   drawTrade(); await loadRoutes();
 }
 function closeRoutes() { routesFor = null; routesData = null; drawTrade(); }
@@ -513,7 +512,7 @@ function routesBox() {
 }
 
 // ---- the same kind of dropdown under a CARGO item: "if I sold what I carry at each place?" ----
-async function openCargoDrop(id) { cdFor = id; cdLoc = mk ? mk.location_id : null; cdData = null; drawTrade(); await loadCargoDrop(); }
+async function openCargoDrop(id) { if (csel !== id) sellEdited = false; csel = id; cdFor = id; cdLoc = mk ? mk.location_id : null; cdData = null; drawTrade(); await loadCargoDrop(); }
 function closeCargoDrop() { cdFor = null; cdData = null; drawTrade(); }
 async function loadCargoDrop() {
   if (!cdFor || !sb || cdBusy) return;
@@ -577,20 +576,92 @@ function wireRow(r, key, o) {
   };
 }
 function wireGoodRow(r, g) {
-  wireRow(r, 'm:' + g.good_id, { open: () => openRoutes(g.good_id), close: closeRoutes, isOpen: () => routesFor === g.good_id, tap: () => { tsel = g.good_id; drawTrade(); } });
+  wireRow(r, 'm:' + g.good_id, { open: () => openRoutes(g.good_id), close: closeRoutes, isOpen: () => routesFor === g.good_id,
+    tap: () => { tsel = tsel === g.good_id ? null : g.good_id; buyEdited = false; drawTrade(); } });
 }
-function wireCargoRow(r, c, g) {
-  wireRow(r, 'c:' + c.good_id, { open: () => openCargoDrop(c.good_id), close: closeCargoDrop, isOpen: () => cdFor === c.good_id, tap: () => { if (g) { tsel = g.good_id; drawTrade(); } } });
+function wireCargoRow(r, c) {
+  wireRow(r, 'c:' + c.good_id, { open: () => openCargoDrop(c.good_id), close: closeCargoDrop, isOpen: () => cdFor === c.good_id,
+    tap: () => { csel = csel === c.good_id ? null : c.good_id; sellEdited = false; drawTrade(); } });
+}
+
+/* ---- pop-ups: Buy under a market row, Sell under a cargo item. Each is built ONCE and moved into place on every redraw,
+   so a number you are typing is not lost. While a quantity box has focus, redraws wait until you leave it. ---- */
+const selCargo = () => (mk && mk.cargo || []).find(c => c.good_id === csel) || null;
+const isTyping = () => !!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('qin'));
+function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 ? q : NaN; }
+function makePop(kind) {
+  const root = el('div', 'pop ' + kind), title = el('div', 'poptitle'), row = el('div', 'poprow');
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'qin';
+  const btn = el('button', kind === 'buy' ? '' : 'alt', kind === 'buy' ? 'Buy' : 'Sell');
+  row.append(el('span', 'muted', 'Quantity'), inp, btn);
+  const chips = el('div', 'chips'), info = el('div', 'popinfo');
+  root.append(title, row, chips, info);
+  const pop = { kind, root, title, inp, btn, chips, info };
+  inp.addEventListener('input', () => { if (kind === 'buy') buyEdited = true; else sellEdited = true; pop.refresh(); });
+  inp.addEventListener('blur', () => setTimeout(() => { if (redrawPending && !isTyping()) { redrawPending = false; drawTrade(); } }, 350));
+  btn.onclick = () => doTrade(kind);
+  return pop;
+}
+const buyPop = makePop('buy'), sellPop = makePop('sell');
+function addChip(p, label, fn) { const b = el('button', 'alt', label); b.onclick = fn; p.chips.appendChild(b); }
+
+buyPop.refresh = function () {
+  const p = buyPop, g = selGood(); if (!g || !mk) return;
+  const q = qtyOf(p.inp), max = maxBuy(g), free = Math.max(0, mk.hold_size - mk.hold_used);
+  p.btn.disabled = !(q >= 1) || tbusy;
+  p.info.replaceChildren();
+  p.info.appendChild(el('div', '', isNaN(q) ? 'Enter a whole number (0 or more).'
+    : 'Buy ' + whole(q) + ' ' + g.name + ': about ' + money(q * g.buy_price) + ' (hold space free: ' + r2(free) + ')'));
+  p.info.appendChild(el('div', 'muted', max === 0 ? 'You cannot buy any right now: ' + buyBlockReason(g).toLowerCase() + '.'
+    : 'Most you can buy: ' + whole(max) + '. The server works out the exact price.'));
+};
+function placeBuyPop(g) {
+  const p = buyPop;
+  p.title.textContent = 'Buy ' + g.name;
+  if (!buyEdited) p.inp.value = maxBuy(g);
+  p.chips.replaceChildren();
+  addChip(p, '1', () => { p.inp.value = 1; buyEdited = true; p.refresh(); });
+  addChip(p, '10', () => { p.inp.value = 10; buyEdited = true; p.refresh(); });
+  addChip(p, 'Max', () => { buyEdited = false; p.inp.value = maxBuy(selGood() || g); p.refresh(); });
+  p.refresh();
+  return p.root;
+}
+sellPop.refresh = function () {
+  const p = sellPop, c = selCargo(); if (!c || !mk) return;
+  const g = (mk.goods || []).find(x => x.good_id === c.good_id);
+  p.info.replaceChildren();
+  if (!g) { p.btn.disabled = true; p.info.appendChild(el('div', 'muted', 'This place does not buy that.')); return; }
+  const q = qtyOf(p.inp);
+  p.btn.disabled = !(q >= 1) || tbusy;
+  p.info.appendChild(el('div', '', isNaN(q) ? 'Enter a whole number (0 or more).'
+    : 'Sell ' + whole(q) + ' ' + c.name + ': about ' + money(q * g.sell_price) + ' (you have ' + whole(c.quantity) + ')'));
+  p.info.appendChild(el('div', 'muted', 'The server works out the exact price.'));
+};
+function placeSellPop(c) {
+  const p = sellPop;
+  p.title.textContent = 'Sell ' + c.name;
+  if (!sellEdited) p.inp.value = c.quantity;
+  p.chips.replaceChildren();
+  addChip(p, '1', () => { p.inp.value = 1; sellEdited = true; p.refresh(); });
+  addChip(p, '10', () => { p.inp.value = 10; sellEdited = true; p.refresh(); });
+  addChip(p, 'All', () => { sellEdited = false; const cc = selCargo() || c; p.inp.value = cc.quantity; p.refresh(); });
+  p.refresh();
+  return p.root;
 }
 
 function drawTrade() {
-  const box = $('mlist'), cbox = $('clist'), panel = $('tpanel');
+  if (isTyping()) { redrawPending = true; return; }
+  redrawPending = false;
+  const box = $('mlist'), cbox = $('clist');
   box.replaceChildren(); cbox.replaceChildren();
-  if (!mk) { box.textContent = 'Loading market...'; panel.hidden = true; return; }
+  if (!mk) { box.textContent = 'Loading market...'; return; }
   $('tinfo').textContent = 'Credits ' + money(mk.credits) + '   |   Hold ' + r2(mk.hold_used) + ' / ' + r2(mk.hold_size);
   $('ttitle').textContent = mk.docked ? 'Market at ' + mk.location_name : 'Market';
   const goods = mk.goods || [];
-  if (!goods.some(g => g.good_id === tsel)) tsel = goods.length ? goods[0].good_id : null;
+  if (mk.location_id !== popLoc) { popLoc = mk.location_id; tsel = null; csel = null; buyEdited = false; sellEdited = false; }
+  if (!goods.some(g => g.good_id === tsel)) tsel = null;
+  if (!(mk.cargo || []).some(c => c.good_id === csel)) csel = null;
   if (routesFor && (!mk.docked || mk.location_id !== routesLoc || !goods.some(x => x.good_id === routesFor))) { routesFor = null; routesData = null; }
   if (cdFor && (!mk.docked || mk.location_id !== cdLoc || !(mk.cargo || []).some(x => x.good_id === cdFor))) { cdFor = null; cdData = null; }
   box.className = (mk.docked && goods.length) ? '' : 'muted'; cbox.className = (mk.cargo || []).length ? '' : 'muted';
@@ -604,14 +675,14 @@ function drawTrade() {
       r.append(cell('', g.name, 'per ' + g.unit), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), 'target ' + whole(g.target_stock)));
       wireGoodRow(r, g);
       box.appendChild(r);
+      if (tsel === g.good_id) box.appendChild(placeBuyPop(g));      // 1) the row  2) the buy pop-up  3) the destinations dropdown
       if (routesFor === g.good_id) box.appendChild(routesBox());
     });
   }
-  panel.hidden = !(mk.docked && goods.length);
   if ((mk.cargo || []).length) {
     mk.cargo.forEach(c => {
       const g = goods.find(x => x.good_id === c.good_id);
-      const r = el('div', 'row' + (g && g.good_id === tsel ? ' sel' : ''));
+      const r = el('div', 'row' + (c.good_id === csel ? ' sel' : ''));
       const right = el('span', 'num');
       if (!g) right.appendChild(el('span', 'muted', 'not sold here'));
       else {
@@ -627,32 +698,12 @@ function drawTrade() {
           : 'Best: ' + b.name + ' (' + fmt(b.eta_real_minutes * 60) + '), ' + sgn(b.profit_total) + inc + ', ' + sgn(b.ppm) + '/min' + (b.sun_danger ? ' near the Sun!' : '')));
       } else if (cb) left.appendChild(el('span', 'sub muted', 'No place buys this.'));
       r.append(left, right);
-      wireCargoRow(r, c, g);
+      wireCargoRow(r, c);
       cbox.appendChild(r);
+      if (csel === c.good_id) cbox.appendChild(placeSellPop(c));    // row, then sell pop-up, then dropdown
       if (cdFor === c.good_id) cbox.appendChild(cargoDropBox());
     });
   } else cbox.textContent = 'Empty';
-  const g = selGood();
-  $('tgood').textContent = g ? g.name : 'Buy / sell';
-  drawChips(g); drawPreview();
-}
-function drawChips(g) {
-  const ch = $('chips'); ch.replaceChildren();
-  const add = (label, q) => { const b = el('button', 'alt', label); b.onclick = () => { $('qty').value = q; drawPreview(); }; ch.appendChild(b); };
-  add('1', 1); add('10', 10);
-  if (g) { add('Max buy (' + maxBuy(g) + ')', maxBuy(g)); add('Sell all (' + ownQty(g.good_id) + ')', ownQty(g.good_id)); }
-}
-function drawPreview() {
-  const g = selGood(), q = qtyRaw(), pv = $('tpreview');
-  pv.replaceChildren();
-  $('buyb').disabled = $('sellb').disabled = !g || !(q >= 1) || tbusy;
-  if (!g) return;
-  if (isNaN(q)) { pv.textContent = 'Enter a whole number (0 or more).'; return; }
-  pv.append(
-    el('div', '', 'Buy ' + q + ' ' + g.name + ': about ' + money(q * g.buy_price) + ' (hold space ' + r2(q * g.hold_per_unit) + ')'),
-    el('div', '', 'Sell ' + q + ' ' + g.name + ': about ' + money(q * g.sell_price) + ' (you have ' + ownQty(g.good_id) + ')'),
-    el('div', '', 'The server works out the exact price when you press the button.'));
-  if (maxBuy(g) === 0) pv.appendChild(el('div', 'muted', 'You cannot buy any right now: ' + buyBlockReason(g).toLowerCase() + '.'));
 }
 function tradeError(e) {
   const d = e.data || {}, m = e.message;
@@ -666,17 +717,19 @@ function tradeError(e) {
   return 'Error: ' + m;
 }
 async function doTrade(kind) {
-  const g = selGood(), q = qtyVal(); if (!g || !q || tbusy) return;
-  tbusy = true; drawPreview();
+  if (tbusy) return;
+  const pop = kind === 'buy' ? buyPop : sellPop;
+  const id = kind === 'buy' ? tsel : csel, q = qtyOf(pop.inp);
+  if (!id || !(q >= 1)) return;
+  const nm = kind === 'buy' ? (selGood() || {}).name : (selCargo() || {}).name;
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  tbusy = true; buyPop.refresh(); sellPop.refresh();
   try {
-    const r = await call(kind, { good: g.good_id, quantity: q });
-    say((kind === 'buy' ? 'Bought ' : 'Sold ') + q + ' ' + g.name + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).', 'ok');
+    const r = await call(kind, { good: id, quantity: q });
+    say((kind === 'buy' ? 'Bought ' : 'Sold ') + q + ' ' + nm + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).', 'ok');
   } catch (e) { say(tradeError(e), 'err'); }
-  finally { tbusy = false; await loadMarket(); drawPreview(); }
+  finally { tbusy = false; buyEdited = false; sellEdited = false; redrawPending = false; await loadMarket(); }
 }
-$('buyb').onclick = () => doTrade('buy');
-$('sellb').onclick = () => doTrade('sell');
-$('qty').addEventListener('input', drawPreview);
 
 addScreen('trade', 'Trade', $('scr-trade'), {
   onShow: () => { loadMarket(); },
@@ -783,7 +836,7 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-$('out').onclick = async () => { await sb.auth.signOut(); clearInterval(timer); last = null; deps = null; selected = null; mk = null; tsel = null; routesFor = null; routesData = null; show('auth'); };
+$('out').onclick = async () => { await sb.auth.signOut(); clearInterval(timer); last = null; deps = null; selected = null; mk = null; tsel = null; csel = null; cdFor = null; routesFor = null; routesData = null; show('auth'); };
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
   catch (e) { say('Error: ' + e.message, 'err'); }
