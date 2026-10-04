@@ -630,6 +630,52 @@ async function routes(db, user, body) {
   });
 }
 
+// "cargo_routes" (no arguments): for each good in my hold, which OTHER place would pay the most per minute
+// of travel if I flew there and sold the whole stack? Cost = what I paid (avg_cost) when known, so profit is
+// real. If the cost is unknown (bought before migration 009), cost_known is false and the figures are INCOME
+// (sell price x quantity), not profit. Read-only. Uses today's prices and today's ETA, like `routes`.
+async function cargoRoutes(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  if (ship.state !== 'docked') return json({ ok: true, docked: false, items: [] });
+  const from = await getLocation(db, ship.location_id);
+  if (!from) return json({ error: 'bad_origin' }, 400);
+  const { cargo } = await loadCargo(db, ship);
+  if (!cargo.length) return json({ ok: true, docked: true, location_id: ship.location_id, items: [] });
+  const { data: locs, error: le } = await db.from('locations').select('*');
+  if (le) throw le;
+  const r2 = n => Math.round(n * 100) / 100;
+  const departT = gameDaysAt(Date.now()), g = Number(ship.thrust_g), cache = {};
+  const items = [];
+  for (const c of cargo) {
+    const { data: prices, error: pe } = await db.rpc('market_prices_for_good', { p_character: ch.id, p_good: c.good_id });
+    if (pe) throw pe;
+    const known = c.avg_cost != null;
+    let best = null;
+    for (const p of prices ?? []) {
+      if (p.location_id === ship.location_id) continue;
+      const to = (locs ?? []).find(l => l.id === p.location_id);
+      if (!to) continue;
+      const est = estimateTrip(from, to, departT, g, cache);
+      if (!est.ok) continue;
+      const etaMin = est.days * 1440 / CLOCK.scale;
+      const sell = Number(p.sell_price);
+      const each = r2(sell - (known ? c.avg_cost : 0));
+      const total = r2(each * c.quantity);
+      const ppm = etaMin > 0 ? r2(total / etaMin) : 0;
+      if (!best || ppm > best.ppm) {
+        best = { location_id: p.location_id, name: p.location_name, eta_real_minutes: etaMin, sun_danger: est.sun_danger,
+          sell_price: sell, profit_each: each, profit_total: total, ppm };
+      }
+    }
+    items.push({ good_id: c.good_id, name: c.name, unit: c.unit, quantity: c.quantity, avg_cost: c.avg_cost, cost_known: known, best });
+  }
+  return json({ ok: true, docked: true, location_id: ship.location_id, items });
+}
+
 // "buy" / "sell": body = { good: 'water_ice', quantity: 10 }. Whole units only.
 async function trade(db, user, body, kind) {
   const ch = await getCharacter(db, user);
@@ -671,6 +717,7 @@ Deno.serve(async (req) => {
       case 'cycle_speed': return await cycleSpeed(db, user);
       case 'market': return await market(db, user);
       case 'routes': return await routes(db, user, body);
+      case 'cargo_routes': return await cargoRoutes(db, user);
       case 'buy': return await trade(db, user, body, 'buy');
       case 'sell': return await trade(db, user, body, 'sell');
       default: return json({ error: 'unknown_action' }, 400);
