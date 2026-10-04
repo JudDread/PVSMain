@@ -1,867 +1,772 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vacuum State - Test Page</title>
-<style>
-[hidden]{display:none!important}
-body{font:16px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:12px}
-#cfg,#auth{max-width:640px}
-h1{font-size:18px;margin:0 0 10px}h2{font-size:15px;margin:0 0 8px;color:#e8b64a}
-section{background:#131a2a;border:1px solid #222b40;border-radius:8px;padding:10px;margin-bottom:10px}
-input,select,button{font:inherit;padding:8px;margin:3px 0;border-radius:6px;border:1px solid #333d57;background:#192033;color:#e3e9f7;max-width:100%;box-sizing:border-box}
-input{width:100%}
-button{background:#e8b64a;color:#14100a;border:0;font-weight:600;margin-right:6px}
-button.alt{background:#2a3350;color:#e3e9f7}
-.muted{color:#8d98b2}.err{color:#ff7b6b}.ok{color:#6be08f}
-ul{margin:4px 0;padding-left:18px}
-#msg{min-height:1.4em;margin-bottom:8px}
-button:disabled{opacity:.45}
-/* screens + nav */
-#nav{display:flex;gap:6px;margin:6px 0}
-#nav button.on{background:#e8b64a;color:#14100a}
-/* travel screen: portrait = stacked, landscape = map beside list */
-.travel{display:flex;flex-direction:column;gap:8px}
-.mapwrap{position:relative;height:55vh;min-height:260px}
-#map{width:100%;height:100%;display:block;touch-action:none;background:#070a12;border:1px solid #222b40;border-radius:8px}
-.zb{position:absolute;top:6px;left:6px}
-.zb button{padding:4px 9px;font-size:13px;margin:0 4px 0 0;background:#2a3350cc;color:#e3e9f7;border:1px solid #444f70}
-.side{display:flex;flex-direction:column;min-width:0}
-#deps{max-height:300px;overflow-y:auto;border:1px solid #222b40;border-radius:6px;margin:4px 0}
-.grp{background:#0f1523;color:#e8b64a;font-size:13px;padding:5px 8px;position:sticky;top:0}
-.row{display:flex;justify-content:space-between;gap:8px;padding:10px 8px;border-top:1px solid #1c2438;cursor:pointer}
-.row.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
-.eta{white-space:nowrap;color:#6be08f}
-@media (orientation:landscape){
-  .travel{flex-direction:row;height:calc(100vh - 190px);min-height:240px}
-  .mapwrap{flex:1;height:auto;min-width:0}
-  .side{width:330px;flex:none}
-  #deps{max-height:none;flex:1}
+// @ts-nocheck
+// ======================================================================
+// Vacuum State - "game" server function (Supabase Edge Function)
+// AUTO-BUNDLED: physics.js + clock.js are pasted in below (exports removed).
+// If you change shared/physics.js or shared/clock.js, the bundle must be rebuilt.
+// ======================================================================
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+// ---------- shared/physics.js ----------
+// =====================================================================
+// Vacuum State - physics core (Modules 1 + 2)
+// Extracted from the Orbital Clock HTML. PURE FUNCTIONS ONLY:
+//   - no DOM, no canvas, no Date.now(), no global ship/time variables
+//   - everything is passed in and returned
+// The same file runs in the browser, on the server, and in tests.
+//
+// UNITS (important - everything depends on these):
+//   time      = game days since J2000 (2000-01-01 12:00 UTC)
+//   distance  = AU
+//   velocity  = AU per game day      (use KMS to convert to km/s)
+//   accel     = AU per game day^2    (use gToAuDay2(g) to convert from g)
+// Positions are 2D (x, y). The Sun is at (0, 0).
+// =====================================================================
+
+const J2000_MS = Date.UTC(2000, 0, 1, 12);
+const G0 = 9.80665;                 // m/s^2 per "g"
+const AU_M = 1.495978707e11;        // metres per AU
+const DAY_S = 86400;
+const KMS = AU_M / 1000 / DAY_S;    // multiply AU/day by this to get km/s
+const C_KMS = 299792.458;
+const KM_PER_AU = 149597870.7;
+
+const DOCK_RADIUS_AU = 0.02;        // must be this close to dock
+const DOCK_SPEED_KMS = 5;           // and this slow relative to the body
+const SUN_DANGER_AU = 0.15;         // PLACEHOLDER: closer than this hurts ships (design TBD)
+
+// Body data. a = orbit radius (AU), P = period (days), L = start angle at J2000 (deg).
+// c, r, st are display-only (color, radius, is-asteroid) and are ignored by the math.
+// Array INDEX is the body's id in this file. Index 0 is the Sun (not dockable).
+// For saving to the database, prefer NAMES (bodyId / bodyName below) so reordering
+// this list never corrupts saved data.
+const BODIES = [
+  { n: 'Sun',     a: 0,     P: 0,       L: 0,      c: '#ffd45e', r: 8 },
+  { n: 'Mercury', a: .387,  P: 87.97,   L: 252.25, c: '#b3aca4', r: 2.5 },
+  { n: 'Venus',   a: .723,  P: 224.70,  L: 181.98, c: '#e8c88a', r: 3.5 },
+  { n: 'Earth',   a: 1,     P: 365.256, L: 100.46, c: '#5aa7ff', r: 3.8 },
+  { n: 'Mars',    a: 1.524, P: 686.98,  L: 355.45, c: '#e0663f', r: 3.2 },
+  { n: 'Vesta',   a: 2.362, P: 1325.4,  L: 60,     c: '#cfc7bb', r: 3,   st: 1 },
+  { n: 'Ceres',   a: 2.77,  P: 1681.6,  L: 240,    c: '#9fd0c3', r: 3.4, st: 1 },
+  { n: 'Jupiter', a: 5.203, P: 4332.59, L: 34.40,  c: '#d9a874', r: 6.5 },
+  { n: 'Saturn',  a: 9.537, P: 10759.2, L: 49.94,  c: '#e7d29a', r: 5.8 },
+  { n: 'Uranus',  a: 19.19, P: 30688.5, L: 313.23, c: '#8ee0e0', r: 4.5 },
+  { n: 'Neptune', a: 30.07, P: 60182,   L: 304.88, c: '#5f7cf0', r: 4.5 },
+];
+
+const BODY_INDEX = Object.fromEntries(BODIES.map((b, i) => [b.n, i]));
+function bodyId(name) {
+  const i = BODY_INDEX[name];
+  if (i === undefined) throw new Error('Unknown body: ' + name);
+  return i;
 }
-/* trade screen */
-.trade{display:flex;flex-wrap:wrap;gap:10px}
-.tcol{flex:1 1 320px;min-width:0}
-.mhead,.mrow{display:grid;grid-template-columns:1fr 84px 84px 72px;gap:6px;padding:8px}
-.mhead{font-size:12px;color:#8d98b2;border-bottom:1px solid #222b40}
-.mrow{border-top:1px solid #1c2438;cursor:pointer}
-.mrow.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
-.num{text-align:right;white-space:nowrap}
-.sub{display:block;font-size:12px;color:#8d98b2}
-.pay{color:#e8b64a}.get{color:#6be08f}
-#qty{width:110px}
-.chips button{padding:4px 9px;font-size:13px;margin:2px 4px 2px 0}
-.pop{background:#0f1523;border-top:1px solid #1c2438;border-left:3px solid #e8b64a;padding:6px 8px}
-.pop.sell{border-left-color:#6be08f}
-.poptitle{font-weight:600}
-.poprow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.poprow input{width:110px;margin:3px 0}
-.popinfo{font-size:13px}
-#tlist,#mlist,#clist{border:1px solid #222b40;border-radius:6px;margin:4px 0}
-.sub.win,.win{color:#6be08f}.sub.lose,.lose{color:#ff7b6b}
-.hint{font-size:12px;margin:2px 0}
-.routes{background:#0f1523;border-top:1px solid #1c2438;padding:6px 8px;overflow-x:auto}
-.rhead,.rrow{display:grid;grid-template-columns:minmax(64px,1fr) 56px 56px 76px 62px;gap:4px;padding:6px 0;font-size:13px}
-.rrow .sub,.rhead{font-size:11px}
-.rhead{color:#8d98b2;border-bottom:1px solid #222b40}
-.rrow{border-top:1px solid #1c2438}
-.routes button{padding:4px 12px;font-size:13px;margin:6px 0 2px}
-</style>
-</head>
-<body>
-<h1>Vacuum State: Test Page</h1>
-<div id="msg"></div>
+const bodyName = (id) => BODIES[id]?.n;
 
-<section id="cfg" hidden>
-  <h2>One-time setup</h2>
-  <div class="muted">Paste your Supabase publishable (anon) key. Never use the secret / service_role key.</div>
-  <input id="key" placeholder="paste key here" autocomplete="off">
-  <button id="savekey">Save key</button>
-</section>
+const mag = (x, y) => Math.hypot(x, y);
+const gToAuDay2 = (g) => g * G0 * DAY_S * DAY_S / AU_M;
 
-<section id="auth" hidden>
-  <h2>Account</h2>
-  <input id="email" type="email" placeholder="email" autocomplete="username">
-  <input id="pw" type="password" placeholder="password (8+ characters)" autocomplete="current-password">
-  <button id="login">Log in</button><button id="signup" class="alt">Register</button>
-</section>
+// ---------------- Module 1: where are the bodies? ----------------
 
-<section id="game" hidden>
-  <div class="muted" id="who"></div>
-  <h2>Game time</h2><div id="gtime"></div>
-  <button id="speed" class="alt" hidden title="Developer: cycle game speed 1x / 2x / 10x">Speed</button>
+function bodyAngle(b, t) { return (b.L + 360 * t / b.P) * Math.PI / 180; }
 
-  <div id="nochar" hidden>
-    <h2>Create character</h2>
-    <input id="cname" placeholder="character name (3-24 chars)">
-    <button id="mk">Create</button>
-  </div>
-
-  <div id="haschar" hidden>
-    <h2>Ship</h2><div id="ship"></div>
-    <nav id="nav" hidden></nav>
-
-    <!-- SCREEN: travel (map + departure list). Other screens get their own div like this one. -->
-    <div id="scr-travel" class="travel">
-      <div class="mapwrap">
-        <canvas id="map"></canvas>
-        <div class="zb">
-          <button id="zInner" title="Inner planets">Inner</button>
-          <button id="zSys" title="Whole system">System</button>
-          <button id="zShip" title="Centre on my ship, very close">Ship</button>
-        </div>
-      </div>
-      <div class="side">
-        <h2>Travel</h2>
-        <div id="deps" class="muted">Loading destinations...</div>
-        <button id="go" disabled>Launch</button>
-      </div>
-    </div>
-
-    <!-- SCREEN: trade (market at the place where the ship is docked, buy/sell, cargo) -->
-    <div id="scr-trade" class="trade" hidden>
-      <div class="tcol">
-        <h2 id="ttitle">Market</h2>
-        <div id="tinfo" class="muted"></div>
-        <div class="muted hint">Tap a good to buy it. Long press to compare destinations.</div>
-        <div id="mlist" class="muted">Loading market...</div>
-      </div>
-      <div class="tcol">
-        <h2>Cargo</h2>
-        <div class="muted hint">Tap a cargo item to sell it. Long press to compare destinations.</div>
-        <div id="clist" class="muted">Empty</div>
-      </div>
-    </div>
-
-    <h2>Actions</h2><ul id="acts"></ul>
-    <h2>Event log</h2><ul id="evs"></ul>
-  </div>
-  <button id="out" class="alt">Log out</button>
-</section>
-
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script type="module">
-import { BODIES, bodyPos, stateAt, planTravel, J2000_MS } from '../shared/physics.js';
-
-const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
-const $ = id => document.getElementById(id);
-let sb = null, last = null, timer = null, lastNudge = 0;
-let deps = null, depsAt = 0, selected = null, depsLoading = false;
-
-function locName(id) {
-  const l = ((last && last.locations) || []).find(x => x.id === id);
-  return l ? l.name : (id || '?');
-}
-function curGd() { return last ? last.game_days + (Date.now() - last.real_ms) * last.scale / 864e5 : null; }
-
-/* ---------- screen registry: add a screen = a div + addScreen(...) ---------- */
-const screens = {};
-let current = null;
-function addScreen(name, title, el, hooks) { screens[name] = { title, el, ...(hooks || {}) }; }
-function openScreen(name) {
-  current = name;
-  Object.entries(screens).forEach(([n, s]) => s.el.hidden = n !== name);
-  const nav = $('nav'); nav.replaceChildren();
-  nav.hidden = Object.keys(screens).length < 2;
-  Object.entries(screens).forEach(([n, s]) => {
-    const b = document.createElement('button'); b.textContent = s.title;
-    b.className = n === name ? 'on' : 'alt'; b.onclick = () => openScreen(n); nav.appendChild(b);
-  });
-  if (screens[name].onShow) screens[name].onShow();
+function bodyPos(b, t) {
+  if (!b.a) return [0, 0];
+  const q = bodyAngle(b, t);
+  return [b.a * Math.cos(q), b.a * Math.sin(q)];
 }
 
-/* ---------- MAP component (display only, TRUE scale: pixels per AU) ---------- */
-function createMap(cv, hooks) {
-  const ctx = cv.getContext('2d');
-  let w = 0, h = 0, dpr = 1, raf = 0, inited = false, moved = 0, t0 = 0, hits = [];
-  const view = { cx: 0, cy: 0, s: 100, follow: false };
-  const MIN_S = () => Math.min(w, h) / 2 / 40;      /* whole system plus margin */
-  const MAX_S = () => Math.min(w, h) / 0.002;       /* ~0.002 AU across */
-  const clamp = s => Math.max(MIN_S(), Math.min(MAX_S(), s));
-  const need = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+function bodyVel(b, t) {
+  if (!b.a) return [0, 0];
+  const q = bodyAngle(b, t), w = 2 * Math.PI / b.P;
+  return [-b.a * w * Math.sin(q), b.a * w * Math.cos(q)];
+}
 
-  function preset(kind) {
-    if (!w) return;
-    const m = Math.min(w, h);
-    if (kind === 'inner') { view.cx = 0; view.cy = 0; view.s = m / 2 / 1.8; view.follow = false; }
-    else if (kind === 'sys') { view.cx = 0; view.cy = 0; view.s = m / 2 / 32; view.follow = false; }
-    else { const p = hooks.ship(); if (!p) return; view.follow = true; view.s = m / 0.04; }
-    need();
+// A "target" is either {body: index} or a fixed point {x, y}.
+// Returns a full state {x, y, vx, vy} at time t.
+function targetState(tg, t) {
+  if (tg.body != null) {
+    const b = BODIES[tg.body], p = bodyPos(b, t), v = bodyVel(b, t);
+    return { x: p[0], y: p[1], vx: v[0], vy: v[1] };
   }
-  function resize() {
-    const r = cv.getBoundingClientRect();
-    if (r.width < 10 || r.height < 10) return;
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
-    w = r.width; h = r.height; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-    if (!inited) { inited = true; preset('inner'); }
-    need();
-  }
-  new ResizeObserver(resize).observe(cv);
-
-  function zoomAt(p, f) {
-    if (view.follow) p = { x: w / 2, y: h / 2 };
-    const wx = view.cx + (p.x - w / 2) / view.s, wy = view.cy - (p.y - h / 2) / view.s;
-    view.s = clamp(view.s * f);
-    view.cx = wx - (p.x - w / 2) / view.s; view.cy = wy + (p.y - h / 2) / view.s;
-  }
-  const pos = e => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
-  const ptrs = new Map();
-  cv.addEventListener('pointerdown', e => {
-    cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, pos(e));
-    if (ptrs.size === 1) { moved = 0; t0 = Date.now(); } else moved = 99;
-  });
-  cv.addEventListener('pointermove', e => {
-    if (!ptrs.has(e.pointerId)) return;
-    const p = pos(e), o = ptrs.get(e.pointerId);
-    if (ptrs.size === 1) {
-      const dx = p.x - o.x, dy = p.y - o.y; moved += Math.abs(dx) + Math.abs(dy);
-      if (moved > 8) { view.follow = false; view.cx -= dx / view.s; view.cy += dy / view.s; }
-    } else if (ptrs.size === 2) {
-      const q = [...ptrs.entries()].find(([id]) => id !== e.pointerId)[1];
-      const d0 = Math.hypot(o.x - q.x, o.y - q.y), d1 = Math.hypot(p.x - q.x, p.y - q.y);
-      const mo = { x: (o.x + q.x) / 2, y: (o.y + q.y) / 2 }, mn = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
-      if (!view.follow) { view.cx -= (mn.x - mo.x) / view.s; view.cy += (mn.y - mo.y) / view.s; }
-      if (d0 > 0) zoomAt(mn, d1 / d0);
-    }
-    ptrs.set(e.pointerId, p); need();
-  });
-  const up = e => {
-    if (ptrs.size === 1 && e.type === 'pointerup' && moved < 8 && Date.now() - t0 < 600) tap(pos(e));
-    ptrs.delete(e.pointerId);
-  };
-  cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
-  cv.addEventListener('wheel', e => { e.preventDefault(); zoomAt(pos(e), Math.exp(-e.deltaY * 0.0015)); need(); }, { passive: false });
-
-  function tap(p) {
-    let best = null, bd = 26;
-    hits.forEach(k => { const d = Math.hypot(k.x - p.x, k.y - p.y); if (d < bd) { bd = d; best = k; } });
-    if (best) hooks.pick(best.name);
-  }
-
-  function draw() {
-    const gd = curGd(); if (gd == null || !w) return;
-    const sp = hooks.ship();
-    if (view.follow && sp) { view.cx = sp.x; view.cy = sp.y; }
-    const X = x => w / 2 + (x - view.cx) * view.s, Y = y => h / 2 - (y - view.cy) * view.s;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = '#070a12'; ctx.fillRect(0, 0, w, h);
-    ctx.lineWidth = 1; ctx.strokeStyle = '#1d2740';
-    BODIES.forEach(b => {
-      if (!b.a) return; const r = b.a * view.s; if (r > 2e5) return;
-      ctx.beginPath(); ctx.arc(X(0), Y(0), r, 0, 7); ctx.stroke();
-    });
-    hits = []; const selB = hooks.selectedBody();
-    ctx.font = '12px system-ui,sans-serif'; ctx.textBaseline = 'middle';
-    BODIES.forEach(b => {
-      const p = b.a ? bodyPos(b, gd) : [0, 0], x = X(p[0]), y = Y(p[1]);
-      if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
-      const rad = Math.max(2.5, b.r * 0.7);
-      ctx.fillStyle = b.c; ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
-      if (b.a) hits.push({ x, y, name: b.n });
-      if (b.n === selB) { ctx.strokeStyle = '#e8b64a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, rad + 6, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
-      if (b.n === selB || b.a * view.s > 18) { ctx.fillStyle = '#9fb0d4'; ctx.fillText(b.n, x + rad + 5, y); }
-    });
-    /* course lines: blue = preview while choosing, green = launched */
-    const path = (plan, ta, tb, col, lw) => {
-      ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.setLineDash([6, 5]); ctx.beginPath();
-      for (let k = 0; k <= 80; k++) {
-        const s = stateAt(plan, ta + (tb - ta) * k / 80);
-        k ? ctx.lineTo(X(s.x), Y(s.y)) : ctx.moveTo(X(s.x), Y(s.y));
-      }
-      ctx.stroke(); ctx.setLineDash([]);
-    };
-    const ring = (plan, col) => {   /* where the ship will MEET the target, not where it is now */
-      ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X(plan.end.x), Y(plan.end.y), 7, 0, 7); ctx.stroke();
-    };
-    const pv = hooks.preview();
-    if (pv) { path(pv, pv.t0, pv.tEnd, '#4aa8ff', 2); ring(pv, '#4aa8ff'); }
-    if (sp && sp.plan) {
-      const ta = Math.max(gd, sp.plan.t0);
-      if (ta < sp.plan.tEnd) {
-        if (ta > sp.plan.t0) path(sp.plan, sp.plan.t0, ta, '#6b7590', 2);   /* grey trail: already travelled */
-        path(sp.plan, ta, sp.plan.tEnd, '#3dff6a', 2.5); ring(sp.plan, '#3dff6a');
-        const d = stateAt(sp.plan, ta + (sp.plan.tEnd - ta) * ((Date.now() % 4000) / 4000));
-        ctx.fillStyle = '#ffd23d'; ctx.beginPath(); ctx.arc(X(d.x), Y(d.y), 4, 0, 7); ctx.fill();
-      }
-    }
-    if (sp) {
-      const x = X(sp.x), y = Y(sp.y);
-      let ang = -Math.PI / 2;                                   /* docked: point up */
-      if (sp.vx != null && Math.hypot(sp.vx, sp.vy) > 1e-9) ang = Math.atan2(-sp.vy, sp.vx);   /* point along travel */
-      if (sp.a > 0) {                                           /* red exhaust line: opposite to acceleration */
-        ctx.strokeStyle = '#ff4a3d'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, y);
-        ctx.lineTo(x + 24 * Math.cos(Math.atan2(sp.ay, -sp.ax)), y + 24 * Math.sin(Math.atan2(sp.ay, -sp.ax))); ctx.stroke();
-      }
-      ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
-      ctx.strokeStyle = '#e8b64a'; ctx.fillStyle = '#f2f5ff'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-6, -5.5); ctx.lineTo(-6, 5.5); ctx.closePath(); ctx.fill(); ctx.stroke();
-      ctx.restore();
-    }
-    /* scale bar */
-    const want = 110 / view.s, nice = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
-      .filter(v => v <= want).pop() || 0.001;
-    const px = nice * view.s;
-    ctx.strokeStyle = '#8d98b2'; ctx.fillStyle = '#8d98b2'; ctx.lineWidth = 2; ctx.textBaseline = 'alphabetic';
-    ctx.beginPath(); ctx.moveTo(10, h - 18); ctx.lineTo(10 + px, h - 18); ctx.stroke();
-    ctx.fillText(nice >= 1 ? nice + ' AU' : (nice * 149.598).toPrecision(2) + ' million km', 10, h - 24);
-  }
-  let lastDraw = 0;   /* redraw fast (10/s) only while a launched course is animating, else every 0.4 s */
-  const _draw = draw;
-  setInterval(() => {
-    if (!cv.offsetParent) return;
-    const sp = hooks.ship();
-    if ((sp && sp.plan) || Date.now() - lastDraw > 400) { lastDraw = Date.now(); _draw(); }
-  }, 100);
-  return { preset, need, resize };
+  return { x: tg.x, y: tg.y, vx: 0, vy: 0 };
 }
 
-/* ---------- travel screen: departure list ---------- */
-async function loadDeps() {
-  if (depsLoading) return;
-  depsLoading = true;
-  try { deps = await call('departures'); depsAt = Date.now(); drawDeps(); }
-  catch (e) { say('Error: ' + e.message, 'err'); }
-  finally { depsLoading = false; }
-}
-function selectedBody() {
-  const d = deps && deps.departures && deps.departures.find(x => x.id === selected);
-  return d ? d.anchor_body : null;
-}
-function drawDeps() {
-  const box = $('deps'), go = $('go');
-  box.replaceChildren();
-  if (!deps || !deps.docked) {
-    box.textContent = 'Destinations appear when your ship is docked.';
-    go.disabled = true; go.textContent = 'Launch'; map.need(); return;
-  }
-  const list = deps.departures || [];
-  if (!list.some(d => d.id === selected)) selected = null;
-  const groups = {};
-  list.forEach(d => (groups[d.anchor_body] = groups[d.anchor_body] || []).push(d));
-  Object.entries(groups)
-    .sort((x, y) => x[1][0].eta_real_minutes - y[1][0].eta_real_minutes)
-    .forEach(([body, rows]) => {
-      const h = document.createElement('div'); h.className = 'grp'; h.textContent = body; box.appendChild(h);
-      rows.forEach(d => {
-        const r = document.createElement('div');
-        r.className = 'row' + (d.id === selected ? ' sel' : '');
-        const n = document.createElement('span'); n.textContent = d.name + (d.sun_danger ? ' (near Sun!)' : '');
-        const e = document.createElement('span'); e.className = 'eta'; e.textContent = fmt(d.eta_real_minutes * 60);
-        r.append(n, e);
-        r.onclick = () => { selected = d.id; drawDeps(); };
-        box.appendChild(r);
-      });
-    });
-  const pick = list.find(d => d.id === selected);
-  go.disabled = !pick;
-  go.textContent = pick ? 'Launch to ' + pick.name + ' (' + fmt(pick.eta_real_minutes * 60) + ')' : 'Pick a destination';
-  map.need();
-}
+// ---------------- Module 2: flight plans ----------------
+// A PLAN is plain JSON (safe to store in a database column):
+//   { segs:[{t0,dur,x,y,vx,vy,ax,ay}, ...], t0, T, tEnd, tgt, dock, end:{x,y,vx,vy} }
+//   t0 = departure time, T = duration (days), tEnd = arrival time,
+//   dock = body index the ship docks at on arrival, or -1 (drifting in space).
+// Given a plan and ANY time, stateAt() tells you exactly where the ship is.
+// That is why the server never needs to "move" ships tick by tick.
 
-/* where is the ship right now? (from its stored plan, or from the body it sits at) */
-function shipPoint() {
-  const ship = last && (last.ships || [])[0]; if (!ship) return null;
-  const gd = curGd();
-  if (ship.state === 'traveling' && ship.plan) { const s = stateAt(ship.plan, gd); return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: ship.plan }; }
-  let body = null;
-  if (ship.state === 'docked') { const l = (last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; }
-  else if (ship.state === 'hopping') { const a = (last.actions || []).find(x => x.status === 'pending'); body = a && a.payload && a.payload.to; }
-  const i = BODIES.findIndex(b => b.n === body); if (i < 1) return null;
-  const p = bodyPos(BODIES[i], gd); return { x: p[0], y: p[1], plan: null };
-}
-
-/* Blue preview course for the highlighted destination. Display only: same shared physics as the server,
-   recomputed every 3 s because the planets move. The real flight is planned by the server at launch. */
-let pv = { key: '', plan: null };
-function previewPlan() {
-  const ship = last && (last.ships || [])[0];
-  if (!ship || ship.state !== 'docked' || !deps || !deps.docked) return null;
-  const d = (deps.departures || []).find(x => x.id === selected); if (!d) return null;
-  const l = (last.locations || []).find(x => x.id === ship.location_id);
-  if (!l || l.anchor_body === d.anchor_body) return null;      /* same-body hop: no course line */
-  const key = selected + '|' + Math.floor(Date.now() / 3000);
-  if (pv.key !== key) {
-    const r = planTravel({ from: { body: BODIES.findIndex(b => b.n === l.anchor_body) },
-      to: { body: BODIES.findIndex(b => b.n === d.anchor_body) }, departT: curGd(), g: Number(ship.thrust_g) });
-    pv = { key, plan: r.ok ? r.plan : null };
-  }
-  return pv.plan;
-}
-
-const map = createMap($('map'), {
-  ship: shipPoint,
-  preview: previewPlan,
-  selectedBody,
-  pick: name => {
-    const d = deps && deps.departures && deps.departures.find(x => x.anchor_body === name && x.is_default);
-    if (d) { selected = d.id; drawDeps(); } else say(name + ' is not a destination from here.', 'muted');
-  },
-});
-$('zInner').onclick = () => map.preset('inner');
-$('zSys').onclick = () => map.preset('sys');
-$('zShip').onclick = () => map.preset('ship');
-
-addScreen('travel', 'Fly', $('scr-travel'), {
-  onShow: () => { map.resize(); map.need(); },
-  update: ship => {
-    if (ship && ship.state === 'docked') {
-      if (!deps || !deps.docked || deps.from !== ship.location_id || Date.now() - depsAt > 30000) loadDeps();
-    } else if (deps && deps.docked) { deps = null; drawDeps(); }
-    map.need();
-  },
-});
-
-/* ---------- trade screen: market list, buy/sell, cargo (display only: the server decides every trade) ---------- */
-let mk = null, mkAt = 0, mkLoading = false, tsel = null, tbusy = false;
-let csel = null, popLoc = null, buyEdited = false, sellEdited = false, redrawPending = false; // csel = selected CARGO item
-let cargoBest = null, cargoBestLoc = null, cargoBusy = false;
-let cdFor = null, cdLoc = null, cdData = null, cdBusy = false; // dropdown under a CARGO item
-let routesFor = null, routesLoc = null, routesData = null, routesBusy = false, longFired = false, lastTap = { id: null, t: 0 };
-const money = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const whole = n => Math.round(Number(n)).toLocaleString();
-const r2 = n => Math.round(Number(n) * 100) / 100;
-
-async function loadMarket() {
-  if (mkLoading || !sb) return;
-  mkLoading = true;
-  try {
-    mk = await call('market'); mkAt = Date.now();
-    if (last && last.character) last.character.credits = mk.credits;
-    setShipLine(); drawTrade();
-    if (routesFor) loadRoutes();
-    if (cdFor) loadCargoDrop();
-    if (mk.docked && (mk.cargo || []).length) loadCargoBest(); else { cargoBest = null; cargoBestLoc = null; }
-  } catch (e) { say('Error: ' + e.message, 'err'); }
-  finally { mkLoading = false; }
-}
-// best place to sell each carried good (server action cargo_routes); shown under each cargo item
-async function loadCargoBest() {
-  if (cargoBusy || !sb) return;
-  cargoBusy = true;
-  try {
-    const d = await call('cargo_routes');
-    cargoBest = {}; cargoBestLoc = d.docked ? d.location_id : null;
-    (d.items || []).forEach(x => { cargoBest[x.good_id] = x; });
-  } catch (e) { cargoBest = null; cargoBestLoc = null; }
-  finally { cargoBusy = false; drawTrade(); }
-}
-const selGood = () => (mk && mk.goods || []).find(g => g.good_id === tsel) || null;
-const ownQty = id => { const c = mk && (mk.cargo || []).find(x => x.good_id === id); return c ? c.quantity : 0; };
-function maxBuy(g) {
-  const free = mk.hold_size - mk.hold_used;
-  return Math.max(0, Math.floor(Math.min(g.stock, mk.credits / g.buy_price, (free + 1e-9) / g.hold_per_unit)));
-}
-function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
-function cell(cls, main, sub) { const c = el('span', cls, main); if (sub) c.appendChild(el('span', 'sub', sub)); return c; }
-
-const sgn = n => (Number(n) > 0 ? '+' : '') + money(n);
-const tone = n => Number(n) > 0 ? 'win' : Number(n) < 0 ? 'lose' : 'muted';
-
-async function openRoutes(id) {
-  routesFor = id; routesLoc = mk ? mk.location_id : null; routesData = null; if (tsel !== id) buyEdited = false; tsel = id;
-  drawTrade(); await loadRoutes();
-}
-function closeRoutes() { routesFor = null; routesData = null; drawTrade(); }
-async function loadRoutes() {
-  if (!routesFor || !sb || routesBusy) return;
-  routesBusy = true;
-  const id = routesFor;
-  try {
-    const d = await call('routes', { good: id });
-    if (routesFor === id) routesData = d;
-  } catch (e) { if (routesFor === id) routesData = { error: e.message }; }
-  finally { routesBusy = false; drawTrade(); if (routesFor && routesFor !== id) loadRoutes(); }
-}
-// why can't I buy any of this good right now?
-function buyBlockReason(g) {
-  if (!g) return 'Sold out';
-  if ((mk.hold_size - mk.hold_used + 1e-9) / g.hold_per_unit < 1) return 'Hold full';
-  if (mk.credits / g.buy_price < 1) return 'Low funds';
-  return 'Sold out';
-}
-function maxZeroReason(d) { return buyBlockReason((mk && mk.goods || []).find(x => x.good_id === d.good_id)); }
-function routesBox() {
-  const box = el('div', 'routes'), d = routesData;
-  if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return box; }
-  if (d.error) { box.appendChild(el('div', 'err', d.error === 'no_market' ? 'This place does not trade that.' : 'Could not load: ' + d.error)); }
-  else if (!d.docked) box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.'));
-  else {
-    box.appendChild(el('div', '', 'Buy ' + d.name + ' here at ' + money(d.buy_here) + '. Max load: ' + whole(d.max_load) + ' ' + d.unit + '.'));
-    const why = d.hypothetical ? maxZeroReason(d) : null;
-    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the load columns show N/A.'));
-    if (!d.rows.length) box.appendChild(el('div', 'muted', 'No other place trades this good.'));
-    else {
-      const hd = el('div', 'rhead');
-      hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', d.hypothetical ? why : (mk && mk.hold_used > 0 ? 'For ' + whole(d.max_load) : 'Max load')), el('span', 'num', 'Per min'));
-      box.appendChild(hd);
-      d.rows.forEach(x => {
-        const r = el('div', 'rrow');
-        r.append(
-          cell('', x.name, 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
-          cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
-          cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-          d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.profit_load), sgn(x.profit_load)),
-          d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
-        box.appendChild(r);
-      });
-      box.appendChild(el('div', 'muted hint', 'Sorted by profit per minute of travel. Snapshot: prices there change while you fly.'));
-    }
-  }
-  const b = el('button', 'alt', 'Close'); b.onclick = closeRoutes; box.appendChild(b);
-  return box;
-}
-
-// ---- the same kind of dropdown under a CARGO item: "if I sold what I carry at each place?" ----
-async function openCargoDrop(id) { if (csel !== id) sellEdited = false; csel = id; cdFor = id; cdLoc = mk ? mk.location_id : null; cdData = null; drawTrade(); await loadCargoDrop(); }
-function closeCargoDrop() { cdFor = null; cdData = null; drawTrade(); }
-async function loadCargoDrop() {
-  if (!cdFor || !sb || cdBusy) return;
-  cdBusy = true;
-  const id = cdFor;
-  try {
-    const d = await call('cargo_dest', { good: id });
-    if (cdFor === id) cdData = d;
-  } catch (e) { if (cdFor === id) cdData = { error: e.message }; }
-  finally { cdBusy = false; drawTrade(); if (cdFor && cdFor !== id) loadCargoDrop(); }
-}
-function cargoDropBox() {
-  const box = el('div', 'routes'), d = cdData;
-  if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return box; }
-  if (d.error) box.appendChild(el('div', 'err', 'Could not load: ' + d.error));
-  else if (!d.docked) box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.'));
-  else {
-    box.appendChild(el('div', '', 'Selling your ' + whole(d.quantity) + ' ' + d.name + (d.cost_known ? ' (paid ' + money(d.avg_cost) + ' each).' : '. Cost unknown, so the figures show income, not profit.')));
-    if (!d.rows.length) box.appendChild(el('div', 'muted', 'No place trades this good.'));
-    else {
-      const hd = el('div', 'rhead');
-      hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', 'For ' + whole(d.quantity)), el('span', 'num', 'Per min'));
-      box.appendChild(hd);
-      d.rows.forEach(x => {
-        const r = el('div', 'rrow');
-        r.append(
-          cell('', x.is_here ? x.name + ' (here)' : x.name, x.is_here ? 'no travel' : 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
-          cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
-          cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-          cell('num ' + tone(x.profit_total), sgn(x.profit_total)),
-          x.is_here ? cell('num muted', 'now') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
-        box.appendChild(r);
-      });
-      box.appendChild(el('div', 'muted hint', 'Here first, then by profit per minute of travel. Snapshot: prices there change while you fly.'));
-    }
-  }
-  const b = el('button', 'alt', 'Close'); b.onclick = closeCargoDrop; box.appendChild(b);
-  return box;
-}
-// long press (half a second) or double-tap on a row opens its destinations list
-function wireRow(r, key, o) {
-  let tm = null, sx = 0, sy = 0;
-  const stop = () => clearTimeout(tm);
-  r.addEventListener('contextmenu', e => e.preventDefault());
-  r.addEventListener('pointerdown', e => {
-    longFired = false; sx = e.clientX; sy = e.clientY; stop();
-    tm = setTimeout(() => { longFired = true; o.open(); }, 500);
-  });
-  r.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > 10) stop(); });
-  ['pointerup', 'pointercancel', 'pointerleave'].forEach(n => r.addEventListener(n, stop));
-  r.onclick = () => {
-    if (longFired) { longFired = false; return; }
-    const now = Date.now();
-    if (lastTap.id === key && now - lastTap.t < 450) {
-      lastTap = { id: null, t: 0 };
-      if (o.isOpen()) o.close(); else o.open();
-      return;
-    }
-    lastTap = { id: key, t: now };
-    o.tap();
+function segmentEnd(s) {
+  const u = s.dur;
+  return {
+    x: s.x + s.vx * u + .5 * s.ax * u * u,
+    y: s.y + s.vy * u + .5 * s.ay * u * u,
+    vx: s.vx + s.ax * u,
+    vy: s.vy + s.ay * u,
   };
 }
-function wireGoodRow(r, g) {
-  wireRow(r, 'm:' + g.good_id, { open: () => openRoutes(g.good_id), close: closeRoutes, isOpen: () => routesFor === g.good_id,
-    tap: () => { tsel = tsel === g.good_id ? null : g.good_id; buyEdited = false; drawTrade(); } });
-}
-function wireCargoRow(r, c) {
-  wireRow(r, 'c:' + c.good_id, { open: () => openCargoDrop(c.good_id), close: closeCargoDrop, isOpen: () => cdFor === c.good_id,
-    tap: () => { csel = csel === c.good_id ? null : c.good_id; sellEdited = false; drawTrade(); } });
-}
 
-/* ---- pop-ups: Buy under a market row, Sell under a cargo item. Each is built ONCE and moved into place on every redraw,
-   so a number you are typing is not lost. While a quantity box has focus, redraws wait until you leave it. ---- */
-const selCargo = () => (mk && mk.cargo || []).find(c => c.good_id === csel) || null;
-const isTyping = () => !!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('qin'));
-function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 ? q : NaN; }
-function makePop(kind) {
-  const root = el('div', 'pop ' + kind), title = el('div', 'poptitle'), row = el('div', 'poprow');
-  const inp = document.createElement('input');
-  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'qin';
-  const btn = el('button', kind === 'buy' ? '' : 'alt', kind === 'buy' ? 'Buy' : 'Sell');
-  row.append(el('span', 'muted', 'Quantity'), inp, btn);
-  const chips = el('div', 'chips'), info = el('div', 'popinfo');
-  root.append(title, row, chips, info);
-  const pop = { kind, root, title, inp, btn, chips, info };
-  inp.addEventListener('input', () => { if (kind === 'buy') buyEdited = true; else sellEdited = true; pop.refresh(); });
-  inp.addEventListener('blur', () => setTimeout(() => { if (redrawPending && !isTyping()) { redrawPending = false; drawTrade(); } }, 350));
-  btn.onclick = () => doTrade(kind);
-  return pop;
-}
-const buyPop = makePop('buy'), sellPop = makePop('sell');
-function addChip(p, label, fn) { const b = el('button', 'alt', label); b.onclick = fn; p.chips.appendChild(b); }
-
-buyPop.refresh = function () {
-  const p = buyPop, g = selGood(); if (!g || !mk) return;
-  const q = qtyOf(p.inp), max = maxBuy(g), free = Math.max(0, mk.hold_size - mk.hold_used);
-  p.btn.disabled = !(q >= 1) || tbusy;
-  p.info.replaceChildren();
-  p.info.appendChild(el('div', '', isNaN(q) ? 'Enter a whole number (0 or more).'
-    : 'Buy ' + whole(q) + ' ' + g.name + ': about ' + money(q * g.buy_price) + ' (hold space free: ' + r2(free) + ')'));
-  p.info.appendChild(el('div', 'muted', max === 0 ? 'You cannot buy any right now: ' + buyBlockReason(g).toLowerCase() + '.'
-    : 'Most you can buy: ' + whole(max) + '. The server works out the exact price.'));
-};
-function placeBuyPop(g) {
-  const p = buyPop;
-  p.title.textContent = 'Buy ' + g.name;
-  if (!buyEdited) p.inp.value = maxBuy(g);
-  p.chips.replaceChildren();
-  addChip(p, '1', () => { p.inp.value = 1; buyEdited = true; p.refresh(); });
-  addChip(p, '10', () => { p.inp.value = 10; buyEdited = true; p.refresh(); });
-  addChip(p, 'Max', () => { buyEdited = false; p.inp.value = maxBuy(selGood() || g); p.refresh(); });
-  p.refresh();
-  return p.root;
-}
-sellPop.refresh = function () {
-  const p = sellPop, c = selCargo(); if (!c || !mk) return;
-  const g = (mk.goods || []).find(x => x.good_id === c.good_id);
-  p.info.replaceChildren();
-  if (!g) { p.btn.disabled = true; p.info.appendChild(el('div', 'muted', 'This place does not buy that.')); return; }
-  const q = qtyOf(p.inp);
-  p.btn.disabled = !(q >= 1) || tbusy;
-  p.info.appendChild(el('div', '', isNaN(q) ? 'Enter a whole number (0 or more).'
-    : 'Sell ' + whole(q) + ' ' + c.name + ': about ' + money(q * g.sell_price) + ' (you have ' + whole(c.quantity) + ')'));
-  p.info.appendChild(el('div', 'muted', 'The server works out the exact price.'));
-};
-function placeSellPop(c) {
-  const p = sellPop;
-  p.title.textContent = 'Sell ' + c.name;
-  if (!sellEdited) p.inp.value = c.quantity;
-  p.chips.replaceChildren();
-  addChip(p, '1', () => { p.inp.value = 1; sellEdited = true; p.refresh(); });
-  addChip(p, '10', () => { p.inp.value = 10; sellEdited = true; p.refresh(); });
-  addChip(p, 'All', () => { sellEdited = false; const cc = selCargo() || c; p.inp.value = cc.quantity; p.refresh(); });
-  p.refresh();
-  return p.root;
-}
-
-function drawTrade() {
-  if (isTyping()) { redrawPending = true; return; }
-  redrawPending = false;
-  const box = $('mlist'), cbox = $('clist');
-  box.replaceChildren(); cbox.replaceChildren();
-  if (!mk) { box.textContent = 'Loading market...'; return; }
-  $('tinfo').textContent = 'Credits ' + money(mk.credits) + '   |   Hold ' + r2(mk.hold_used) + ' / ' + r2(mk.hold_size);
-  $('ttitle').textContent = mk.docked ? 'Market at ' + mk.location_name : 'Market';
-  const goods = mk.goods || [];
-  if (mk.location_id !== popLoc) { popLoc = mk.location_id; tsel = null; csel = null; buyEdited = false; sellEdited = false; }
-  if (!goods.some(g => g.good_id === tsel)) tsel = null;
-  if (!(mk.cargo || []).some(c => c.good_id === csel)) csel = null;
-  if (routesFor && (!mk.docked || mk.location_id !== routesLoc || !goods.some(x => x.good_id === routesFor))) { routesFor = null; routesData = null; }
-  if (cdFor && (!mk.docked || mk.location_id !== cdLoc || !(mk.cargo || []).some(x => x.good_id === cdFor))) { cdFor = null; cdData = null; }
-  box.className = (mk.docked && goods.length) ? '' : 'muted'; cbox.className = (mk.cargo || []).length ? '' : 'muted';
-  if (!mk.docked) box.textContent = 'You can trade when your ship is docked.';
-  else if (!goods.length) box.textContent = 'Nothing is traded here.';
-  else {
-    const hd = el('div', 'mhead'); hd.append(el('span', '', 'Good'), el('span', 'num', 'Buy for'), el('span', 'num', 'Sell at'), el('span', 'num', 'Stock'));
-    box.appendChild(hd);
-    goods.forEach(g => {
-      const r = el('div', 'mrow' + (g.good_id === tsel ? ' sel' : ''));
-      r.append(cell('', g.name, 'per ' + g.unit), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), 'target ' + whole(g.target_stock)));
-      wireGoodRow(r, g);
-      box.appendChild(r);
-      if (tsel === g.good_id) box.appendChild(placeBuyPop(g));      // 1) the row  2) the buy pop-up  3) the destinations dropdown
-      if (routesFor === g.good_id) box.appendChild(routesBox());
-    });
+function stateAt(plan, t) {
+  for (const s of plan.segs) {
+    if (t < s.t0 + s.dur) {
+      const u = Math.max(t - s.t0, 0);
+      return {
+        x: s.x + s.vx * u + .5 * s.ax * u * u,
+        y: s.y + s.vy * u + .5 * s.ay * u * u,
+        vx: s.vx + s.ax * u,
+        vy: s.vy + s.ay * u,
+        ax: s.ax, ay: s.ay, a: mag(s.ax, s.ay),
+      };
+    }
   }
-  if ((mk.cargo || []).length) {
-    mk.cargo.forEach(c => {
-      const g = goods.find(x => x.good_id === c.good_id);
-      const r = el('div', 'row' + (c.good_id === csel ? ' sel' : ''));
-      const right = el('span', 'num');
-      if (!g) right.appendChild(el('span', 'muted', 'not sold here'));
-      else {
-        right.appendChild(el('span', 'get', 'sells here for ' + money(g.sell_price)));
-        if (c.profit_each != null) right.appendChild(el('span', 'sub ' + tone(c.profit_each), sgn(c.profit_each) + ' each, ' + sgn(c.profit_total) + ' for ' + c.quantity));
-      }
-      const left = cell('', c.quantity + ' x ' + c.name, c.avg_cost != null ? 'paid ' + money(c.avg_cost) + ' each' : 'cost unknown');
-      const cb = cargoBest && cargoBestLoc === mk.location_id ? cargoBest[c.good_id] : null;
-      if (cb && cb.best) {
-        const b = cb.best, inc = cb.cost_known ? '' : ' income';
-        left.appendChild(el('span', 'sub ' + tone(b.is_here ? b.profit_total : b.ppm), b.is_here
-          ? 'Best: sell here, ' + sgn(b.profit_total) + inc
-          : 'Best: ' + b.name + ' (' + fmt(b.eta_real_minutes * 60) + '), ' + sgn(b.profit_total) + inc + ', ' + sgn(b.ppm) + '/min' + (b.sun_danger ? ' near the Sun!' : '')));
-      } else if (cb) left.appendChild(el('span', 'sub muted', 'No place buys this.'));
-      r.append(left, right);
-      wireCargoRow(r, c);
-      cbox.appendChild(r);
-      if (csel === c.good_id) cbox.appendChild(placeSellPop(c));    // row, then sell pop-up, then dropdown
-      if (cdFor === c.good_id) cbox.appendChild(cargoDropBox());
-    });
-  } else cbox.textContent = 'Empty';
-}
-function tradeError(e) {
-  const d = e.data || {}, m = e.message;
-  if (m === 'not_enough_hold') return 'Not enough room in the hold (free ' + r2(d.hold_free || 0) + ', needed ' + r2(d.hold_needed || 0) + ').';
-  if (m === 'not_enough_credits') return 'Not enough credits (cost ' + money(d.cost || 0) + ', you have ' + money(d.credits || 0) + ').';
-  if (m === 'not_enough_stock') return 'The market only has ' + whole(d.available || 0) + ' available.';
-  if (m === 'not_enough_cargo') return 'You only have ' + (d.have || 0) + ' of that.';
-  if (m === 'not_docked') return 'You must be docked to trade.';
-  if (m === 'no_market') return 'This place does not trade that.';
-  if (m === 'bad_quantity') return 'Enter a whole number of 1 or more.';
-  return 'Error: ' + m;
-}
-async function doTrade(kind) {
-  if (tbusy) return;
-  const pop = kind === 'buy' ? buyPop : sellPop;
-  const id = kind === 'buy' ? tsel : csel, q = qtyOf(pop.inp);
-  if (!id || !(q >= 1)) return;
-  const nm = kind === 'buy' ? (selGood() || {}).name : (selCargo() || {}).name;
-  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-  tbusy = true; buyPop.refresh(); sellPop.refresh();
-  try {
-    const r = await call(kind, { good: id, quantity: q });
-    say((kind === 'buy' ? 'Bought ' : 'Sold ') + q + ' ' + nm + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).', 'ok');
-  } catch (e) { say(tradeError(e), 'err'); }
-  finally { tbusy = false; buyEdited = false; sellEdited = false; redrawPending = false; await loadMarket(); }
+  const e = plan.end, u = t - plan.tEnd;
+  return { x: e.x + e.vx * u, y: e.y + e.vy * u, vx: e.vx, vy: e.vy, ax: 0, ay: 0, a: 0 };
 }
 
-addScreen('trade', 'Trade', $('scr-trade'), {
-  onShow: () => { loadMarket(); },
-  update: ship => {
-    const docked = !!(ship && ship.state === 'docked');
-    if (!mk || mk.docked !== docked || (docked && mk.location_id !== ship.location_id) || Date.now() - mkAt > 20000) loadMarket();
-  },
-});
+// Two equal-length burns: speed up toward the target, then brake to match its velocity.
+// st = ship state {x,y,vx,vy} at time t0. tg = target. g = max thrust in g's.
+// Returns a plan, or null if no route exists within 6000 days.
+function solvePlan(st, t0, tg, g) {
+  const Amax = gToAuDay2(g);
+  const coef = (T) => {
+    const tau = T / 2, q = targetState(tg, t0 + T);
+    const a1x = (q.x - st.x - 1.5 * st.vx * tau - .5 * q.vx * tau) / (tau * tau);
+    const a1y = (q.y - st.y - 1.5 * st.vy * tau - .5 * q.vy * tau) / (tau * tau);
+    const a2x = (q.vx - st.vx - a1x * tau) / tau;
+    const a2y = (q.vy - st.vy - a1y * tau) / tau;
+    return { a1x, a1y, a2x, a2y, q, m: Math.max(mag(a1x, a1y), mag(a2x, a2y)) };
+  };
+  let T = 0.01, prev = T;
+  while (T < 6000 && coef(T).m > Amax) { prev = T; T *= 1.03; }
+  if (T >= 6000) return null;
+  let lo = prev, hi = T;
+  for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (coef(mid).m > Amax) lo = mid; else hi = mid; }
+  const c = coef(hi), tau = hi / 2;
+  const s1 = { t0, dur: tau, x: st.x, y: st.y, vx: st.vx, vy: st.vy, ax: c.a1x, ay: c.a1y };
+  const e1 = segmentEnd(s1);
+  const s2 = { t0: t0 + tau, dur: tau, x: e1.x, y: e1.y, vx: e1.vx, vy: e1.vy, ax: c.a2x, ay: c.a2y };
+  return {
+    segs: [s1, s2], t0, T: hi, tEnd: t0 + hi, tgt: tg,
+    dock: tg.body != null ? tg.body : -1,
+    end: { x: c.q.x, y: c.q.y, vx: c.q.vx, vy: c.q.vy },
+  };
+}
 
-/* ---------- shared helpers + app shell ---------- */
-function say(t, cls) { const m = $('msg'); m.textContent = t || ''; m.className = cls || ''; }
-const li = t => { const e = document.createElement('li'); e.textContent = t; return e; };
-function getKey() { try { return localStorage.getItem('pvs_key'); } catch (e) { return null; } }
+// Burn straight against current velocity until stopped.
+function stopPlan(st, t0, g) {
+  const v = mag(st.vx, st.vy);
+  if (v * KMS < 1e-4) return null;
+  const Amax = gToAuDay2(g);
+  if (Amax <= 0) return coastPlan(st, t0);
+  const s = { t0, dur: v / Amax, x: st.x, y: st.y, vx: st.vx, vy: st.vy, ax: -st.vx / v * Amax, ay: -st.vy / v * Amax };
+  return { segs: [s], t0, T: s.dur, tEnd: t0 + s.dur, tgt: null, dock: -1, end: segmentEnd(s) };
+}
 
-async function call(action, extra) {
-  const { data, error } = await sb.functions.invoke('game', { body: { action, ...(extra || {}) } });
-  if (error) {
-    let d = null;
-    try { d = await error.context.json(); } catch (e) {}
-    const err = new Error(d && d.error ? d.error : error.message);
-    err.data = d;
-    throw err;
+function coastPlan(st, t0) {
+  return { segs: [], t0, T: 0, tEnd: t0, tgt: null, dock: -1, end: { x: st.x, y: st.y, vx: st.vx, vy: st.vy } };
+}
+
+// ---------------- Server-friendly wrappers (NEW) ----------------
+
+// Closest approach to the Sun along a plan, in AU (sampled).
+function sunClearance(plan, samples = 200) {
+  let min = Infinity;
+  for (let k = 0; k <= samples; k++) {
+    const s = stateAt(plan, plan.t0 + plan.T * k / samples);
+    min = Math.min(min, mag(s.x, s.y));
   }
+  return min;
+}
+
+// Where is a ship at time t?  ship = {docked: bodyIndex}  or  {plan}
+function shipStateAt(ship, t) {
+  if (ship.docked != null) {
+    const s = targetState({ body: ship.docked }, t);
+    return { ...s, ax: 0, ay: 0, a: 0 };
+  }
+  return stateAt(ship.plan, t);
+}
+
+// THE main entry point for Module 3.
+//   from: {body: idx}  (docked)   or  {state:{x,y,vx,vy}}  (in space)
+//   to:   {body: idx}  or  {x, y}
+//   departT: game days since J2000.   g: thrust in g's.
+// Returns {ok:false, reason} or {ok:true, plan, departT, arriveT, durationDays, ...}
+function planTravel({ from, to, departT, g }) {
+  const fail = (reason) => ({ ok: false, reason });
+  if (!Number.isFinite(departT)) return fail('bad_time');
+  if (!(g > 0) || g > 12) return fail('bad_thrust');
+  if (to.body != null && !(to.body >= 1 && to.body < BODIES.length)) return fail('bad_destination');
+  if (to.body == null && !(Number.isFinite(to.x) && Number.isFinite(to.y))) return fail('bad_destination');
+  if (from.body != null && !(from.body >= 1 && from.body < BODIES.length)) return fail('bad_origin');
+  if (from.body != null && to.body === from.body) return fail('same_location');
+
+  const st = from.body != null ? targetState({ body: from.body }, departT) : from.state;
+  if (!st) return fail('bad_origin');
+  const plan = solvePlan(st, departT, to, g);
+  if (!plan) return fail('no_route');
+
+  const mid = stateAt(plan, departT + plan.T / 2);
+  const sun = sunClearance(plan);
+  return {
+    ok: true, plan, departT,
+    arriveT: plan.tEnd,
+    durationDays: plan.T,
+    distanceAU: Math.hypot(plan.end.x - st.x, plan.end.y - st.y),
+    midSpeedKms: mag(mid.vx, mid.vy) * KMS,
+    sunClearanceAU: sun,
+    sunDanger: sun < SUN_DANGER_AU,
+    arrival: plan.dock >= 0 ? { kind: 'docked', body: plan.dock } : { kind: 'drifting' },
+  };
+}
+
+// ---------- shared/clock.js ----------
+// =====================================================================
+// Vacuum State - game clock ("time contract")
+// ONE clock for the whole game. Nothing else keeps its own time.
+//
+//   game time = days since J2000 (same unit physics.js uses)
+//   real time = normal JavaScript milliseconds (Date.now())
+//
+// scale = how many game seconds pass per real second.
+//   60 means 1 real minute = 1 game hour (your GDD). Earth orbit = ~6 real days.
+// =====================================================================
+
+const LAUNCH_MS = Date.UTC(2026, 9, 3, 0, 0, 0); // Oct 3 2026 00:00 UTC (month is 0-based)
+
+const CLOCK = {
+  epochRealMs: LAUNCH_MS,                                   // the moment the game "starts"
+  epochGameDays: (LAUNCH_MS - J2000_MS) / 864e5,            // start in the REAL sky positions
+  scale: 60,
+};
+
+function gameDaysAt(realMs, c = CLOCK) {
+  return c.epochGameDays + (realMs - c.epochRealMs) * c.scale / 864e5;
+}
+
+function realMsAt(gameDays, c = CLOCK) {
+  return c.epochRealMs + (gameDays - c.epochGameDays) * 864e5 / c.scale;
+}
+
+// Change the speed WITHOUT game time jumping (used for dev "100x" testing).
+function rescale(c, nowMs, newScale) {
+  return { epochRealMs: nowMs, epochGameDays: gameDaysAt(nowMs, c), scale: newScale };
+}
+
+const gameDate = (gameDays) => new Date(J2000_MS + gameDays * 864e5).toISOString();
+
+// ---------- server ----------
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
+
+const STARTER_LOCATION = 'luna'; // a row id in the locations table
+
+async function getCharacter(db, user) {
+  const { data, error } = await db.from('characters').select('*').eq('account_id', user.id).maybeSingle();
+  if (error) throw error;
   return data;
 }
-function show(which) { ['cfg', 'auth', 'game'].forEach(id => $(id).hidden = id !== which); }
 
-async function init() {
-  const k = getKey();
-  if (!k) return show('cfg');
-  sb = window.supabase.createClient(URL_, k);
-  const { data } = await sb.auth.getSession();
-  if (data.session) enterGame(data.session); else show('auth');
+async function getLocation(db, id) {
+  const { data, error } = await db.from('locations').select('*').eq('id', id).maybeSingle();
+  if (error) throw error;
+  return data;
 }
-async function enterGame(session) {
-  show('game');
-  $('who').textContent = 'Logged in as ' + session.user.email;
-  await refresh();
-  clearInterval(timer);
-  timer = setInterval(tick, 1000);
+
+async function resolveFor(db, characterId) {
+  const { error } = await db.rpc('resolve_due_actions', { p_character: characterId });
+  if (error) console.error('resolve failed', error);
 }
-async function refresh() {
-  try { last = await call('me'); render(); }
-  catch (e) { say('Error: ' + e.message, 'err'); }
+
+async function createCharacter(db, user, body) {
+  const name = String(body.name ?? '').trim();
+  if (name.length < 3 || name.length > 24 || !/^[A-Za-z0-9 _-]+$/.test(name))
+    return json({ error: 'bad_name', hint: '3-24 letters, numbers, spaces, - or _' }, 400);
+  const start = await getLocation(db, STARTER_LOCATION);
+  if (!start) return json({ error: 'start_location_missing' }, 500);
+  const { data: ch, error } = await db.from('characters').insert({ account_id: user.id, name }).select().single();
+  if (error) {
+    if (error.code === '23505') return json({ error: 'name_taken_or_already_have_character' }, 409);
+    throw error;
+  }
+  const { error: e2 } = await db.from('ships').insert({ character_id: ch.id, location_id: start.id, state: 'docked' });
+  if (e2) throw e2;
+  await db.from('event_log').insert({ character_id: ch.id, kind: 'welcome', message: `Welcome, ${name}. Your ship is docked at ${start.name}.` });
+  return json({ ok: true, character: ch });
 }
-function fmt(sec) {
-  sec = Math.max(0, Math.round(sec));
-  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
-  return (h ? h + 'h ' : '') + m + 'm ' + s + 's';
+
+// Time for a hop between two locations at the same body.
+// d = distance between them (AU) = difference of their offsets from the body.
+// Accelerate for half the way, brake for the other half: t = 2 * sqrt(d / a).
+function hopDurationDays(offsetA, offsetB, g) {
+  const d = Math.abs(offsetA - offsetB);
+  return 2 * Math.sqrt(d / gToAuDay2(g));
 }
-function render() {
-  if (!last) return;
-  const hasChar = !!last.character;
-  $('speed').hidden = !(last.dev && hasChar);
-  $('speed').textContent = 'Speed: ' + (Math.round((last.speed || 1) * 100) / 100) + 'x (tap to change)';
-  $('nochar').hidden = hasChar; $('haschar').hidden = !hasChar;
-  if (!hasChar) return;
-  const ship = (last.ships || [])[0];
-  setShipLine();
-  if (!current) openScreen('travel');
-  const s = screens[current]; if (s && s.update) s.update(ship);
-  const evs = $('evs'); evs.replaceChildren();
-  (last.events || []).forEach(e => evs.appendChild(li(new Date(e.created_at).toLocaleString() + ' - ' + e.message)));
-  tick();
+
+// How long would a trip from location `from` to location `to` take if it left now?
+// Returns {ok, days, sun_danger} or {ok:false, reason}. NOTHING is saved.
+// `cache` remembers long flights per destination body, because every location at
+// the same body has the same flight (only the final hop differs).
+function estimateTrip(from, to, departT, g, cache) {
+  if (from.id === to.id) return { ok: false, reason: 'already_here' };
+  if (!(to.anchor_body in BODY_INDEX) || BODY_INDEX[to.anchor_body] < 1) return { ok: false, reason: 'bad_destination' };
+  if (!(from.anchor_body in BODY_INDEX)) return { ok: false, reason: 'bad_origin' };
+  if (from.anchor_body === to.anchor_body) {
+    const days = hopDurationDays(Number(from.offset_au), Number(to.offset_au), g);
+    return days > 0 ? { ok: true, days, sun_danger: false } : { ok: false, reason: 'bad_destination' };
+  }
+  let r = cache[to.anchor_body];
+  if (!r) {
+    r = cache[to.anchor_body] = planTravel({
+      from: { body: bodyId(from.anchor_body) },
+      to: { body: bodyId(to.anchor_body) },
+      departT, g,
+    });
+  }
+  return r.ok ? { ok: true, days: r.durationDays, sun_danger: r.sunDanger } : { ok: false, reason: r.reason };
 }
-function setShipLine() {
-  const ship = last && (last.ships || [])[0];
-  const cr = last && last.character ? '  |  Credits ' + money(last.character.credits) : '';
-  $('ship').textContent = (!ship ? 'No ship' :
-    ship.state === 'docked' ? 'Docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
-    'Traveling (thrust ' + ship.thrust_g + ' g)') + cr;
-}
-function tick() {
-  if (!last) return;
-  const gd = curGd();
-  $('gtime').textContent = new Date(J2000_MS + gd * 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC (game) - speed ' + (Math.round((last.speed || 1) * 100) / 100) + 'x';
-  const acts = $('acts'); acts.replaceChildren();
-  (last.actions || []).forEach(a => {
-    const left = (new Date(a.resolve_at) - Date.now()) / 1000;
-    const p = a.payload || {};
-    let t = 'trip ' + locName(p.from) + ' -> ' + locName(p.to_location || (p.to || '').toLowerCase()) + ' [' + a.status + ']';
-    if (a.status === 'pending') {
-      t += left > 0 ? ' arrives in ' + fmt(left) : ' arriving...';
-      if (left <= 0 && Date.now() - lastNudge > 5000) { lastNudge = Date.now(); refresh(); }
+
+// body.to = a LOCATION id (e.g. 'luna', 'mars'). The flight is planned to the
+// location's anchor body; the ship docks at the chosen location on arrival.
+async function queueTravel(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  await resolveFor(db, ch.id); // settle any finished trip first
+  const { data: ship, error: se } = await db.from('ships').select('*').eq('character_id', ch.id).order('created_at').limit(1).maybeSingle();
+  if (se) throw se;
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  if (ship.state !== 'docked') return json({ error: 'ship_busy' }, 409);
+
+  const from = await getLocation(db, ship.location_id);
+  const to = await getLocation(db, String(body.to ?? ''));
+  if (!from || !to) return json({ error: 'bad_destination' }, 400);
+  if (!(to.anchor_body in BODY_INDEX) || BODY_INDEX[to.anchor_body] < 1) return json({ error: 'bad_destination' }, 400);
+  if (!(from.anchor_body in BODY_INDEX)) return json({ error: 'bad_origin' }, 400);
+  if (from.id === to.id) return json({ error: 'already_here' }, 400);
+  const departT = gameDaysAt(Date.now());
+
+  // Same planet: a short "hop" (accelerate half way, brake the rest).
+  if (from.anchor_body === to.anchor_body) {
+    const dur = hopDurationDays(Number(from.offset_au), Number(to.offset_au), Number(ship.thrust_g));
+    if (!(dur > 0)) return json({ error: 'bad_destination' }, 400);
+    const hopAt = new Date(realMsAt(departT + dur)).toISOString();
+    const { data: hop, error: h1 } = await db.from('scheduled_actions').insert({
+      character_id: ch.id, ship_id: ship.id, action_type: 'hop',
+      payload: { from: from.id, to: to.anchor_body, to_location: to.id, departT, arriveT: departT + dur },
+      resolve_at: hopAt,
+    }).select().single();
+    if (h1) {
+      if (h1.code === '23505') return json({ error: 'ship_busy' }, 409);
+      throw h1;
     }
-    acts.appendChild(li(t));
+    const { error: h2 } = await db.from('ships')
+      .update({ state: 'hopping', plan: null, location_id: null })
+      .eq('id', ship.id).eq('state', 'docked');
+    if (h2) {
+      await db.from('scheduled_actions').update({ status: 'failed' }).eq('id', hop.id);
+      throw h2;
+    }
+    return json({
+      ok: true, kind: 'hop', action_id: hop.id, from: from.name, to: to.name, resolve_at: hopAt,
+      duration_game_days: dur, duration_real_minutes: dur * 1440 / CLOCK.scale, sun_danger: false,
+    });
+  }
+
+  const r = planTravel({
+    from: { body: bodyId(from.anchor_body) },
+    to: { body: bodyId(to.anchor_body) },
+    departT,
+    g: Number(ship.thrust_g),
+  });
+  if (!r.ok) return json({ error: r.reason }, 400);
+
+  const resolveAt = new Date(realMsAt(r.arriveT)).toISOString();
+  const { data: action, error: e1 } = await db.from('scheduled_actions').insert({
+    character_id: ch.id, ship_id: ship.id, action_type: 'travel',
+    payload: { from: from.id, to: to.anchor_body, to_location: to.id, departT, arriveT: r.arriveT },
+    resolve_at: resolveAt,
+  }).select().single();
+  if (e1) {
+    if (e1.code === '23505') return json({ error: 'ship_busy' }, 409);
+    throw e1;
+  }
+  const { error: e2 } = await db.from('ships')
+    .update({ state: 'traveling', plan: r.plan, location_id: null })
+    .eq('id', ship.id).eq('state', 'docked');
+  if (e2) {
+    await db.from('scheduled_actions').update({ status: 'failed' }).eq('id', action.id);
+    throw e2;
+  }
+  return json({
+    ok: true, action_id: action.id, from: from.name, to: to.name, resolve_at: resolveAt,
+    duration_game_days: r.durationDays,
+    duration_real_minutes: r.durationDays * 1440 / CLOCK.scale,
+    sun_danger: r.sunDanger,
   });
 }
 
-$('savekey').onclick = () => {
-  const v = $('key').value.trim();
-  if (v.length < 20) return say('That key looks too short.', 'err');
-  try { localStorage.setItem('pvs_key', v); } catch (e) {}
-  say(''); init();
-};
-$('signup').onclick = async () => {
-  const { data, error } = await sb.auth.signUp({ email: $('email').value.trim(), password: $('pw').value });
-  if (error) return say(error.message, 'err');
-  if (data.session) enterGame(data.session);
-  else say('Registered. Check your email to confirm, then log in.', 'ok');
-};
-$('login').onclick = async () => {
-  const { data, error } = await sb.auth.signInWithPassword({ email: $('email').value.trim(), password: $('pw').value });
-  if (error) return say(error.message, 'err');
-  say(''); enterGame(data.session);
-};
-$('out').onclick = async () => { await sb.auth.signOut(); clearInterval(timer); last = null; deps = null; selected = null; mk = null; tsel = null; csel = null; cdFor = null; routesFor = null; routesData = null; show('auth'); };
-$('mk').onclick = async () => {
-  try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
-  catch (e) { say('Error: ' + e.message, 'err'); }
-};
-$('speed').onclick = async () => {
-  const b = $('speed'); b.disabled = true;
-  try {
-    const r = await call('cycle_speed');
-    say('Game speed is now ' + r.speed + 'x.', 'ok');
-    deps = null;                    /* ETAs change with speed: fetch them again */
-    await refresh();
-  } catch (e) { say('Error: ' + (e.message === 'not_allowed' ? 'this account is not on the developer list' : e.message), 'err'); }
-  finally { b.disabled = false; }
-};
-$('go').onclick = async () => {
-  try {
-    const r = await call('queue_travel', { to: selected });
-    say('Launched to ' + r.to + '. Trip takes ' + r.duration_real_minutes.toFixed(1) + ' real minutes.' + (r.sun_danger ? ' WARNING: passes close to the Sun.' : ''), 'ok');
-    deps = null; selected = null; drawDeps();
-    await refresh();
-  } catch (e) { say('Error: ' + e.message, 'err'); }
-};
+// "departures": where can my docked ship go right now, and how long would each trip take?
+// Read-only: nothing is saved. The server does the maths; the page only displays it.
+async function departures(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  await resolveFor(db, ch.id);
+  const { data: ship, error: se } = await db.from('ships').select('*').eq('character_id', ch.id).order('created_at').limit(1).maybeSingle();
+  if (se) throw se;
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  const out = { ok: true, game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, docked: ship.state === 'docked', from: null, departures: [] };
+  if (!out.docked) return json(out);
 
-setInterval(() => { if (last && sb) refresh(); }, 15000);
-init();
-</script>
-</body>
-</html>
+  const from = await getLocation(db, ship.location_id);
+  if (!from) return json({ error: 'bad_origin' }, 400);
+  out.from = from.id;
+  const { data: locs, error: le } = await db.from('locations').select('*');
+  if (le) throw le;
+  const departT = out.game_days, g = Number(ship.thrust_g), cache = {};
+  for (const to of locs ?? []) {
+    const est = estimateTrip(from, to, departT, g, cache);
+    if (!est.ok) continue; // the place we are at, or a place we cannot reach
+    out.departures.push({
+      id: to.id, name: to.name, anchor_body: to.anchor_body, kind: to.kind, is_default: to.is_default,
+      eta_game_days: est.days,
+      eta_real_minutes: est.days * 1440 / CLOCK.scale,
+      sun_danger: est.sun_danger,
+    });
+  }
+  out.departures.sort((a, b) => a.eta_real_minutes - b.eta_real_minutes);
+  return json(out);
+}
+
+async function me(db, user) {
+  const ch = await getCharacter(db, user);
+  const out = { game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, speed: CLOCK.scale / 60, dev: await isDev(db, user), character: ch };
+  const { data: locs } = await db.from('locations').select('id,name,anchor_body,kind,offset_au,is_default');
+  out.locations = locs ?? [];
+  if (ch) {
+    await resolveFor(db, ch.id); // settle any finished trip before reporting
+    const [ships, actions, events] = await Promise.all([
+      db.from('ships').select('*').eq('character_id', ch.id),
+      db.from('scheduled_actions').select('id,action_type,status,payload,resolve_at,resolved_at').eq('character_id', ch.id).order('created_at', { ascending: false }).limit(10),
+      db.from('event_log').select('*').eq('character_id', ch.id).order('created_at', { ascending: false }).limit(20),
+    ]);
+    out.ships = ships.data; out.actions = actions.data; out.events = events.data;
+  }
+  return json(out);
+}
+
+// ---------- speed control (developer button) ----------
+// The clock settings live in the database (game_state key 'clock'), so every request
+// uses the same speed. 1x = scale 60. Changing speed re-bases the clock (game time does
+// NOT jump) and re-times any trip in flight.
+const DEFAULT_CLOCK = { ...CLOCK };
+const BASE_SCALE = 60;
+const SPEEDS = [1, 2, 10]; // the cycle: 1x -> 2x -> 10x -> 1x
+
+async function loadClock(db) {
+  const { data, error } = await db.from('game_state').select('value').eq('key', 'clock').maybeSingle();
+  if (error) throw error;
+  Object.assign(CLOCK, DEFAULT_CLOCK, data?.value ?? {});
+}
+
+async function isDev(db, user) {
+  const { data, error } = await db.from('game_state').select('value').eq('key', 'dev_accounts').maybeSingle();
+  if (error) throw error;
+  return Array.isArray(data?.value) && data.value.includes(user.id);
+}
+
+async function cycleSpeed(db, user) {
+  if (!(await isDev(db, user))) return json({ error: 'not_allowed' }, 403);
+  const current = Math.round((CLOCK.scale / BASE_SCALE) * 1000) / 1000;
+  const next = SPEEDS[(SPEEDS.indexOf(current) + 1) % SPEEDS.length]; // unknown speed -> falls back to 1x
+  const newClock = rescale(CLOCK, Date.now(), next * BASE_SCALE);
+  const { error } = await db.from('game_state').upsert({ key: 'clock', value: newClock });
+  if (error) throw error;
+  Object.assign(CLOCK, newClock);
+
+  // Trips already in flight keep their game-time arrival; only the real-time due date moves.
+  const { data: pending, error: pe } = await db.from('scheduled_actions').select('id,payload').eq('status', 'pending');
+  if (pe) throw pe;
+  let retimed = 0;
+  for (const a of pending ?? []) {
+    const arriveT = Number(a.payload?.arriveT);
+    if (!Number.isFinite(arriveT)) continue;
+    const { error: ue } = await db.from('scheduled_actions')
+      .update({ resolve_at: new Date(realMsAt(arriveT)).toISOString() })
+      .eq('id', a.id).eq('status', 'pending');
+    if (ue) throw ue;
+    retimed++;
+  }
+  return json({ ok: true, speed: next, scale: CLOCK.scale, game_days: gameDaysAt(Date.now()), real_ms: Date.now(), trips_retimed: retimed });
+}
+
+// ---------- trading (step 4b) ----------
+// Prices, stock and the buy/sell maths all live in the database (migration 008).
+// The server only checks who is asking, calls the SQL functions, and passes the result on.
+async function getShip(db, characterId) {
+  const { data, error } = await db.from('ships').select('*').eq('character_id', characterId).order('created_at').limit(1).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+// What the ship carries, with names and hold space. Also returns hold_used.
+async function loadCargo(db, ship) {
+  const { data: rows, error } = await db.from('ship_cargo').select('good_id,quantity,avg_cost').eq('ship_id', ship.id);
+  if (error) throw error;
+  const ids = (rows ?? []).map(r => r.good_id);
+  let goods = [];
+  if (ids.length) {
+    const { data, error: ge } = await db.from('goods').select('id,name,unit,hold_per_unit').in('id', ids);
+    if (ge) throw ge;
+    goods = data ?? [];
+  }
+  let holdUsed = 0;
+  const cargo = (rows ?? []).map(r => {
+    const g = goods.find(x => x.id === r.good_id) || {};
+    const per = Number(g.hold_per_unit ?? 1);
+    holdUsed += r.quantity * per;
+    return { good_id: r.good_id, name: g.name ?? r.good_id, unit: g.unit ?? 'unit', hold_per_unit: per, quantity: r.quantity,
+      avg_cost: r.avg_cost == null ? null : Number(r.avg_cost) };
+  });
+  cargo.sort((a, b) => a.name.localeCompare(b.name));
+  return { cargo, hold_used: Math.round(holdUsed * 1000) / 1000 };
+}
+
+// "market": prices and stock where my docked ship is, plus my cargo and credits. Read-only.
+async function market(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  const { cargo, hold_used } = await loadCargo(db, ship);
+  const out = {
+    ok: true, docked: ship.state === 'docked', location_id: null, location_name: null,
+    credits: Number(ch.credits), hold_size: Number(ship.hold_size), hold_used, cargo, goods: [],
+  };
+  if (!out.docked) return json(out);
+  const loc = await getLocation(db, ship.location_id);
+  out.location_id = ship.location_id; out.location_name = loc ? loc.name : ship.location_id;
+  const { data, error } = await db.rpc('market_view', { p_character: ch.id, p_location: ship.location_id });
+  if (error) throw error;
+  out.goods = (data ?? []).map(r => ({
+    good_id: r.good_id, name: r.good_name, category: r.category, unit: r.unit,
+    hold_per_unit: Number(r.hold_per_unit), target_stock: Number(r.target_stock), stock: Number(r.stock),
+    mid_price: Number(r.mid_price), buy_price: Number(r.buy_price), sell_price: Number(r.sell_price),
+  }));
+  // For each item in the hold: what it would sell for here, and the profit or loss against what was paid.
+  const r2 = n => Math.round(n * 100) / 100;
+  for (const c of out.cargo) {
+    const g = out.goods.find(x => x.good_id === c.good_id);
+    c.sell_here = g ? g.sell_price : null;
+    c.profit_each = (g && c.avg_cost != null) ? r2(g.sell_price - c.avg_cost) : null;
+    c.profit_total = (g && c.avg_cost != null) ? r2((g.sell_price - c.avg_cost) * c.quantity) : null;
+  }
+  return json(out);
+}
+
+// "routes": body = { good: 'water_ice' }. If I bought this good HERE and flew to each other place that
+// trades it, what would I make? Profit per unit, profit for a max load, trip time, and profit per minute
+// (ppm = profit for the load / real minutes of travel). Read-only. Uses today's prices and today's ETA.
+async function routes(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const good = String(body.good ?? '');
+  if (!/^[a-z0-9_]{1,64}$/.test(good)) return json({ error: 'unknown_good' }, 400);
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  if (ship.state !== 'docked') return json({ ok: true, docked: false, rows: [] });
+
+  const { data: gd, error: ge } = await db.from('goods').select('id,name,unit,hold_per_unit').eq('id', good).maybeSingle();
+  if (ge) throw ge;
+  if (!gd) return json({ error: 'unknown_good' }, 400);
+  const { data: prices, error: pe } = await db.rpc('market_prices_for_good', { p_character: ch.id, p_good: good });
+  if (pe) throw pe;
+  const here = (prices ?? []).find(p => p.location_id === ship.location_id);
+  if (!here) return json({ error: 'no_market' }, 400);
+
+  const { hold_used } = await loadCargo(db, ship);
+  const per = Number(gd.hold_per_unit);
+  const buyHere = Number(here.buy_price);
+  // Max load = the most you could buy right now (same limits as the Max buy button).
+  const maxLoad = Math.max(0, Math.floor(Math.min(
+    Number(here.stock), Number(ch.credits) / buyHere, (Number(ship.hold_size) - hold_used + 1e-9) / per)));
+  const qty = maxLoad > 0 ? maxLoad : 1; // nothing affordable: rank by a single unit and say so
+  const r2 = n => Math.round(n * 100) / 100;
+
+  const from = await getLocation(db, ship.location_id);
+  if (!from) return json({ error: 'bad_origin' }, 400);
+  const { data: locs, error: le } = await db.from('locations').select('*');
+  if (le) throw le;
+  const departT = gameDaysAt(Date.now()), g = Number(ship.thrust_g), cache = {};
+  const rows = [];
+  for (const p of prices ?? []) {
+    if (p.location_id === ship.location_id) continue;
+    const to = (locs ?? []).find(l => l.id === p.location_id);
+    if (!to) continue;
+    const est = estimateTrip(from, to, departT, g, cache);
+    if (!est.ok) continue;
+    const etaMin = est.days * 1440 / CLOCK.scale;
+    const unit = r2(Number(p.sell_price) - buyHere);
+    const total = r2(unit * qty);
+    rows.push({
+      location_id: p.location_id, name: p.location_name, anchor_body: to.anchor_body,
+      sell_price: Number(p.sell_price), stock: Number(p.stock), target_stock: Number(p.target_stock),
+      eta_real_minutes: etaMin, sun_danger: est.sun_danger,
+      profit_each: unit, profit_load: total, ppm: etaMin > 0 ? r2(total / etaMin) : 0,
+    });
+  }
+  rows.sort((a, b) => b.ppm - a.ppm);
+  return json({
+    ok: true, docked: true, good_id: good, name: gd.name, unit: gd.unit,
+    buy_here: buyHere, max_load: maxLoad, load_used: qty, hypothetical: maxLoad === 0, rows,
+  });
+}
+
+// ---- cargo selling options (used by "cargo_routes" and "cargo_dest") ----
+// For ONE carried good: every place that trades it, with what the whole stack would sell for there.
+// Cost = what I paid (avg_cost) when known, so profit is real. If the cost is unknown (bought before
+// migration 009) cost_known is false and the figures are INCOME (sell price x quantity), not profit.
+// The place I am docked at is included (is_here, no travel time, ppm null). Uses today's prices and ETA.
+const r2s = n => Math.round(n * 100) / 100;
+async function cargoOptions(db, ch, ship, from, locs, c, cache, departT) {
+  const { data: prices, error: pe } = await db.rpc('market_prices_for_good', { p_character: ch.id, p_good: c.good_id });
+  if (pe) throw pe;
+  const known = c.avg_cost != null, g = Number(ship.thrust_g);
+  const rows = [];
+  for (const p of prices ?? []) {
+    const here = p.location_id === ship.location_id;
+    const to = (locs ?? []).find(l => l.id === p.location_id);
+    if (!to) continue;
+    let etaMin = 0, sun = false;
+    if (!here) {
+      const est = estimateTrip(from, to, departT, g, cache);
+      if (!est.ok) continue;
+      etaMin = est.days * 1440 / CLOCK.scale; sun = est.sun_danger;
+    }
+    const sell = Number(p.sell_price);
+    const each = r2s(sell - (known ? c.avg_cost : 0));
+    const total = r2s(each * c.quantity);
+    rows.push({
+      location_id: p.location_id, name: p.location_name, anchor_body: to.anchor_body, is_here: here,
+      sell_price: sell, stock: Number(p.stock), target_stock: Number(p.target_stock),
+      eta_real_minutes: etaMin, sun_danger: sun, profit_each: each, profit_total: total,
+      ppm: here ? null : (etaMin > 0 ? r2s(total / etaMin) : 0),
+    });
+  }
+  return rows;
+}
+// "Best": if HERE pays the highest price of all, here wins. Otherwise the other place with the best profit per minute.
+function pickBest(rows) {
+  const here = rows.find(r => r.is_here);
+  const others = rows.filter(r => !r.is_here);
+  let bestOther = null, topPrice = 0;
+  for (const r of others) {
+    if (!bestOther || r.ppm > bestOther.ppm) bestOther = r;
+    if (r.sell_price > topPrice) topPrice = r.sell_price;
+  }
+  if (here && (!bestOther || here.sell_price >= topPrice)) return here;
+  return bestOther;
+}
+async function cargoPrelude(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return { resp: json({ error: 'no_character' }, 400) };
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return { resp: json({ error: 'no_ship' }, 400) };
+  if (ship.state !== 'docked') return { resp: json({ ok: true, docked: false, items: [], rows: [] }) };
+  const from = await getLocation(db, ship.location_id);
+  if (!from) return { resp: json({ error: 'bad_origin' }, 400) };
+  const { cargo } = await loadCargo(db, ship);
+  const { data: locs, error: le } = await db.from('locations').select('*');
+  if (le) throw le;
+  return { ch, ship, from, cargo, locs, departT: gameDaysAt(Date.now()), cache: {} };
+}
+
+// "cargo_routes" (no arguments): for each good in my hold, the best place to sell the whole stack.
+async function cargoRoutes(db, user) {
+  const x = await cargoPrelude(db, user);
+  if (x.resp) return x.resp;
+  const items = [];
+  for (const c of x.cargo) {
+    const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT);
+    items.push({ good_id: c.good_id, name: c.name, unit: c.unit, quantity: c.quantity, avg_cost: c.avg_cost,
+      cost_known: c.avg_cost != null, best: pickBest(rows) });
+  }
+  return json({ ok: true, docked: true, location_id: x.ship.location_id, items });
+}
+
+// "cargo_dest": body = { good }. The destinations list for ONE carried good: every place that trades it,
+// the place I am at first (is_here), then the others by profit per minute (best first).
+async function cargoDest(db, user, body) {
+  const good = String(body.good ?? '');
+  if (!/^[a-z0-9_]{1,64}$/.test(good)) return json({ error: 'unknown_good' }, 400);
+  const x = await cargoPrelude(db, user);
+  if (x.resp) return x.resp;
+  const c = x.cargo.find(k => k.good_id === good);
+  if (!c) return json({ error: 'not_in_cargo' }, 400);
+  const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT);
+  rows.sort((p, q) => (p.is_here ? -1 : q.is_here ? 1 : q.ppm - p.ppm));
+  return json({ ok: true, docked: true, location_id: x.ship.location_id, good_id: good, name: c.name, unit: c.unit,
+    quantity: c.quantity, avg_cost: c.avg_cost, cost_known: c.avg_cost != null, rows });
+}
+
+// "buy" / "sell": body = { good: 'water_ice', quantity: 10 }. Whole units only.
+async function trade(db, user, body, kind) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const good = String(body.good ?? '');
+  const qty = Number(body.quantity);
+  if (!/^[a-z0-9_]{1,64}$/.test(good)) return json({ error: 'unknown_good' }, 400);
+  if (!Number.isInteger(qty) || qty < 1 || qty > 1000000) return json({ error: 'bad_quantity' }, 400);
+  await resolveFor(db, ch.id); // a ship that has just arrived can trade at once
+  const { data, error } = await db.rpc(kind === 'buy' ? 'trade_buy' : 'trade_sell', { p_character: ch.id, p_good: good, p_quantity: qty });
+  if (error) throw error;
+  return json(data, data && data.ok ? 200 : 400);
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
+
+  const url = Deno.env.get('SUPABASE_URL');
+  const userClient = createClient(url, Deno.env.get('SUPABASE_ANON_KEY'), {
+    global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
+  });
+  const { data: { user } } = await userClient.auth.getUser();
+  if (!user) return json({ error: 'not_logged_in' }, 401);
+
+  // Server-only client: bypasses the read-only rules. Never exposed to the browser.
+  const db = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'));
+
+  let body;
+  try { body = await req.json(); } catch { return json({ error: 'bad_json' }, 400); }
+
+  try {
+    await loadClock(db);
+    switch (body.action) {
+      case 'me': return await me(db, user);
+      case 'create_character': return await createCharacter(db, user, body);
+      case 'queue_travel': return await queueTravel(db, user, body);
+      case 'departures': return await departures(db, user);
+      case 'cycle_speed': return await cycleSpeed(db, user);
+      case 'market': return await market(db, user);
+      case 'routes': return await routes(db, user, body);
+      case 'cargo_routes': return await cargoRoutes(db, user);
+      case 'cargo_dest': return await cargoDest(db, user, body);
+      case 'buy': return await trade(db, user, body, 'buy');
+      case 'sell': return await trade(db, user, body, 'sell');
+      default: return json({ error: 'unknown_action' }, 400);
+    }
+  } catch (e) {
+    console.error(e);
+    return json({ error: 'server_error' }, 500);
+  }
+});
