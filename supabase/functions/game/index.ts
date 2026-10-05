@@ -787,6 +787,100 @@ async function storageMove(db, user, body, kind) {
   return json(data, data && data.ok ? 200 : 400);
 }
 
+// ---------- market anywhere (Module 5 step 2; migration 011) ----------
+const LOC_RE = /^[a-z0-9_]{1,64}$/;
+
+// "market_at": body = { location: 'luna' }. Everything the Market screen needs for ONE location:
+// that market's goods (prices include the remote fee when my ship is not docked there), my storage there,
+// and my cargo (only when my ship is docked there). Read-only.
+async function marketAt(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const locId = String(body.location ?? '');
+  if (!LOC_RE.test(locId)) return json({ error: 'unknown_location' }, 400);
+  const loc = await getLocation(db, locId);
+  if (!loc) return json({ error: 'unknown_location' }, 400);
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  const { cargo, hold_used } = await loadCargo(db, ship);
+  const docked = ship.state === 'docked';
+  const here = docked && ship.location_id === locId;
+
+  const { data: mv, error: mvErr } = await db.rpc('market_view_at', { p_character: ch.id, p_location: locId });
+  if (mvErr) throw mvErr;
+  const goods = ((mv && mv.goods) || []).map(g => ({
+    good_id: g.good_id, name: g.name, category: g.category, unit: g.unit,
+    hold_per_unit: Number(g.hold_per_unit), target_stock: Number(g.target_stock), stock: Number(g.stock),
+    mid_price: Number(g.mid_price), buy_price: Number(g.buy_price), sell_price: Number(g.sell_price),
+  }));
+
+  // my storage at this location
+  const { data: rows, error: se } = await db.from('storage').select('good_id,quantity,avg_cost').eq('character_id', ch.id).eq('location_id', locId);
+  if (se) throw se;
+  let names = [];
+  if ((rows ?? []).length) {
+    const { data: gd, error: ge } = await db.from('goods').select('id,name,unit,hold_per_unit').in('id', rows.map(r => r.good_id));
+    if (ge) throw ge;
+    names = gd ?? [];
+  }
+  const storage = (rows ?? []).map(r => {
+    const g = names.find(x => x.id === r.good_id) || {};
+    return { good_id: r.good_id, name: g.name ?? r.good_id, unit: g.unit ?? 'unit', hold_per_unit: Number(g.hold_per_unit ?? 1),
+      quantity: r.quantity, avg_cost: r.avg_cost == null ? null : Number(r.avg_cost) };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+
+  // what each of my stacks would sell for here, and the profit against what I paid
+  const r2 = n => Math.round(n * 100) / 100;
+  const myCargo = here ? cargo : [];
+  for (const c of [...myCargo, ...storage]) {
+    const g = goods.find(x => x.good_id === c.good_id);
+    c.sell_here = g ? g.sell_price : null;
+    c.profit_each = (g && c.avg_cost != null) ? r2(g.sell_price - c.avg_cost) : null;
+    c.profit_total = (g && c.avg_cost != null) ? r2((g.sell_price - c.avg_cost) * c.quantity) : null;
+  }
+
+  // which locations have a market at all (for the location box)
+  const { data: mk, error: me2 } = await db.from('markets').select('location_id');
+  if (me2) throw me2;
+  const market_ids = [...new Set((mk ?? []).map(r => r.location_id))];
+
+  return json({
+    ok: true, location_id: locId, location_name: loc.name, docked, here,
+    ship_location_id: docked ? ship.location_id : null,
+    remote_fee: Number((mv && mv.remote_fee) ?? 0), credits: Number(ch.credits),
+    hold_size: Number(ship.hold_size), hold_used, cargo: myCargo, storage, goods, market_ids,
+  });
+}
+
+// "trade_at": body = { location, kind: 'buy'|'sell', good, quantity, stack: 'storage'|'cargo' }.
+// buy: stack = where the goods go. sell: stack = where they come from. 'cargo' needs the ship docked at that location.
+async function tradeAt(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const loc = String(body.location ?? ''), good = String(body.good ?? '');
+  const kind = body.kind, stack = body.stack, qty = Number(body.quantity);
+  if (!LOC_RE.test(loc)) return json({ error: 'unknown_location' }, 400);
+  if (!LOC_RE.test(good)) return json({ error: 'unknown_good' }, 400);
+  if (kind !== 'buy' && kind !== 'sell') return json({ error: 'bad_request' }, 400);
+  if (stack !== 'storage' && stack !== 'cargo') return json({ error: 'bad_request' }, 400);
+  if (!Number.isInteger(qty) || qty < 1 || qty > 1000000) return json({ error: 'bad_quantity' }, 400);
+  await resolveFor(db, ch.id);
+  const { data, error } = await db.rpc('trade_market', { p_character: ch.id, p_location: loc, p_kind: kind, p_good: good, p_quantity: qty, p_stack: stack });
+  if (error) throw error;
+  return json(data, data && data.ok ? 200 : 400);
+}
+
+// "unload_all": move everything in the hold into storage where the ship is docked.
+async function unloadAll(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  await resolveFor(db, ch.id);
+  const { data, error } = await db.rpc('storage_unload_all', { p_character: ch.id });
+  if (error) throw error;
+  return json(data, data && data.ok ? 200 : 400);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
@@ -821,6 +915,9 @@ Deno.serve(async (req) => {
       case 'storage': return await storageView(db, user);
       case 'load': return await storageMove(db, user, body, 'load');
       case 'unload': return await storageMove(db, user, body, 'unload');
+      case 'market_at': return await marketAt(db, user, body);
+      case 'trade_at': return await tradeAt(db, user, body);
+      case 'unload_all': return await unloadAll(db, user);
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
