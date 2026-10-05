@@ -69,7 +69,14 @@ button:disabled{opacity:.45}
 .srow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px;padding:8px;border-top:1px solid #1c2438}
 .srow .chips{display:flex;align-items:center;gap:4px}
 .srow .chips button{margin:2px 0}
-#shere,#shold,#selse{border:1px solid #222b40;border-radius:6px;margin:4px 0}
+#mloc{width:100%;font-size:16px;padding:10px;margin:4px 0}
+.msec{border:1px solid #222b40;border-radius:6px;margin:6px 0;overflow:hidden}
+.sech,.locg{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#0f1523;color:#e8b64a;padding:8px;min-height:40px;cursor:pointer}
+.locg{background:#1a2338;border:1px solid #222b40;border-radius:6px;margin:6px 0}
+.sech button{margin:0;padding:4px 10px;font-size:13px}
+.locbody{margin:0 0 8px 6px;padding-left:6px;border-left:2px solid #222b40}
+.pad{padding:8px}
+.pop .poprow button{margin:3px 6px 3px 0}
 </style>
 </head>
 <body>
@@ -122,36 +129,13 @@ button:disabled{opacity:.45}
       </div>
     </div>
 
-    <!-- SCREEN: trade (market at the place where the ship is docked, buy/sell, cargo) -->
-    <div id="scr-trade" class="trade" hidden>
-      <div class="tcol">
-        <h2 id="ttitle">Market</h2>
-        <div id="tinfo" class="muted"></div>
-        <div class="muted hint">Tap a good to buy it. Long press to compare destinations.</div>
-        <div id="mlist" class="muted">Loading market...</div>
-      </div>
-      <div class="tcol">
-        <h2>Cargo</h2>
-        <div class="muted hint">Tap a cargo item to sell it. Long press to compare destinations.</div>
-        <div id="clist" class="muted">Empty</div>
-      </div>
-    </div>
-
-    <!-- SCREEN: storage (goods kept at locations; load/unload needs the ship docked there) -->
-    <div id="scr-storage" class="trade" hidden>
-      <div class="tcol">
-        <h2 id="sttitle">Stored here</h2>
-        <div id="stinfo" class="muted"></div>
-        <div class="muted hint">Load moves goods from storage into your hold.</div>
-        <div id="shere" class="muted">Loading storage...</div>
-        <h2>Stored elsewhere</h2>
-        <div id="selse" class="muted">Nothing.</div>
-      </div>
-      <div class="tcol">
-        <h2>In your hold</h2>
-        <div class="muted hint">Unload puts goods into storage at the place where you are docked.</div>
-        <div id="shold" class="muted">Empty</div>
-      </div>
+    <!-- SCREEN: market (goods in markets, in storage and in the hold; trade from anywhere) -->
+    <div id="scr-market" hidden>
+      <h2>Market</h2>
+      <select id="mloc" aria-label="Choose a place"></select>
+      <div id="minfo" class="muted"></div>
+      <div class="muted hint">Tap a row for buttons. Long press (or double-tap) to compare destinations: trips start where the goods are.</div>
+      <div id="mbody" class="muted">Loading...</div>
     </div>
 
     <h2>Actions</h2><ul id="acts"></ul>
@@ -432,148 +416,181 @@ addScreen('travel', 'Fly', $('scr-travel'), {
   },
 });
 
-/* ---------- trade screen: market list, buy/sell, cargo (display only: the server decides every trade) ---------- */
-let mk = null, mkAt = 0, mkLoading = false, tsel = null, tbusy = false;
-let csel = null, popLoc = null, buyEdited = false, sellEdited = false, redrawPending = false; // csel = selected CARGO item
-let cargoBest = null, cargoBestLoc = null, cargoBusy = false;
-let cdFor = null, cdLoc = null, cdData = null, cdBusy = false; // dropdown under a CARGO item
-let routesFor = null, routesLoc = null, routesData = null, routesBusy = false, longFired = false, lastTap = { id: null, t: 0 };
+/* ---------- MARKET screen (Module 5 step B): one screen for goods in the market, in storage and in the hold.
+   Display only: the server decides every trade. Replaces the old Trade and Storage tabs. ---------- */
 const money = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const whole = n => Math.round(Number(n)).toLocaleString();
 const r2 = n => Math.round(Number(n) * 100) / 100;
-
-async function loadMarket() {
-  if (mkLoading || !sb) return;
-  mkLoading = true;
-  try {
-    mk = await call('market'); mkAt = Date.now();
-    if (last && last.character) last.character.credits = mk.credits;
-    setShipLine(); drawTrade();
-    if (routesFor) loadRoutes();
-    if (cdFor) loadCargoDrop();
-    if (mk.docked && (mk.cargo || []).length) loadCargoBest(); else { cargoBest = null; cargoBestLoc = null; }
-  } catch (e) { say('Error: ' + e.message, 'err'); }
-  finally { mkLoading = false; }
-}
-// best place to sell each carried good (server action cargo_routes); shown under each cargo item
-async function loadCargoBest() {
-  if (cargoBusy || !sb) return;
-  cargoBusy = true;
-  try {
-    const d = await call('cargo_routes');
-    cargoBest = {}; cargoBestLoc = d.docked ? d.location_id : null;
-    (d.items || []).forEach(x => { cargoBest[x.good_id] = x; });
-  } catch (e) { cargoBest = null; cargoBestLoc = null; }
-  finally { cargoBusy = false; drawTrade(); }
-}
-const selGood = () => (mk && mk.goods || []).find(g => g.good_id === tsel) || null;
-const ownQty = id => { const c = mk && (mk.cargo || []).find(x => x.good_id === id); return c ? c.quantity : 0; };
-function maxBuy(g) {
-  const free = mk.hold_size - mk.hold_used;
-  return Math.max(0, Math.floor(Math.min(g.stock, mk.credits / g.buy_price, (free + 1e-9) / g.hold_per_unit)));
-}
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function cell(cls, main, sub) { const c = el('span', cls, main); if (sub) c.appendChild(el('span', 'sub', sub)); return c; }
-
 const sgn = n => (Number(n) > 0 ? '+' : '') + money(n);
 const tone = n => Number(n) > 0 ? 'win' : Number(n) < 0 ? 'lose' : 'muted';
+const LS = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+};
+const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
 
-async function openRoutes(id) {
-  routesFor = id; routesLoc = mk ? mk.location_id : null; routesData = null; if (tsel !== id) buyEdited = false; tsel = id;
-  drawTrade(); await loadRoutes();
+let mloc = null;            // chosen place: a location id, or 'ALL'
+let mdock;                  // the place the ship was docked at last time we looked (to notice a new dock)
+let mAt = 0;                // when the screen was last refreshed
+const mc = {};              // cache per location: mc[id] = { d: market_at answer, at, bestSt, bestCg }
+const mLoading = {};
+let stAll = null, stAllBusy = false;   // answer of 'storage': everything I keep, at every place
+let hold = null;            // { used, size } of the ship's hold, from the latest answer
+const openLocs = {};        // All view: which places are expanded
+const secOpen = {};         // which sections are collapsed: key 'place:section' -> false
+let msel = null;            // selected row { loc, kind: 'cargo' | 'storage' | 'goods', good }
+let dd = null, ddBusy = false;   // open destinations list { loc, kind, good, data }
+let mbusy = false, mEdited = false, mRedraw = false, longFired = false, lastTap = { id: null, t: 0 };
+let buyTo = LS.get('pvs_buyto') === 'hold' ? 'hold' : 'storage';   // where bought goods go (remembered)
+
+const dockedAt = () => { const s = last && (last.ships || [])[0]; return s && s.state === 'docked' ? s.location_id : null; };
+// Default place: where the ship is docked; else the last place it docked (remembered); else the start of the current trip.
+function defaultLoc() {
+  const dl = dockedAt(); if (dl) return dl;
+  const mem = LS.get('pvs_lastdock'); if (mem) return mem;
+  const a = ((last && last.actions) || []).find(x => x.status === 'pending');
+  return (a && a.payload && a.payload.from) || 'luna';
 }
-function closeRoutes() { routesFor = null; routesData = null; drawTrade(); }
-async function loadRoutes() {
-  if (!routesFor || !sb || routesBusy) return;
-  routesBusy = true;
-  const id = routesFor;
-  try {
-    const d = await call('routes', { good: id });
-    if (routesFor === id) routesData = d;
-  } catch (e) { if (routesFor === id) routesData = { error: e.message }; }
-  finally { routesBusy = false; drawTrade(); if (routesFor && routesFor !== id) loadRoutes(); }
+function placeIds() {
+  const s = new Set();
+  Object.values(mc).forEach(x => ((x.d && x.d.market_ids) || []).forEach(i => s.add(i)));
+  ((stAll && stAll.items) || []).forEach(i => s.add(i.location_id));
+  if (dockedAt()) s.add(dockedAt());
+  if (mloc && mloc !== 'ALL') s.add(mloc);
+  return [...s].sort((a, b) => locName(a).localeCompare(locName(b)));
 }
-// why can't I buy any of this good right now?
-function buyBlockReason(g) {
-  if (!g) return 'Sold out';
-  if ((mk.hold_size - mk.hold_used + 1e-9) / g.hold_per_unit < 1) return 'Hold full';
-  if (mk.credits / g.buy_price < 1) return 'Low funds';
+const curData = () => { const c = msel && mc[msel.loc]; return c ? c.d : null; };
+function curItem() {
+  const d = curData(); if (!d) return null;
+  const list = msel.kind === 'goods' ? d.goods : msel.kind === 'cargo' ? d.cargo : d.storage;
+  return (list || []).find(x => x.good_id === msel.good) || null;
+}
+const isSel = (loc, kind, good) => !!msel && msel.loc === loc && msel.kind === kind && msel.good === good;
+const isDD = (loc, kind, good) => !!dd && dd.loc === loc && dd.kind === kind && dd.good === good;
+const buyDest = d => (buyTo === 'hold' && d.here) ? 'hold' : 'storage';
+function maxBuy(d, g) {
+  let m = Math.min(g.stock, d.credits / g.buy_price);
+  if (buyDest(d) === 'hold') m = Math.min(m, (d.hold_size - d.hold_used + 1e-9) / g.hold_per_unit);
+  return Math.max(0, Math.floor(m));
+}
+function buyBlockReason(d, g) {
+  if (!g || g.stock < 1) return 'Sold out';
+  if (d.credits / g.buy_price < 1) return 'Low funds';
+  if (buyDest(d) === 'hold' && (d.hold_size - d.hold_used + 1e-9) / g.hold_per_unit < 1) return 'Hold full';
   return 'Sold out';
 }
-function maxZeroReason(d) { return buyBlockReason((mk && mk.goods || []).find(x => x.good_id === d.good_id)); }
-function routesBox() {
-  const box = el('div', 'routes'), d = routesData;
-  if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return box; }
-  if (d.error) { box.appendChild(el('div', 'err', d.error === 'no_market' ? 'This place does not trade that.' : 'Could not load: ' + d.error)); }
-  else if (!d.docked) box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.'));
-  else {
-    box.appendChild(el('div', '', 'Buy ' + d.name + ' here at ' + money(d.buy_here) + '. Max load: ' + whole(d.max_load) + ' ' + d.unit + '.'));
-    const why = d.hypothetical ? maxZeroReason(d) : null;
-    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the load columns show N/A.'));
-    if (!d.rows.length) box.appendChild(el('div', 'muted', 'No other place trades this good.'));
-    else {
-      const hd = el('div', 'rhead');
-      hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', d.hypothetical ? why : (mk && mk.hold_used > 0 ? 'For ' + whole(d.max_load) : 'Max load')), el('span', 'num', 'Per min'));
-      box.appendChild(hd);
-      d.rows.forEach(x => {
-        const r = el('div', 'rrow');
-        r.append(
-          cell('', x.name, 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
-          cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
-          cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-          d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.profit_load), sgn(x.profit_load)),
-          d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
-        box.appendChild(r);
-      });
-      box.appendChild(el('div', 'muted hint', 'Sorted by profit per minute of travel. Snapshot: prices there change while you fly.'));
-    }
-  }
-  const b = el('button', 'alt', 'Close'); b.onclick = closeRoutes; box.appendChild(b);
-  return box;
+const maxLoad = (d, x) => Math.max(0, Math.min(x.quantity, Math.floor((d.hold_size - d.hold_used + 1e-9) / x.hold_per_unit)));
+
+/* ---- loading ---- */
+async function loadLoc(loc) {
+  if (!sb || mLoading[loc]) return;
+  mLoading[loc] = true;
+  try {
+    const d = await call('market_at', { location: loc });
+    const c = mc[loc] || (mc[loc] = {}); c.d = d; c.at = Date.now();
+    hold = { used: d.hold_used, size: d.hold_size };
+    if (last && last.character) last.character.credits = d.credits;
+    setShipLine(); drawMarket();
+    loadBest(loc);
+    if (dd && dd.loc === loc) loadDD();
+  } catch (e) { say('Error: ' + e.message, 'err'); }
+  finally { mLoading[loc] = false; }
+}
+// "Best:" lines: where to sell each stack for the most profit per minute (hold: from the ship; storage: from that place)
+async function loadBest(loc) {
+  const c = mc[loc]; if (!c || !c.d) return;
+  const idx = r => { const o = {}; (r.items || []).forEach(x => { o[x.good_id] = x; }); return o; };
+  const jobs = [];
+  if ((c.d.storage || []).length) jobs.push(call('cargo_routes', { source: 'storage', location: loc }).then(r => { c.bestSt = idx(r); })); else c.bestSt = null;
+  if (c.d.here && (c.d.cargo || []).length) jobs.push(call('cargo_routes').then(r => { c.bestCg = idx(r); })); else c.bestCg = null;
+  try { await Promise.all(jobs); } catch (e) { c.bestSt = c.bestCg = null; }
+  drawMarket();
+}
+async function loadStorageAll() {
+  if (stAllBusy || !sb) return;
+  stAllBusy = true;
+  try { stAll = await call('storage'); hold = { used: stAll.hold_used, size: stAll.hold_size }; drawMarket(); }
+  catch (e) { say('Error: ' + e.message, 'err'); }
+  finally { stAllBusy = false; }
+}
+function refreshMarket() {
+  mAt = Date.now();
+  loadStorageAll();
+  if (mloc === 'ALL') Object.keys(openLocs).filter(k => openLocs[k]).forEach(loadLoc);
+  else if (mloc) loadLoc(mloc);
 }
 
-// ---- the same kind of dropdown under a CARGO item: "if I sold what I carry at each place?" ----
-async function openCargoDrop(id) { if (csel !== id) sellEdited = false; csel = id; cdFor = id; cdLoc = mk ? mk.location_id : null; cdData = null; drawTrade(); await loadCargoDrop(); }
-function closeCargoDrop() { cdFor = null; cdData = null; drawTrade(); }
-async function loadCargoDrop() {
-  if (!cdFor || !sb || cdBusy) return;
-  cdBusy = true;
-  const id = cdFor;
+/* ---- destinations list (long press / double tap) ---- */
+async function openDD(loc, kind, good) {
+  if (!isSel(loc, kind, good)) mEdited = false;
+  msel = { loc, kind, good }; dd = { loc, kind, good, data: null };
+  drawMarket(); await loadDD();
+}
+function closeDD() { dd = null; drawMarket(); }
+async function loadDD() {
+  if (!dd || !sb || ddBusy) return;
+  ddBusy = true;
+  const me = dd;
   try {
-    const d = await call('cargo_dest', { good: id });
-    if (cdFor === id) cdData = d;
-  } catch (e) { if (cdFor === id) cdData = { error: e.message }; }
-  finally { cdBusy = false; drawTrade(); if (cdFor && cdFor !== id) loadCargoDrop(); }
+    let d;
+    if (me.kind === 'goods') d = await call('routes', { good: me.good, location: me.loc });
+    else if (me.kind === 'storage') d = await call('cargo_dest', { good: me.good, source: 'storage', location: me.loc });
+    else d = await call('cargo_dest', { good: me.good });
+    if (dd === me) me.data = d;
+  } catch (e) { if (dd === me) me.data = { error: e.message }; }
+  finally { ddBusy = false; drawMarket(); if (dd && dd !== me) loadDD(); }
 }
-function cargoDropBox() {
-  const box = el('div', 'routes'), d = cdData;
-  if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return box; }
-  if (d.error) box.appendChild(el('div', 'err', 'Could not load: ' + d.error));
-  else if (!d.docked) box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.'));
-  else {
-    box.appendChild(el('div', '', 'Selling your ' + whole(d.quantity) + ' ' + d.name + (d.cost_known ? ' (paid ' + money(d.avg_cost) + ' each).' : '. Cost unknown, so the figures show income, not profit.')));
-    if (!d.rows.length) box.appendChild(el('div', 'muted', 'No place trades this good.'));
-    else {
-      const hd = el('div', 'rhead');
-      hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', 'For ' + whole(d.quantity)), el('span', 'num', 'Per min'));
-      box.appendChild(hd);
-      d.rows.forEach(x => {
-        const r = el('div', 'rrow');
-        r.append(
-          cell('', x.is_here ? x.name + ' (here)' : x.name, x.is_here ? 'no travel' : 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
-          cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
-          cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-          cell('num ' + tone(x.profit_total), sgn(x.profit_total)),
-          x.is_here ? cell('num muted', 'now') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
-        box.appendChild(r);
-      });
-      box.appendChild(el('div', 'muted hint', 'Here first, then by profit per minute of travel. Snapshot: prices there change while you fly.'));
-    }
+function ddBox() {
+  const box = el('div', 'routes'), d = dd.data, md = mc[dd.loc] && mc[dd.loc].d;
+  const close = () => { const b = el('button', 'alt', 'Close'); b.onclick = closeDD; box.appendChild(b); return box; };
+  if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return close(); }
+  if (d.error) { box.appendChild(el('div', 'err', d.error === 'no_market' ? 'This place does not trade that.' : 'Could not load: ' + d.error)); return close(); }
+  if (d.docked === false && dd.kind === 'cargo') { box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.')); return close(); }
+  const hd = el('div', 'rhead');
+  if (dd.kind === 'goods') {
+    box.appendChild(el('div', '', 'Buy ' + d.name + ' at ' + locName(d.origin_id) + ' for ' + money(d.buy_here) + (d.remote ? ' (includes the remote fee)' : '') + '. Max load: ' + whole(d.max_load) + ' ' + d.unit + '.'));
+    const g = md && (md.goods || []).find(x => x.good_id === dd.good);
+    const why = d.hypothetical && md ? buyBlockReason(md, g) : null;
+    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the load columns show N/A.'));
+    if (!d.rows.length) { box.appendChild(el('div', 'muted', 'No other place trades this good.')); return close(); }
+    hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'),
+      el('span', 'num', d.hypothetical ? why : (md && md.hold_used > 0 ? 'For ' + whole(d.max_load) : 'Max load')), el('span', 'num', 'Per min'));
+    box.appendChild(hd);
+    d.rows.forEach(x => {
+      const r = el('div', 'rrow');
+      r.append(
+        cell('', x.name, 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
+        cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
+        cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
+        d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.profit_load), sgn(x.profit_load)),
+        d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
+      box.appendChild(r);
+    });
+    box.appendChild(el('div', 'muted hint', 'Trips start at ' + locName(d.origin_id) + ', where the goods are. Sorted by profit per minute. Snapshot: prices change while you fly.'));
+    return close();
   }
-  const b = el('button', 'alt', 'Close'); b.onclick = closeCargoDrop; box.appendChild(b);
-  return box;
+  const where = dd.kind === 'storage' ? ' stored at ' + locName(d.location_id) : '';
+  box.appendChild(el('div', '', 'Selling your ' + whole(d.quantity) + ' ' + d.name + where + (d.cost_known ? ' (paid ' + money(d.avg_cost) + ' each).' : '. Cost unknown, so the figures show income, not profit.')));
+  if (!d.rows.length) { box.appendChild(el('div', 'muted', 'No place trades this good.')); return close(); }
+  hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', 'For ' + whole(d.quantity)), el('span', 'num', 'Per min'));
+  box.appendChild(hd);
+  d.rows.forEach(x => {
+    const r = el('div', 'rrow');
+    r.append(
+      cell('', x.is_here ? x.name + ' (here)' : x.name, x.is_here ? 'no travel' : 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
+      cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
+      cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
+      cell('num ' + tone(x.profit_total), sgn(x.profit_total)),
+      x.is_here ? cell('num muted', 'now') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
+    box.appendChild(r);
+  });
+  box.appendChild(el('div', 'muted hint', 'Trips start at ' + locName(d.location_id) + ', where the goods are. ' + (d.remote ? 'Your ship is not there, so selling there right now adds the remote fee. ' : '') + 'Snapshot: prices change while you fly.'));
+  return close();
 }
-// long press (half a second) or double-tap on a row opens its destinations list
+
+// long press (half a second) or double-tap on a row opens its destinations list; a single tap selects it
 function wireRow(r, key, o) {
   let tm = null, sx = 0, sy = 0;
   const stop = () => clearTimeout(tm);
@@ -596,256 +613,224 @@ function wireRow(r, key, o) {
     o.tap();
   };
 }
-function wireGoodRow(r, g) {
-  wireRow(r, 'm:' + g.good_id, { open: () => openRoutes(g.good_id), close: closeRoutes, isOpen: () => routesFor === g.good_id,
-    tap: () => { tsel = tsel === g.good_id ? null : g.good_id; buyEdited = false; drawTrade(); } });
-}
-function wireCargoRow(r, c) {
-  wireRow(r, 'c:' + c.good_id, { open: () => openCargoDrop(c.good_id), close: closeCargoDrop, isOpen: () => cdFor === c.good_id,
-    tap: () => { csel = csel === c.good_id ? null : c.good_id; sellEdited = false; drawTrade(); } });
-}
+function toggleSel(loc, kind, good) { msel = isSel(loc, kind, good) ? null : { loc, kind, good }; mEdited = false; drawMarket(); }
 
-/* ---- pop-ups: Buy under a market row, Sell under a cargo item. Each is built ONCE and moved into place on every redraw,
-   so a number you are typing is not lost. While a quantity box has focus, redraws wait until you leave it. ---- */
-const selCargo = () => (mk && mk.cargo || []).find(c => c.good_id === csel) || null;
+/* ---- the quantity pop-up: built ONCE and moved under the selected row on every redraw, so a number you are typing survives.
+   While the box has focus, redraws wait until you leave it. ---- */
 const isTyping = () => !!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('qin'));
 function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 ? q : NaN; }
-function makePop(kind) {
-  const root = el('div', 'pop ' + kind), title = el('div', 'poptitle'), row = el('div', 'poprow');
+const pop = (() => {
+  const root = el('div', 'pop'), title = el('div', 'poptitle'), row = el('div', 'poprow'), brow = el('div', 'poprow');
   const inp = document.createElement('input');
   inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'qin';
-  const btn = el('button', kind === 'buy' ? '' : 'alt', kind === 'buy' ? 'Buy' : 'Sell');
-  row.append(el('span', 'muted', 'Quantity'), inp, btn);
+  const b1 = el('button', '', ''), b2 = el('button', 'alt', '');
+  row.append(el('span', 'muted', 'Quantity'), inp);
+  brow.append(b1, b2);
   const chips = el('div', 'chips'), info = el('div', 'popinfo');
-  root.append(title, row, chips, info);
-  const pop = { kind, root, title, inp, btn, chips, info };
-  inp.addEventListener('input', () => { if (kind === 'buy') buyEdited = true; else sellEdited = true; pop.refresh(); });
-  inp.addEventListener('blur', () => setTimeout(() => { if (redrawPending && !isTyping()) { redrawPending = false; drawTrade(); } }, 350));
-  btn.onclick = () => doTrade(kind);
-  return pop;
-}
-const buyPop = makePop('buy'), sellPop = makePop('sell');
-function addChip(p, label, fn) { const b = el('button', 'alt', label); b.onclick = fn; p.chips.appendChild(b); }
-
-buyPop.refresh = function () {
-  const p = buyPop, g = selGood(); if (!g || !mk) return;
-  const q = qtyOf(p.inp), max = maxBuy(g), free = Math.max(0, mk.hold_size - mk.hold_used);
-  p.btn.disabled = !(q >= 1) || tbusy;
+  root.append(title, row, brow, chips, info);
+  inp.addEventListener('input', () => { mEdited = true; refreshPop(); });
+  inp.addEventListener('blur', () => setTimeout(() => { if (mRedraw && !isTyping()) { mRedraw = false; drawMarket(); } }, 350));
+  b1.onclick = () => doAct('main'); b2.onclick = () => doAct('second');
+  return { root, title, inp, b1, b2, chips, info };
+})();
+function addChip(label, fn) { const b = el('button', 'alt', label); b.onclick = fn; pop.chips.appendChild(b); }
+function refreshPop() {
+  const it = curItem(), d = curData(); if (!it || !d) return;
+  const q = qtyOf(pop.inp), bad = isNaN(q) || q < 1, p = pop;
   p.info.replaceChildren();
-  p.info.appendChild(el('div', '', isNaN(q) ? 'Enter a whole number (0 or more).'
-    : 'Buy ' + whole(q) + ' ' + g.name + ': about ' + money(q * g.buy_price) + ' (hold space free: ' + r2(free) + ')'));
-  p.info.appendChild(el('div', 'muted', max === 0 ? 'You cannot buy any right now: ' + buyBlockReason(g).toLowerCase() + '.'
-    : 'Most you can buy: ' + whole(max) + '. The server works out the exact price.'));
-};
-function placeBuyPop(g) {
-  const p = buyPop;
-  p.title.textContent = 'Buy ' + g.name;
-  if (!buyEdited) p.inp.value = maxBuy(g);
-  p.chips.replaceChildren();
-  addChip(p, '1', () => { p.inp.value = 1; buyEdited = true; p.refresh(); });
-  addChip(p, '10', () => { p.inp.value = 10; buyEdited = true; p.refresh(); });
-  addChip(p, 'Max', () => { buyEdited = false; p.inp.value = maxBuy(selGood() || g); p.refresh(); });
-  p.refresh();
-  return p.root;
+  if (isNaN(q)) p.info.appendChild(el('div', '', 'Enter a whole number (0 or more).'));
+  if (msel.kind === 'goods') {
+    const dest = buyDest(d), max = maxBuy(d, it);
+    p.b1.textContent = 'Buy'; p.b1.disabled = bad || mbusy;
+    p.b2.textContent = 'To: ' + (dest === 'hold' ? 'Hold' : 'Storage'); p.b2.disabled = mbusy || !d.here;
+    if (!isNaN(q)) p.info.appendChild(el('div', '', 'Buy ' + whole(q) + ' ' + it.name + ': about ' + money(q * it.buy_price) + (dest === 'hold' ? ' (hold space free: ' + r2(Math.max(0, d.hold_size - d.hold_used)) + ')' : '')));
+    p.info.appendChild(el('div', 'muted', 'Goes into ' + (dest === 'hold' ? 'your hold.' : 'your storage at ' + d.location_name + '.') + (d.here ? '' : ' Hold needs your ship docked here.')));
+    p.info.appendChild(el('div', 'muted', max === 0 ? 'You cannot buy any right now: ' + buyBlockReason(d, it).toLowerCase() + '.' : 'Most you can buy: ' + whole(max) + '. The server works out the exact price.'));
+    return;
+  }
+  const sells = it.sell_here != null, cargo = msel.kind === 'cargo';
+  p.b1.textContent = 'Sell'; p.b1.disabled = bad || !sells || q > it.quantity || mbusy;
+  if (cargo) { p.b2.textContent = 'Unload'; p.b2.disabled = bad || q > it.quantity || mbusy; }
+  else { p.b2.textContent = 'Load'; p.b2.disabled = bad || !d.here || q > it.quantity || q > maxLoad(d, it) || mbusy; }
+  if (!sells) p.info.appendChild(el('div', 'muted', 'This place does not buy that.'));
+  else if (!isNaN(q)) p.info.appendChild(el('div', '', 'Sell ' + whole(q) + ' ' + it.name + ': about ' + money(q * it.sell_here) + ' (you have ' + whole(it.quantity) + ')'));
+  if (cargo) p.info.appendChild(el('div', 'muted', 'Unload moves it into your storage here.'));
+  else p.info.appendChild(el('div', 'muted', d.here ? 'Load moves it into your hold (room for ' + whole(maxLoad(d, it)) + ').' : 'Load needs your ship docked here.'));
+  if (!isNaN(q) && q > it.quantity) p.info.appendChild(el('div', 'err', 'You only have ' + whole(it.quantity) + '.'));
 }
-sellPop.refresh = function () {
-  const p = sellPop, c = selCargo(); if (!c || !mk) return;
-  const g = (mk.goods || []).find(x => x.good_id === c.good_id);
-  p.info.replaceChildren();
-  if (!g) { p.btn.disabled = true; p.info.appendChild(el('div', 'muted', 'This place does not buy that.')); return; }
-  const q = qtyOf(p.inp);
-  p.btn.disabled = !(q >= 1) || tbusy;
-  p.info.appendChild(el('div', '', isNaN(q) ? 'Enter a whole number (0 or more).'
-    : 'Sell ' + whole(q) + ' ' + c.name + ': about ' + money(q * g.sell_price) + ' (you have ' + whole(c.quantity) + ')'));
-  p.info.appendChild(el('div', 'muted', 'The server works out the exact price.'));
-};
-function placeSellPop(c) {
-  const p = sellPop;
-  p.title.textContent = 'Sell ' + c.name;
-  if (!sellEdited) p.inp.value = c.quantity;
+function placePop(d, kind, it) {
+  const p = pop;
+  p.title.textContent = (kind === 'goods' ? 'Buy ' : kind === 'cargo' ? 'Cargo: ' : 'Stored: ') + it.name;
+  if (!mEdited) p.inp.value = kind === 'goods' ? maxBuy(d, it) : it.quantity;
   p.chips.replaceChildren();
-  addChip(p, '1', () => { p.inp.value = 1; sellEdited = true; p.refresh(); });
-  addChip(p, '10', () => { p.inp.value = 10; sellEdited = true; p.refresh(); });
-  addChip(p, 'All', () => { sellEdited = false; const cc = selCargo() || c; p.inp.value = cc.quantity; p.refresh(); });
-  p.refresh();
+  addChip('1', () => { p.inp.value = 1; mEdited = true; refreshPop(); });
+  addChip('10', () => { p.inp.value = 10; mEdited = true; refreshPop(); });
+  addChip(kind === 'goods' ? 'Max' : 'All', () => { mEdited = false; p.inp.value = kind === 'goods' ? maxBuy(d, it) : it.quantity; refreshPop(); });
+  refreshPop();
   return p.root;
 }
 
-function drawTrade() {
-  if (isTyping()) { redrawPending = true; return; }
-  redrawPending = false;
-  const box = $('mlist'), cbox = $('clist');
-  box.replaceChildren(); cbox.replaceChildren();
-  if (!mk) { box.textContent = 'Loading market...'; return; }
-  $('tinfo').textContent = 'Credits ' + money(mk.credits) + '   |   Hold ' + r2(mk.hold_used) + ' / ' + r2(mk.hold_size);
-  $('ttitle').textContent = mk.docked ? 'Market at ' + mk.location_name : 'Market';
-  const goods = mk.goods || [];
-  if (mk.location_id !== popLoc) { popLoc = mk.location_id; tsel = null; csel = null; buyEdited = false; sellEdited = false; }
-  if (!goods.some(g => g.good_id === tsel)) tsel = null;
-  if (!(mk.cargo || []).some(c => c.good_id === csel)) csel = null;
-  if (routesFor && (!mk.docked || mk.location_id !== routesLoc || !goods.some(x => x.good_id === routesFor))) { routesFor = null; routesData = null; }
-  if (cdFor && (!mk.docked || mk.location_id !== cdLoc || !(mk.cargo || []).some(x => x.good_id === cdFor))) { cdFor = null; cdData = null; }
-  box.className = (mk.docked && goods.length) ? '' : 'muted'; cbox.className = (mk.cargo || []).length ? '' : 'muted';
-  if (!mk.docked) box.textContent = 'You can trade when your ship is docked.';
-  else if (!goods.length) box.textContent = 'Nothing is traded here.';
+/* ---- drawing ---- */
+function drawLocBox() {
+  const s = $('mloc'), ids = placeIds(), dl = dockedAt();
+  const opts = [['ALL', 'All locations'], ...ids.map(id => [id, locName(id) + (dl === id ? ' (ship here)' : '')])];
+  const sig = opts.map(o => o.join('|')).join(';');
+  if (s.dataset.sig !== sig) {
+    s.replaceChildren(...opts.map(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; }));
+    s.dataset.sig = sig;
+  }
+  if (s.value !== mloc && document.activeElement !== s) s.value = mloc;
+}
+function section(parent, loc, key, title, count, btn, drawBody) {
+  const k = loc + ':' + key, open = secOpen[k] !== false;
+  const box = el('div', 'msec'), h = el('div', 'sech');
+  h.appendChild(el('span', '', (open ? ARROW_OPEN : ARROW_SHUT) + title + ' (' + count + ')'));
+  if (btn) h.appendChild(btn);
+  h.onclick = e => { if (e.target.tagName === 'BUTTON') return; secOpen[k] = !open; drawMarket(); };
+  box.appendChild(h);
+  if (open) drawBody(box);
+  parent.appendChild(box);
+}
+function stackRow(box, d, loc, kind, x, cb) {
+  const sel = isSel(loc, kind, x.good_id);
+  const r = el('div', 'row' + (sel ? ' sel' : ''));
+  const left = cell('', whole(x.quantity) + ' x ' + x.name, x.avg_cost != null ? 'paid ' + money(x.avg_cost) + ' each' : 'cost unknown');
+  if (cb && cb.best) {
+    const b = cb.best, inc = cb.cost_known ? '' : ' income';
+    left.appendChild(el('span', 'sub ' + tone(b.is_here ? b.profit_total : b.ppm), b.is_here
+      ? 'Best: sell here, ' + sgn(b.profit_total) + inc
+      : 'Best: ' + b.name + ' (' + fmt(b.eta_real_minutes * 60) + '), ' + sgn(b.profit_total) + inc + ', ' + sgn(b.ppm) + '/min' + (b.sun_danger ? ' near the Sun!' : '')));
+  } else if (cb) left.appendChild(el('span', 'sub muted', 'No place buys this.'));
+  const right = el('span', 'num');
+  if (x.sell_here == null) right.appendChild(el('span', 'muted', 'not sold here'));
   else {
+    right.appendChild(el('span', 'get', 'sells here for ' + money(x.sell_here)));
+    if (x.profit_each != null) right.appendChild(el('span', 'sub ' + tone(x.profit_each), sgn(x.profit_each) + ' each, ' + sgn(x.profit_total) + ' for ' + whole(x.quantity)));
+  }
+  r.append(left, right);
+  wireRow(r, kind + ':' + loc + ':' + x.good_id, { open: () => openDD(loc, kind, x.good_id), close: closeDD, isOpen: () => isDD(loc, kind, x.good_id), tap: () => toggleSel(loc, kind, x.good_id) });
+  box.appendChild(r);
+  if (sel) box.appendChild(placePop(d, kind, x));
+  if (isDD(loc, kind, x.good_id)) box.appendChild(ddBox());
+}
+function drawLoc(parent, loc) {
+  const c = mc[loc];
+  if (!c || !c.d) { parent.appendChild(el('div', 'muted pad', 'Loading...')); return; }
+  const d = c.d, cargo = d.cargo || [], stored = d.storage || [], goods = d.goods || [];
+  if (!d.here && d.remote_fee > 0) parent.appendChild(el('div', 'muted hint pad', 'Your ship is not docked here, so trades at this market carry an extra ' + Math.round(d.remote_fee * 100) + '% fee. Prices below include it.'));
+  if (d.here) {
+    const ub = el('button', 'alt', 'Unload all'); ub.disabled = mbusy || !cargo.length; ub.onclick = doUnloadAll;
+    section(parent, loc, 'cargo', 'Cargo, hold ' + r2(d.hold_used) + ' / ' + r2(d.hold_size), cargo.length, ub, box => {
+      if (!cargo.length) box.appendChild(el('div', 'muted pad', 'Empty'));
+      cargo.forEach(x => stackRow(box, d, loc, 'cargo', x, c.bestCg && c.bestCg[x.good_id]));
+    });
+  }
+  section(parent, loc, 'storage', 'Stored here', stored.length, null, box => {
+    if (!stored.length) box.appendChild(el('div', 'muted pad', 'Nothing of yours is stored here.'));
+    stored.forEach(x => stackRow(box, d, loc, 'storage', x, c.bestSt && c.bestSt[x.good_id]));
+  });
+  section(parent, loc, 'goods', 'For sale', goods.length, null, box => {
+    if (!goods.length) { box.appendChild(el('div', 'muted pad', 'Nothing is traded here.')); return; }
     const hd = el('div', 'mhead'); hd.append(el('span', '', 'Good'), el('span', 'num', 'Buy for'), el('span', 'num', 'Sell at'), el('span', 'num', 'Stock'));
     box.appendChild(hd);
     goods.forEach(g => {
-      const r = el('div', 'mrow' + (g.good_id === tsel ? ' sel' : ''));
+      const sel = isSel(loc, 'goods', g.good_id);
+      const r = el('div', 'mrow' + (sel ? ' sel' : ''));
       r.append(cell('', g.name, 'per ' + g.unit), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), 'target ' + whole(g.target_stock)));
-      wireGoodRow(r, g);
+      wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
       box.appendChild(r);
-      if (tsel === g.good_id) box.appendChild(placeBuyPop(g));      // 1) the row  2) the buy pop-up  3) the destinations dropdown
-      if (routesFor === g.good_id) box.appendChild(routesBox());
+      if (sel) box.appendChild(placePop(d, 'goods', g));
+      if (isDD(loc, 'goods', g.good_id)) box.appendChild(ddBox());
     });
-  }
-  if ((mk.cargo || []).length) {
-    mk.cargo.forEach(c => {
-      const g = goods.find(x => x.good_id === c.good_id);
-      const r = el('div', 'row' + (c.good_id === csel ? ' sel' : ''));
-      const right = el('span', 'num');
-      if (!g) right.appendChild(el('span', 'muted', 'not sold here'));
-      else {
-        right.appendChild(el('span', 'get', 'sells here for ' + money(g.sell_price)));
-        if (c.profit_each != null) right.appendChild(el('span', 'sub ' + tone(c.profit_each), sgn(c.profit_each) + ' each, ' + sgn(c.profit_total) + ' for ' + c.quantity));
-      }
-      const left = cell('', c.quantity + ' x ' + c.name, c.avg_cost != null ? 'paid ' + money(c.avg_cost) + ' each' : 'cost unknown');
-      const cb = cargoBest && cargoBestLoc === mk.location_id ? cargoBest[c.good_id] : null;
-      if (cb && cb.best) {
-        const b = cb.best, inc = cb.cost_known ? '' : ' income';
-        left.appendChild(el('span', 'sub ' + tone(b.is_here ? b.profit_total : b.ppm), b.is_here
-          ? 'Best: sell here, ' + sgn(b.profit_total) + inc
-          : 'Best: ' + b.name + ' (' + fmt(b.eta_real_minutes * 60) + '), ' + sgn(b.profit_total) + inc + ', ' + sgn(b.ppm) + '/min' + (b.sun_danger ? ' near the Sun!' : '')));
-      } else if (cb) left.appendChild(el('span', 'sub muted', 'No place buys this.'));
-      r.append(left, right);
-      wireCargoRow(r, c);
-      cbox.appendChild(r);
-      if (csel === c.good_id) cbox.appendChild(placeSellPop(c));    // row, then sell pop-up, then dropdown
-      if (cdFor === c.good_id) cbox.appendChild(cargoDropBox());
-    });
-  } else cbox.textContent = 'Empty';
+  });
 }
-function tradeError(e) {
+function drawMarket() {
+  if (isTyping()) { mRedraw = true; return; }
+  mRedraw = false;
+  if (!mloc) return;
+  const body = $('mbody'); body.replaceChildren();
+  drawLocBox();
+  $('minfo').textContent = 'Credits ' + money((last && last.character) ? last.character.credits : 0) + (hold ? '   |   Hold ' + r2(hold.used) + ' / ' + r2(hold.size) : '');
+  if (msel && curData() && !curItem()) { msel = null; mEdited = false; }
+  if (dd && mc[dd.loc] && mc[dd.loc].d) {
+    const d = mc[dd.loc].d, list = dd.kind === 'goods' ? d.goods : dd.kind === 'cargo' ? d.cargo : d.storage;
+    if (!(list || []).some(x => x.good_id === dd.good)) dd = null;
+  }
+  if (mloc === 'ALL') {
+    const ids = placeIds();
+    if (!ids.length) body.appendChild(el('div', 'muted pad', 'Nothing yet.'));
+    ids.forEach(id => {
+      const open = !!openLocs[id], n = ((stAll && stAll.items) || []).filter(i => i.location_id === id).length;
+      const g = el('div', 'locg');
+      g.append(el('span', '', (open ? ARROW_OPEN : ARROW_SHUT) + locName(id) + (dockedAt() === id ? ' (ship here)' : '')), el('span', 'muted', n ? n + ' stored' : ''));
+      g.onclick = () => { openLocs[id] = !open; if (!open) loadLoc(id); drawMarket(); };
+      body.appendChild(g);
+      if (open) { const inner = el('div', 'locbody'); drawLoc(inner, id); body.appendChild(inner); }
+    });
+  } else drawLoc(body, mloc);
+}
+
+/* ---- actions ---- */
+function marketError(e) {
   const d = e.data || {}, m = e.message;
   if (m === 'not_enough_hold') return 'Not enough room in the hold (free ' + r2(d.hold_free || 0) + ', needed ' + r2(d.hold_needed || 0) + ').';
   if (m === 'not_enough_credits') return 'Not enough credits (cost ' + money(d.cost || 0) + ', you have ' + money(d.credits || 0) + ').';
   if (m === 'not_enough_stock') return 'The market only has ' + whole(d.available || 0) + ' available.';
-  if (m === 'not_enough_cargo') return 'You only have ' + (d.have || 0) + ' of that.';
-  if (m === 'not_docked') return 'You must be docked to trade.';
+  if (m === 'not_enough_cargo') return 'You only have ' + (d.have || 0) + ' in the hold.';
+  if (m === 'not_enough_stored') return 'You only have ' + (d.have || 0) + ' stored there.';
+  if (m === 'not_docked' || m === 'not_docked_here') return 'Your ship must be docked at this place for that.';
   if (m === 'no_market') return 'This place does not trade that.';
   if (m === 'bad_quantity') return 'Enter a whole number of 1 or more.';
+  if (m === 'server_error') return 'Server error. Has migration 011 been run in the SQL editor?';
   return 'Error: ' + m;
 }
-async function doTrade(kind) {
-  if (tbusy) return;
-  const pop = kind === 'buy' ? buyPop : sellPop;
-  const id = kind === 'buy' ? tsel : csel, q = qtyOf(pop.inp);
-  if (!id || !(q >= 1)) return;
-  const nm = kind === 'buy' ? (selGood() || {}).name : (selCargo() || {}).name;
+async function doAct(which) {
+  if (mbusy || !msel) return;
+  const it = curItem(), d = curData(); if (!it || !d) return;
+  if (msel.kind === 'goods' && which === 'second') { buyTo = buyTo === 'hold' ? 'storage' : 'hold'; LS.set('pvs_buyto', buyTo); mEdited = false; drawMarket(); return; }
+  const q = qtyOf(pop.inp); if (!(q >= 1)) return;
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-  tbusy = true; buyPop.refresh(); sellPop.refresh();
-  try {
-    const r = await call(kind, { good: id, quantity: q });
-    say((kind === 'buy' ? 'Bought ' : 'Sold ') + q + ' ' + nm + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).', 'ok');
-  } catch (e) { say(tradeError(e), 'err'); }
-  finally { tbusy = false; buyEdited = false; sellEdited = false; redrawPending = false; await loadMarket(); }
+  const s = { ...msel }, nm = it.name;
+  let action, args, okText;
+  if (s.kind === 'goods') {
+    const dest = buyDest(d);
+    action = 'trade_at'; args = { location: s.loc, kind: 'buy', good: s.good, quantity: q, stack: dest === 'hold' ? 'cargo' : 'storage' };   // the server calls the hold 'cargo'
+    okText = r => 'Bought ' + q + ' ' + nm + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each) into ' + (dest === 'hold' ? 'the hold.' : 'storage at ' + d.location_name + '.');
+  } else if (which === 'main') {
+    action = 'trade_at'; args = { location: s.loc, kind: 'sell', good: s.good, quantity: q, stack: s.kind === 'cargo' ? 'cargo' : 'storage' };
+    okText = r => 'Sold ' + q + ' ' + nm + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).';
+  } else if (s.kind === 'cargo') {
+    action = 'unload'; args = { good: s.good, quantity: q }; okText = () => 'Unloaded ' + q + ' ' + nm + ' into storage.';
+  } else {
+    action = 'load'; args = { good: s.good, quantity: q }; okText = () => 'Loaded ' + q + ' ' + nm + ' into the hold.';
+  }
+  mbusy = true; refreshPop(); drawMarket();
+  try { const r = await call(action, args); say(okText(r), 'ok'); }
+  catch (e) { say(marketError(e), 'err'); }
+  finally { mbusy = false; mEdited = false; mRedraw = false; refreshMarket(); }
+}
+async function doUnloadAll() {
+  if (mbusy) return;
+  mbusy = true; drawMarket();
+  try { const r = await call('unload_all'); say(r.units_moved ? 'Unloaded ' + r.goods_moved + ' kinds of goods (' + whole(r.units_moved) + ' units) into storage.' : 'The hold is already empty.', 'ok'); }
+  catch (e) { say(marketError(e), 'err'); }
+  finally { mbusy = false; refreshMarket(); }
 }
 
-addScreen('trade', 'Trade', $('scr-trade'), {
-  onShow: () => { loadMarket(); },
+$('mloc').onchange = () => {
+  mloc = $('mloc').value; msel = null; dd = null; mEdited = false;
+  if (mloc === 'ALL') refreshMarket(); else { mAt = Date.now(); loadLoc(mloc); }
+  drawMarket();
+};
+addScreen('market', 'Market', $('scr-market'), {
+  onShow: () => { mdock = dockedAt(); if (!mloc) mloc = defaultLoc(); refreshMarket(); drawMarket(); },
   update: ship => {
-    const docked = !!(ship && ship.state === 'docked');
-    if (!mk || mk.docked !== docked || (docked && mk.location_id !== ship.location_id) || Date.now() - mkAt > 20000) loadMarket();
-  },
-});
-
-/* ---------- STORAGE screen (Module 5 step 1): goods kept at locations ---------- */
-let st = null, stAt = 0, stLoading = false, stBusy = false;
-async function loadStorage() {
-  if (stLoading || !sb) return;
-  stLoading = true;
-  try { st = await call('storage'); stAt = Date.now(); drawStorage(); }
-  catch (e) { say('Error: ' + e.message, 'err'); }
-  finally { stLoading = false; }
-}
-function storageError(e) {
-  const d = e.data || {}, m = e.message;
-  if (m === 'not_enough_hold') return 'Not enough room in the hold (free ' + r2(d.hold_free || 0) + ', needed ' + r2(d.hold_needed || 0) + ').';
-  if (m === 'not_enough_stored') return 'You only have ' + (d.have || 0) + ' stored here.';
-  if (m === 'not_enough_cargo') return 'You only have ' + (d.have || 0) + ' in the hold.';
-  if (m === 'not_docked') return 'Your ship must be docked to load or unload.';
-  if (m === 'bad_quantity') return 'Enter a whole number of 1 or more.';
-  if (m === 'server_error') return 'Server error. Has migration 010 been run in the SQL editor?';
-  return 'Error: ' + m;
-}
-async function doStorage(kind, good, name, q) {
-  if (stBusy) return;
-  stBusy = true; drawStorage();
-  try {
-    await call(kind, { good, quantity: q });
-    say((kind === 'load' ? 'Loaded ' : 'Unloaded ') + q + ' ' + name + (kind === 'load' ? ' into the hold.' : ' into storage.'), 'ok');
-  } catch (e) { say(storageError(e), 'err'); }
-  finally { stBusy = false; await loadStorage(); }
-}
-function stChips(kind, good, name, qty, maxQty) {
-  const box = el('span', 'chips');
-  const add = (label, n) => {
-    const b = el('button', 'alt', label); b.disabled = stBusy || n < 1;
-    b.onclick = () => doStorage(kind, good, name, n); box.appendChild(b);
-  };
-  if (maxQty >= 1) add('1', 1);
-  if (maxQty >= 10) add('10', 10);
-  add(kind === 'load' ? 'Max' : 'All', maxQty);
-  return box;
-}
-function drawStorage() {
-  const here = $('shere'), hold = $('shold'), else_ = $('selse');
-  here.replaceChildren(); hold.replaceChildren(); else_.replaceChildren();
-  if (!st) { here.textContent = 'Loading storage...'; return; }
-  const free = st.hold_size - st.hold_used, items = st.items || [];
-  $('stinfo').textContent = 'Hold ' + r2(st.hold_used) + ' / ' + r2(st.hold_size) + (st.docked ? '' : '   |   In flight');
-  $('sttitle').textContent = st.docked ? 'Stored at ' + st.location_name : 'Stored here';
-  const mine = items.filter(i => i.is_here), other = items.filter(i => !i.is_here);
-  here.className = 'muted';
-  if (!st.docked) here.textContent = 'You are in flight. Dock somewhere to load or unload.';
-  else if (!mine.length) here.textContent = 'Nothing of yours is stored here.';
-  else {
-    here.className = '';
-    mine.forEach(i => {
-      const maxLoad = Math.max(0, Math.min(i.quantity, Math.floor((free + 1e-9) / i.hold_per_unit)));
-      const r = el('div', 'srow');
-      r.append(cell('', i.quantity + ' x ' + i.name, i.avg_cost != null ? 'paid ' + money(i.avg_cost) + ' each' : 'cost unknown'),
-               stChips('load', i.good_id, i.name, i.quantity, maxLoad));
-      here.appendChild(r);
-    });
-  }
-  const cargo = st.cargo || [];
-  if (!cargo.length) hold.textContent = 'Empty';
-  else {
-    hold.className = '';
-    cargo.forEach(c => {
-      const r = el('div', 'srow');
-      r.append(cell('', c.quantity + ' x ' + c.name, c.avg_cost != null ? 'paid ' + money(c.avg_cost) + ' each' : 'cost unknown'),
-               st.docked ? stChips('unload', c.good_id, c.name, c.quantity, c.quantity) : el('span', 'muted', 'in flight'));
-      hold.appendChild(r);
-    });
-  }
-  if (!other.length) else_.textContent = 'Nothing.';
-  else {
-    else_.className = '';
-    other.forEach(i => {
-      const r = el('div', 'srow');
-      r.appendChild(cell('', i.quantity + ' x ' + i.name, 'at ' + i.location_name));
-      else_.appendChild(r);
-    });
-  }
-}
-addScreen('storage', 'Storage', $('scr-storage'), {
-  onShow: () => { loadStorage(); },
-  update: ship => {
-    const docked = !!(ship && ship.state === 'docked');
-    if (!st || st.docked !== docked || (docked && st.location_id !== ship.location_id) || Date.now() - stAt > 20000) loadStorage();
+    const dl = (ship && ship.state === 'docked') ? ship.location_id : null;
+    if (dl) LS.set('pvs_lastdock', dl);
+    let changed = false;
+    if (dl !== mdock) { mdock = dl; changed = true; if (dl && mloc !== 'ALL') mloc = dl; }
+    if (!mloc) { mloc = defaultLoc(); changed = true; }
+    if (changed || Date.now() - mAt > 20000) refreshMarket();
   },
 });
 
@@ -946,7 +931,7 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-$('out').onclick = async () => { await sb.auth.signOut(); clearInterval(timer); last = null; deps = null; selected = null; mk = null; tsel = null; csel = null; cdFor = null; routesFor = null; routesData = null; show('auth'); };
+$('out').onclick = async () => { await sb.auth.signOut(); clearInterval(timer); last = null; deps = null; selected = null; mloc = null; mdock = undefined; msel = null; dd = null; stAll = null; hold = null; Object.keys(mc).forEach(k => delete mc[k]); show('auth'); };
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
   catch (e) { say('Error: ' + e.message, 'err'); }
