@@ -66,6 +66,10 @@ button:disabled{opacity:.45}
 .rhead{color:#8d98b2;border-bottom:1px solid #222b40}
 .rrow{border-top:1px solid #1c2438}
 .routes button{padding:4px 12px;font-size:13px;margin:6px 0 2px}
+.srow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px;padding:8px;border-top:1px solid #1c2438}
+.srow .chips{display:flex;align-items:center;gap:4px}
+.srow .chips button{margin:2px 0}
+#shere,#shold,#selse{border:1px solid #222b40;border-radius:6px;margin:4px 0}
 </style>
 </head>
 <body>
@@ -130,6 +134,23 @@ button:disabled{opacity:.45}
         <h2>Cargo</h2>
         <div class="muted hint">Tap a cargo item to sell it. Long press to compare destinations.</div>
         <div id="clist" class="muted">Empty</div>
+      </div>
+    </div>
+
+    <!-- SCREEN: storage (goods kept at locations; load/unload needs the ship docked there) -->
+    <div id="scr-storage" class="trade" hidden>
+      <div class="tcol">
+        <h2 id="sttitle">Stored here</h2>
+        <div id="stinfo" class="muted"></div>
+        <div class="muted hint">Load moves goods from storage into your hold.</div>
+        <div id="shere" class="muted">Loading storage...</div>
+        <h2>Stored elsewhere</h2>
+        <div id="selse" class="muted">Nothing.</div>
+      </div>
+      <div class="tcol">
+        <h2>In your hold</h2>
+        <div class="muted hint">Unload puts goods into storage at the place where you are docked.</div>
+        <div id="shold" class="muted">Empty</div>
       </div>
     </div>
 
@@ -736,6 +757,95 @@ addScreen('trade', 'Trade', $('scr-trade'), {
   update: ship => {
     const docked = !!(ship && ship.state === 'docked');
     if (!mk || mk.docked !== docked || (docked && mk.location_id !== ship.location_id) || Date.now() - mkAt > 20000) loadMarket();
+  },
+});
+
+/* ---------- STORAGE screen (Module 5 step 1): goods kept at locations ---------- */
+let st = null, stAt = 0, stLoading = false, stBusy = false;
+async function loadStorage() {
+  if (stLoading || !sb) return;
+  stLoading = true;
+  try { st = await call('storage'); stAt = Date.now(); drawStorage(); }
+  catch (e) { say('Error: ' + e.message, 'err'); }
+  finally { stLoading = false; }
+}
+function storageError(e) {
+  const d = e.data || {}, m = e.message;
+  if (m === 'not_enough_hold') return 'Not enough room in the hold (free ' + r2(d.hold_free || 0) + ', needed ' + r2(d.hold_needed || 0) + ').';
+  if (m === 'not_enough_stored') return 'You only have ' + (d.have || 0) + ' stored here.';
+  if (m === 'not_enough_cargo') return 'You only have ' + (d.have || 0) + ' in the hold.';
+  if (m === 'not_docked') return 'Your ship must be docked to load or unload.';
+  if (m === 'bad_quantity') return 'Enter a whole number of 1 or more.';
+  if (m === 'server_error') return 'Server error. Has migration 010 been run in the SQL editor?';
+  return 'Error: ' + m;
+}
+async function doStorage(kind, good, name, q) {
+  if (stBusy) return;
+  stBusy = true; drawStorage();
+  try {
+    await call(kind, { good, quantity: q });
+    say((kind === 'load' ? 'Loaded ' : 'Unloaded ') + q + ' ' + name + (kind === 'load' ? ' into the hold.' : ' into storage.'), 'ok');
+  } catch (e) { say(storageError(e), 'err'); }
+  finally { stBusy = false; await loadStorage(); }
+}
+function stChips(kind, good, name, qty, maxQty) {
+  const box = el('span', 'chips');
+  const add = (label, n) => {
+    const b = el('button', 'alt', label); b.disabled = stBusy || n < 1;
+    b.onclick = () => doStorage(kind, good, name, n); box.appendChild(b);
+  };
+  if (maxQty >= 1) add('1', 1);
+  if (maxQty >= 10) add('10', 10);
+  add(kind === 'load' ? 'Max' : 'All', maxQty);
+  return box;
+}
+function drawStorage() {
+  const here = $('shere'), hold = $('shold'), else_ = $('selse');
+  here.replaceChildren(); hold.replaceChildren(); else_.replaceChildren();
+  if (!st) { here.textContent = 'Loading storage...'; return; }
+  const free = st.hold_size - st.hold_used, items = st.items || [];
+  $('stinfo').textContent = 'Hold ' + r2(st.hold_used) + ' / ' + r2(st.hold_size) + (st.docked ? '' : '   |   In flight');
+  $('sttitle').textContent = st.docked ? 'Stored at ' + st.location_name : 'Stored here';
+  const mine = items.filter(i => i.is_here), other = items.filter(i => !i.is_here);
+  here.className = 'muted';
+  if (!st.docked) here.textContent = 'You are in flight. Dock somewhere to load or unload.';
+  else if (!mine.length) here.textContent = 'Nothing of yours is stored here.';
+  else {
+    here.className = '';
+    mine.forEach(i => {
+      const maxLoad = Math.max(0, Math.min(i.quantity, Math.floor((free + 1e-9) / i.hold_per_unit)));
+      const r = el('div', 'srow');
+      r.append(cell('', i.quantity + ' x ' + i.name, i.avg_cost != null ? 'paid ' + money(i.avg_cost) + ' each' : 'cost unknown'),
+               stChips('load', i.good_id, i.name, i.quantity, maxLoad));
+      here.appendChild(r);
+    });
+  }
+  const cargo = st.cargo || [];
+  if (!cargo.length) hold.textContent = 'Empty';
+  else {
+    hold.className = '';
+    cargo.forEach(c => {
+      const r = el('div', 'srow');
+      r.append(cell('', c.quantity + ' x ' + c.name, c.avg_cost != null ? 'paid ' + money(c.avg_cost) + ' each' : 'cost unknown'),
+               st.docked ? stChips('unload', c.good_id, c.name, c.quantity, c.quantity) : el('span', 'muted', 'in flight'));
+      hold.appendChild(r);
+    });
+  }
+  if (!other.length) else_.textContent = 'Nothing.';
+  else {
+    else_.className = '';
+    other.forEach(i => {
+      const r = el('div', 'srow');
+      r.appendChild(cell('', i.quantity + ' x ' + i.name, 'at ' + i.location_name));
+      else_.appendChild(r);
+    });
+  }
+}
+addScreen('storage', 'Storage', $('scr-storage'), {
+  onShow: () => { loadStorage(); },
+  update: ship => {
+    const docked = !!(ship && ship.state === 'docked');
+    if (!st || st.docked !== docked || (docked && st.location_id !== ship.location_id) || Date.now() - stAt > 20000) loadStorage();
   },
 });
 
