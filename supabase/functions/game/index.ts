@@ -732,6 +732,61 @@ async function trade(db, user, body, kind) {
   return json(data, data && data.ok ? 200 : 400);
 }
 
+// ---------- storage (Module 5 step 1; migration 010) ----------
+// Goods a character keeps AT A LOCATION, separate from the ship's hold. The maths lives in the database
+// (storage_load / storage_unload); the server only checks who is asking and passes the result on.
+
+// "storage": everything I keep, at every location, plus my hold and where my ship is. Read-only.
+async function storageView(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  const { cargo, hold_used } = await loadCargo(db, ship);
+  const docked = ship.state === 'docked';
+  const out = {
+    ok: true, docked, location_id: docked ? ship.location_id : null, location_name: null,
+    hold_size: Number(ship.hold_size), hold_used, cargo, items: [],
+  };
+  if (docked) { const loc = await getLocation(db, ship.location_id); out.location_name = loc ? loc.name : ship.location_id; }
+  const { data: rows, error } = await db.from('storage').select('location_id,good_id,quantity,avg_cost').eq('character_id', ch.id);
+  if (error) throw error;
+  if (!rows || !rows.length) return json(out);
+  const gIds = [...new Set(rows.map(r => r.good_id))], lIds = [...new Set(rows.map(r => r.location_id))];
+  const [gr, lr] = await Promise.all([
+    db.from('goods').select('id,name,unit,hold_per_unit').in('id', gIds),
+    db.from('locations').select('id,name').in('id', lIds),
+  ]);
+  if (gr.error) throw gr.error;
+  if (lr.error) throw lr.error;
+  out.items = rows.map(r => {
+    const g = (gr.data ?? []).find(x => x.id === r.good_id) || {};
+    const l = (lr.data ?? []).find(x => x.id === r.location_id) || {};
+    return {
+      location_id: r.location_id, location_name: l.name ?? r.location_id, is_here: docked && r.location_id === ship.location_id,
+      good_id: r.good_id, name: g.name ?? r.good_id, unit: g.unit ?? 'unit', hold_per_unit: Number(g.hold_per_unit ?? 1),
+      quantity: r.quantity, avg_cost: r.avg_cost == null ? null : Number(r.avg_cost),
+    };
+  });
+  out.items.sort((a, b) => (b.is_here - a.is_here) || a.location_name.localeCompare(b.location_name) || a.name.localeCompare(b.name));
+  return json(out);
+}
+
+// "load" / "unload": body = { good: 'water_ice', quantity: 10 }. Whole units only. Needs the ship docked.
+async function storageMove(db, user, body, kind) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const good = String(body.good ?? '');
+  const qty = Number(body.quantity);
+  if (!/^[a-z0-9_]{1,64}$/.test(good)) return json({ error: 'unknown_good' }, 400);
+  if (!Number.isInteger(qty) || qty < 1 || qty > 1000000) return json({ error: 'bad_quantity' }, 400);
+  await resolveFor(db, ch.id); // a ship that has just arrived can load at once
+  const { data, error } = await db.rpc(kind === 'load' ? 'storage_load' : 'storage_unload', { p_character: ch.id, p_good: good, p_quantity: qty });
+  if (error) throw error;
+  return json(data, data && data.ok ? 200 : 400);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
@@ -763,6 +818,9 @@ Deno.serve(async (req) => {
       case 'cargo_dest': return await cargoDest(db, user, body);
       case 'buy': return await trade(db, user, body, 'buy');
       case 'sell': return await trade(db, user, body, 'sell');
+      case 'storage': return await storageView(db, user);
+      case 'load': return await storageMove(db, user, body, 'load');
+      case 'unload': return await storageMove(db, user, body, 'unload');
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
