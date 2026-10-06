@@ -192,14 +192,17 @@ function toggleSel(loc, kind, good) { msel = isSel(loc, kind, good) ? null : { l
 const isTyping = () => !!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('qin'));
 function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 ? q : NaN; }
 const pop = (() => {
-  const root = el('div', 'pop'), title = el('div', 'poptitle'), row = el('div', 'poprow'), brow = el('div', 'poprow');
+  const root = el('div', 'pop'), left = el('div', 'popl'), right = el('div', 'popr');
+  const title = el('div', 'poptitle'), row = el('div', 'poprow'), brow = el('div', 'poprow');
   const inp = document.createElement('input');
-  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'qin';
+  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'qin'; inp.setAttribute('aria-label', 'Quantity');
   const b1 = el('button', '', ''), b2 = el('button', 'alt', '');
-  row.append(el('span', 'muted', 'Quantity'), inp);
-  brow.append(b1, b2);
   const chips = el('div', 'chips'), info = el('div', 'popinfo');
-  root.append(title, row, brow, chips, info);
+  row.append(inp, chips);            // top right: the number box and its quick buttons
+  brow.append(b1, b2);               // under them: the Buy / Sell / Load buttons
+  left.append(title, info);          // left: what you are doing + the explanation lines
+  right.append(row, brow);
+  root.append(left, right);
   inp.addEventListener('input', () => { mEdited = true; refreshPop(); });
   inp.addEventListener('blur', () => setTimeout(() => { if (mRedraw && !isTyping()) { mRedraw = false; drawMarket(); } }, 350));
   b1.onclick = () => doAct('main'); b2.onclick = () => doAct('second');
@@ -237,6 +240,7 @@ function placePop(d, kind, it) {
   p.chips.replaceChildren();
   addChip('1', () => { p.inp.value = 1; mEdited = true; refreshPop(); });
   addChip('10', () => { p.inp.value = 10; mEdited = true; refreshPop(); });
+  if (kind === 'storage') addChip('Full', () => { mEdited = true; p.inp.value = maxLoad(d, it); refreshPop(); });   // as much as fits the empty hold space
   addChip(kind === 'goods' ? 'Max' : 'All', () => { mEdited = false; p.inp.value = kind === 'goods' ? maxBuy(d, it) : it.quantity; refreshPop(); });
   refreshPop();
   return p.root;
