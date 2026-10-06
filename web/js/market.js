@@ -220,7 +220,7 @@ function refreshPop() {
     p.b2.textContent = 'To: ' + (dest === 'hold' ? 'Hold' : 'Storage'); p.b2.disabled = mbusy || !d.here;
     if (!isNaN(q)) p.info.appendChild(el('div', '', 'Buy ' + whole(q) + ' ' + it.name + ': about ' + money(q * it.buy_price) + (dest === 'hold' ? ' (hold space free: ' + r2(Math.max(0, d.hold_size - d.hold_used)) + ')' : '')));
     p.info.appendChild(el('div', 'muted', 'Goes into ' + (dest === 'hold' ? 'your hold.' : 'your storage at ' + d.location_name + '.') + (d.here ? '' : ' Hold needs your ship docked here.')));
-    p.info.appendChild(el('div', 'muted', max === 0 ? 'You cannot buy any right now: ' + buyBlockReason(d, it).toLowerCase() + '.' : 'Most you can buy: ' + whole(max) + '. The server works out the exact price.'));
+    if (max === 0) p.info.appendChild(el('div', 'muted', 'You cannot buy any right now: ' + buyBlockReason(d, it).toLowerCase() + '.'));
     return;
   }
   const sells = it.sell_here != null, cargo = msel.kind === 'cargo';
