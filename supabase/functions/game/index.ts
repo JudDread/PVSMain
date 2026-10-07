@@ -342,44 +342,43 @@ async function routes(db, user, body) {
   const { data: gd, error: ge } = await db.from('goods').select('id,name,unit,hold_per_unit').eq('id', good).maybeSingle();
   if (ge) throw ge;
   if (!gd) return json({ error: 'unknown_good' }, 400);
-  const { data: prices, error: pe } = await db.rpc('market_prices_for_good', { p_character: ch.id, p_good: good });
-  if (pe) throw pe;
-  const here = (prices ?? []).find(p => p.location_id === originId);
-  if (!here) return json({ error: 'no_market' }, 400);
-  let buyHere = Number(here.buy_price);
-  if (remote) {
-    const { data: mv, error: me2 } = await db.rpc('market_view_at', { p_character: ch.id, p_location: originId });
-    if (me2) throw me2;
-    const mg = ((mv && mv.goods) || []).find(x => x.good_id === good);
-    if (mg) buyHere = Number(mg.buy_price);
-  }
-
-  const { hold_used } = await loadCargo(db, ship);
   const per = Number(gd.hold_per_unit);
-  // Max load = the most you could buy right now (same limits as the Max buy button).
-  const maxLoad = Math.max(0, Math.floor(Math.min(
-    Number(here.stock), Number(ch.credits) / buyHere, (Number(ship.hold_size) - hold_used + 1e-9) / per)));
-  const qty = maxLoad > 0 ? maxLoad : 1; // nothing affordable: rank by a single unit and say so
+  const { hold_used } = await loadCargo(db, ship);
   const r2 = n => Math.round(n * 100) / 100;
+  // Most you could buy at the origin (market stock + credits): asked of the server (market_quote, quantity 0).
+  const { data: q0, error: qe0 } = await db.rpc('market_quote', { p_character: ch.id, p_location: originId, p_kind: 'buy', p_good: good, p_quantity: 0, p_stack: 'storage' });
+  if (qe0) throw qe0;
+  if (!q0 || !q0.ok) return json({ error: (q0 && q0.error) || 'no_market' }, 400);
+  const holdCap = Math.max(0, Math.floor((Number(ship.hold_size) - hold_used + 1e-9) / per));
+  const maxLoad = Math.max(0, Math.min(Number(q0.max_quantity), holdCap));
+  const qty = maxLoad > 0 ? maxLoad : 1; // nothing affordable: rank by a single unit and say so
+  // What the WHOLE load costs to buy (price rises as you buy; remote fee included when the ship is not docked there).
+  const { data: q1, error: qe1 } = await db.rpc('market_quote', { p_character: ch.id, p_location: originId, p_kind: 'buy', p_good: good, p_quantity: qty, p_stack: 'storage' });
+  if (qe1) throw qe1;
+  if (!q1 || !q1.ok || q1.total == null) return json({ error: (q1 && q1.error) || 'no_market' }, 400);
+  const buyTotal = Number(q1.total), buyAvg = Number(q1.unit_price);
 
   const from = await getLocation(db, originId);
   if (!from) return json({ error: explicit ? 'unknown_location' : 'bad_origin' }, 400);
   const { data: locs, error: le } = await db.from('locations').select('*');
   if (le) throw le;
+  // What the WHOLE load would sell for at every other place (price falls as you sell; no remote fee at destinations).
+  const { data: lots, error: le2 } = await db.rpc('market_sell_lots', { p_character: ch.id, p_good: good, p_quantity: qty, p_origin: originId });
+  if (le2) throw le2;
   const departT = gameDaysAt(Date.now()), g = Number(ship.thrust_g), cache = {};
   const rows = [];
-  for (const p of prices ?? []) {
+  for (const p of lots ?? []) {
     if (p.location_id === originId) continue;
     const to = (locs ?? []).find(l => l.id === p.location_id);
     if (!to) continue;
     const est = estimateTrip(from, to, departT, g, cache);
     if (!est.ok) continue;
     const etaMin = est.days * 1440 / CLOCK.scale;
-    const unit = r2(Number(p.sell_price) - buyHere);
-    const total = r2(unit * qty);
+    const total = r2(Number(p.total) - buyTotal);
+    const unit = r2(Number(p.avg_price) - buyAvg);
     rows.push({
       location_id: p.location_id, name: p.location_name, anchor_body: to.anchor_body,
-      sell_price: Number(p.sell_price), stock: Number(p.stock), target_stock: Number(p.target_stock),
+      sell_price: Number(p.avg_price), stock: r2(Number(p.stock)), target_stock: r2(Number(p.target_stock)),
       eta_real_minutes: etaMin, sun_danger: est.sun_danger,
       profit_each: unit, profit_load: total, ppm: etaMin > 0 ? r2(total / etaMin) : 0,
     });
@@ -387,7 +386,7 @@ async function routes(db, user, body) {
   rows.sort((a, b) => b.ppm - a.ppm);
   return json({
     ok: true, docked, origin_id: originId, remote, good_id: good, name: gd.name, unit: gd.unit,
-    buy_here: buyHere, max_load: maxLoad, load_used: qty, hypothetical: maxLoad === 0, rows,
+    buy_here: buyAvg, buy_total: buyTotal, max_load: maxLoad, load_used: qty, hypothetical: maxLoad === 0, rows,
   });
 }
 
@@ -397,8 +396,11 @@ async function routes(db, user, body) {
 // migration 009) cost_known is false and the figures are INCOME (sell price x quantity), not profit.
 // The place I am docked at is included (is_here, no travel time, ppm null). Uses today's prices and ETA.
 const r2s = n => Math.round(n * 100) / 100;
-async function cargoOptions(db, ch, ship, from, locs, c, cache, departT, feePrices) {
-  const { data: prices, error: pe } = await db.rpc('market_prices_for_good', { p_character: ch.id, p_good: c.good_id });
+async function cargoOptions(db, ch, ship, from, locs, c, cache, departT) {
+  const qty = Math.floor(Number(c.quantity));
+  if (!(qty >= 1)) return [];
+  // price of the WHOLE stack at every place that trades it (the place where the goods are carries the remote fee if the ship is not docked there)
+  const { data: prices, error: pe } = await db.rpc('market_sell_lots', { p_character: ch.id, p_good: c.good_id, p_quantity: qty, p_origin: from.id });
   if (pe) throw pe;
   const known = c.avg_cost != null, g = Number(ship.thrust_g);
   const rows = [];
@@ -412,13 +414,12 @@ async function cargoOptions(db, ch, ship, from, locs, c, cache, departT, feePric
       if (!est.ok) continue;
       etaMin = est.days * 1440 / CLOCK.scale; sun = est.sun_danger;
     }
-    // selling right where the goods are, with the ship elsewhere, costs the remote fee (feePrices comes from market_view_at)
-    const sell = (here && feePrices && feePrices[c.good_id] != null) ? feePrices[c.good_id] : Number(p.sell_price);
-    const each = r2s(sell - (known ? c.avg_cost : 0));
-    const total = r2s(each * c.quantity);
+    const sell = Number(p.avg_price); // average price per unit over the whole stack
+    const total = r2s(Number(p.total) - (known ? c.avg_cost * qty : 0));
+    const each = r2s(total / qty);
     rows.push({
       location_id: p.location_id, name: p.location_name, anchor_body: to.anchor_body, is_here: here,
-      sell_price: sell, stock: Number(p.stock), target_stock: Number(p.target_stock),
+      sell_price: sell, stock: r2s(Number(p.stock)), target_stock: r2s(Number(p.target_stock)),
       eta_real_minutes: etaMin, sun_danger: sun, profit_each: each, profit_total: total,
       ppm: here ? null : (etaMin > 0 ? r2s(total / etaMin) : 0),
     });
@@ -462,14 +463,7 @@ async function cargoPrelude(db, user, body) {
   const { data: locs, error: le } = await db.from('locations').select('*');
   if (le) throw le;
   const remote = !(docked && ship.location_id === originId);
-  let feePrices = null;
-  if (remote && stacks.length) {
-    const { data: mv, error: me2 } = await db.rpc('market_view_at', { p_character: ch.id, p_location: originId });
-    if (me2) throw me2;
-    feePrices = {};
-    for (const g of (mv && mv.goods) || []) feePrices[g.good_id] = Number(g.sell_price);
-  }
-  return { ch, ship, from, cargo: stacks, locs, departT: gameDaysAt(Date.now()), cache: {}, source, remote, feePrices, docked };
+  return { ch, ship, from, cargo: stacks, locs, departT: gameDaysAt(Date.now()), cache: {}, source, remote, docked };
 }
 
 // "cargo_routes": for each good in my hold (or in storage at body.location), the best place to sell the whole stack.
@@ -478,7 +472,7 @@ async function cargoRoutes(db, user, body) {
   if (x.resp) return x.resp;
   const items = [];
   for (const c of x.cargo) {
-    const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT, x.feePrices);
+    const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT);
     items.push({ good_id: c.good_id, name: c.name, unit: c.unit, quantity: c.quantity, avg_cost: c.avg_cost,
       cost_known: c.avg_cost != null, best: pickBest(rows) });
   }
@@ -494,7 +488,7 @@ async function cargoDest(db, user, body) {
   if (x.resp) return x.resp;
   const c = x.cargo.find(k => k.good_id === good);
   if (!c) return json({ error: x.source === 'storage' ? 'not_in_storage' : 'not_in_cargo' }, 400);
-  const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT, x.feePrices);
+  const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT);
   rows.sort((p, q) => (p.is_here ? -1 : q.is_here ? 1 : q.ppm - p.ppm));
   return json({ ok: true, docked: x.docked, source: x.source, location_id: x.from.id, remote: x.remote, good_id: good, name: c.name, unit: c.unit,
     quantity: c.quantity, avg_cost: c.avg_cost, cost_known: c.avg_cost != null, rows });
@@ -610,8 +604,8 @@ async function marketAt(db, user, body) {
   if (mvErr) throw mvErr;
   const goods = ((mv && mv.goods) || []).map(g => ({
     good_id: g.good_id, name: g.name, category: g.category, unit: g.unit,
-    hold_per_unit: Number(g.hold_per_unit), target_stock: Number(g.target_stock), stock: Number(g.stock),
-    mid_price: Number(g.mid_price), buy_price: Number(g.buy_price), sell_price: Number(g.sell_price),
+    hold_per_unit: Number(g.hold_per_unit), target_stock: r2s(Number(g.target_stock)), stock: r2s(Number(g.stock)),
+    mid_price: r2s(Number(g.mid_price)), buy_price: Number(g.buy_price), sell_price: Number(g.sell_price),
   }));
 
   // my storage at this location
@@ -620,11 +614,21 @@ async function marketAt(db, user, body) {
   // what each of my stacks would sell for here, and the profit against what I paid
   const r2 = n => Math.round(n * 100) / 100;
   const myCargo = here ? cargo : [];
-  for (const c of [...myCargo, ...storage]) {
-    const g = goods.find(x => x.good_id === c.good_id);
-    c.sell_here = g ? g.sell_price : null;
-    c.profit_each = (g && c.avg_cost != null) ? r2(g.sell_price - c.avg_cost) : null;
-    c.profit_total = (g && c.avg_cost != null) ? r2((g.sell_price - c.avg_cost) * c.quantity) : null;
+  // each stack: what the WHOLE stack would sell for here (server quote, remote fee included), average price per unit, profit
+  for (const [list, stackName] of [[myCargo, 'cargo'], [storage, 'storage']]) {
+    for (const c of list) {
+      c.sell_here = null; c.profit_each = null; c.profit_total = null;
+      const q = Math.floor(Number(c.quantity));
+      if (!(q >= 1)) continue;
+      const { data: qs, error: qerr } = await db.rpc('market_quote', { p_character: ch.id, p_location: locId, p_kind: 'sell', p_good: c.good_id, p_quantity: q, p_stack: stackName });
+      if (qerr) throw qerr;
+      if (!qs || !qs.ok || qs.total == null) continue;
+      c.sell_here = Number(qs.unit_price);
+      if (c.avg_cost != null) {
+        c.profit_total = r2(Number(qs.total) - c.avg_cost * c.quantity);
+        c.profit_each = r2(c.profit_total / c.quantity);
+      }
+    }
   }
 
   // which locations have a market at all (for the location box)
