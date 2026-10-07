@@ -658,6 +658,25 @@ async function tradeAt(db, user, body) {
   return json(data, data && data.ok ? 200 : 400);
 }
 
+// "quote": body = { location, kind: 'buy'|'sell', good, quantity (0 = just the maximum), stack: 'storage'|'cargo' }.
+// Read-only. Asks SQL market_quote: the exact total and average price for that quantity (same maths as trade_at),
+// plus the most you can buy / sell (max_quantity) and what limits it. Nothing is traded.
+async function quote(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const loc = String(body.location ?? ''), good = String(body.good ?? '');
+  const kind = body.kind, stack = body.stack, qty = Number(body.quantity ?? 0);
+  if (!LOC_RE.test(loc)) return json({ error: 'unknown_location' }, 400);
+  if (!LOC_RE.test(good)) return json({ error: 'unknown_good' }, 400);
+  if (kind !== 'buy' && kind !== 'sell') return json({ error: 'bad_request' }, 400);
+  if (stack !== 'storage' && stack !== 'cargo') return json({ error: 'bad_request' }, 400);
+  if (!Number.isInteger(qty) || qty < 0 || qty > 1000000) return json({ error: 'bad_quantity' }, 400);
+  await resolveFor(db, ch.id);
+  const { data, error } = await db.rpc('market_quote', { p_character: ch.id, p_location: loc, p_kind: kind, p_good: good, p_quantity: qty, p_stack: stack });
+  if (error) throw error;
+  return json(data, data && data.ok ? 200 : 400);
+}
+
 // "unload_all": move everything in the hold into storage where the ship is docked.
 async function unloadAll(db, user) {
   const ch = await getCharacter(db, user);
@@ -704,6 +723,7 @@ Deno.serve(async (req) => {
       case 'unload': return await storageMove(db, user, body, 'unload');
       case 'market_at': return await marketAt(db, user, body);
       case 'trade_at': return await tradeAt(db, user, body);
+      case 'quote': return await quote(db, user, body);
       case 'unload_all': return await unloadAll(db, user);
       default: return json({ error: 'unknown_action' }, 400);
     }
