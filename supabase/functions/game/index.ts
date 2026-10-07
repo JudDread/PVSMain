@@ -287,39 +287,6 @@ async function loadCargo(db, ship) {
   return { cargo, hold_used: Math.round(holdUsed * 1000) / 1000 };
 }
 
-// "market": prices and stock where my docked ship is, plus my cargo and credits. Read-only.
-async function market(db, user) {
-  const ch = await getCharacter(db, user);
-  if (!ch) return json({ error: 'no_character' }, 400);
-  await resolveFor(db, ch.id);
-  const ship = await getShip(db, ch.id);
-  if (!ship) return json({ error: 'no_ship' }, 400);
-  const { cargo, hold_used } = await loadCargo(db, ship);
-  const out = {
-    ok: true, docked: ship.state === 'docked', location_id: null, location_name: null,
-    credits: Number(ch.credits), hold_size: Number(ship.hold_size), hold_used, cargo, goods: [],
-  };
-  if (!out.docked) return json(out);
-  const loc = await getLocation(db, ship.location_id);
-  out.location_id = ship.location_id; out.location_name = loc ? loc.name : ship.location_id;
-  const { data, error } = await db.rpc('market_view', { p_character: ch.id, p_location: ship.location_id });
-  if (error) throw error;
-  out.goods = (data ?? []).map(r => ({
-    good_id: r.good_id, name: r.good_name, category: r.category, unit: r.unit,
-    hold_per_unit: Number(r.hold_per_unit), target_stock: Number(r.target_stock), stock: Number(r.stock),
-    mid_price: Number(r.mid_price), buy_price: Number(r.buy_price), sell_price: Number(r.sell_price),
-  }));
-  // For each item in the hold: what it would sell for here, and the profit or loss against what was paid.
-  const r2 = n => Math.round(n * 100) / 100;
-  for (const c of out.cargo) {
-    const g = out.goods.find(x => x.good_id === c.good_id);
-    c.sell_here = g ? g.sell_price : null;
-    c.profit_each = (g && c.avg_cost != null) ? r2(g.sell_price - c.avg_cost) : null;
-    c.profit_total = (g && c.avg_cost != null) ? r2((g.sell_price - c.avg_cost) * c.quantity) : null;
-  }
-  return json(out);
-}
-
 // "routes": body = { good: 'water_ice', location?: 'luna' }. If I bought this good at the ORIGIN and flew to each other
 // place that trades it, what would I make? The origin is `location` when given (the market I am looking at), otherwise
 // the place my ship is docked at. Trips are measured from the ORIGIN (where the goods are). When my ship is not docked at
@@ -492,20 +459,6 @@ async function cargoDest(db, user, body) {
   rows.sort((p, q) => (p.is_here ? -1 : q.is_here ? 1 : q.ppm - p.ppm));
   return json({ ok: true, docked: x.docked, source: x.source, location_id: x.from.id, remote: x.remote, good_id: good, name: c.name, unit: c.unit,
     quantity: c.quantity, avg_cost: c.avg_cost, cost_known: c.avg_cost != null, rows });
-}
-
-// "buy" / "sell": body = { good: 'water_ice', quantity: 10 }. Whole units only.
-async function trade(db, user, body, kind) {
-  const ch = await getCharacter(db, user);
-  if (!ch) return json({ error: 'no_character' }, 400);
-  const good = String(body.good ?? '');
-  const qty = Number(body.quantity);
-  if (!/^[a-z0-9_]{1,64}$/.test(good)) return json({ error: 'unknown_good' }, 400);
-  if (!Number.isInteger(qty) || qty < 1 || qty > 1000000) return json({ error: 'bad_quantity' }, 400);
-  await resolveFor(db, ch.id); // a ship that has just arrived can trade at once
-  const { data, error } = await db.rpc(kind === 'buy' ? 'trade_buy' : 'trade_sell', { p_character: ch.id, p_good: good, p_quantity: qty });
-  if (error) throw error;
-  return json(data, data && data.ok ? 200 : 400);
 }
 
 // ---------- storage (Module 5 step 1; migration 010) ----------
@@ -716,12 +669,9 @@ Deno.serve(async (req) => {
       case 'queue_travel': return await queueTravel(db, user, body);
       case 'departures': return await departures(db, user);
       case 'cycle_speed': return await cycleSpeed(db, user);
-      case 'market': return await market(db, user);
       case 'routes': return await routes(db, user, body);
       case 'cargo_routes': return await cargoRoutes(db, user, body);
       case 'cargo_dest': return await cargoDest(db, user, body);
-      case 'buy': return await trade(db, user, body, 'buy');
-      case 'sell': return await trade(db, user, body, 'sell');
       case 'storage': return await storageView(db, user);
       case 'load': return await storageMove(db, user, body, 'load');
       case 'unload': return await storageMove(db, user, body, 'unload');
