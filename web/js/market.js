@@ -42,7 +42,9 @@ function sortGoods(list) {
     '#mbody .sech button { padding: 2px 10px !important; min-height: 0 !important; }',
     '#mbody .mhead { padding-top: 2px !important; padding-bottom: 2px !important; min-height: 0 !important; }',
     '#mbody .mhead button { background: none !important; border: 0 !important; box-shadow: none !important; color: inherit; font: inherit; width: 100%; padding: 4px 0 !important; min-height: 0 !important; margin: 0 !important; text-align: left; white-space: nowrap; cursor: pointer; }',
-    '#mbody .mhead .num button { text-align: right; }'
+    '#mbody .mhead .num button { text-align: right; }',
+    '#mbody .msec + .msec { margin-top: 14px !important; }',
+    '#mbody .sech { background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; }'
   ].join('\n');
   document.head.appendChild(st);
 })();
