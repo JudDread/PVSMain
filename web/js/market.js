@@ -111,13 +111,13 @@ async function loadDD() {
 }
 function ddBox() {
   const box = el('div', 'routes'), d = dd.data, md = mc[dd.loc] && mc[dd.loc].d;
-  const close = () => { const b = el('button', 'alt', 'Close'); b.onclick = closeDD; box.appendChild(b); return box; };
+  const close = () => box;   // no Close button: tap the row again to close (same as the buy/sell window)
+  const GRID = 'display:grid;grid-template-columns:minmax(0,1.3fr) repeat(4,minmax(0,1fr));column-gap:10px;align-items:start';
   if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return close(); }
   if (d.error) { box.appendChild(el('div', 'err', d.error === 'no_market' ? 'This place does not trade that.' : 'Could not load: ' + d.error)); return close(); }
   if (d.docked === false && dd.kind === 'cargo') { box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.')); return close(); }
-  const hd = el('div', 'rhead');
+  const hd = el('div', 'rhead'); hd.style.cssText = GRID;
   if (dd.kind === 'goods') {
-    box.appendChild(el('div', '', 'Buy ' + d.name + ' at ' + locName(d.origin_id) + ' for ' + money(d.buy_here) + (d.remote ? ' (includes the remote fee)' : '') + '. Max load: ' + whole(d.max_load) + ' ' + d.unit + '.'));
     const g = md && (md.goods || []).find(x => x.good_id === dd.good);
     const why = d.hypothetical && md ? buyBlockReason(md, g) : null;
     if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the load columns show N/A.'));
@@ -126,7 +126,7 @@ function ddBox() {
       el('span', 'num', d.hypothetical ? why : (md && md.hold_used > 0 ? 'For ' + whole(d.max_load) : 'Max load')), el('span', 'num', 'Per min'));
     box.appendChild(hd);
     d.rows.forEach(x => {
-      const r = el('div', 'rrow');
+      const r = el('div', 'rrow'); r.style.cssText = GRID;
       r.append(
         cell('', x.name, 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
         cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
@@ -138,13 +138,11 @@ function ddBox() {
     box.appendChild(el('div', 'muted hint', 'Trips start at ' + locName(d.origin_id) + ', where the goods are. Sorted by profit per minute. Snapshot: prices change while you fly.'));
     return close();
   }
-  const where = dd.kind === 'storage' ? ' stored at ' + locName(d.location_id) : '';
-  box.appendChild(el('div', '', 'Selling your ' + whole(d.quantity) + ' ' + d.name + where + (d.cost_known ? ' (paid ' + money(d.avg_cost) + ' each).' : '. Cost unknown, so the figures show income, not profit.')));
   if (!d.rows.length) { box.appendChild(el('div', 'muted', 'No place trades this good.')); return close(); }
   hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', 'For ' + whole(d.quantity)), el('span', 'num', 'Per min'));
   box.appendChild(hd);
   d.rows.forEach(x => {
-    const r = el('div', 'rrow');
+    const r = el('div', 'rrow'); r.style.cssText = GRID;
     r.append(
       cell('', x.is_here ? x.name + ' (here)' : x.name, x.is_here ? 'no travel' : 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
       cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
@@ -180,7 +178,7 @@ function wireRow(r, key, o) {
     o.tap();
   };
 }
-function toggleSel(loc, kind, good) { msel = isSel(loc, kind, good) ? null : { loc, kind, good }; mEdited = false; drawMarket(); }
+function toggleSel(loc, kind, good) { if (isDD(loc, kind, good)) { dd = null; msel = null; mEdited = false; drawMarket(); return; } msel = isSel(loc, kind, good) ? null : { loc, kind, good }; mEdited = false; drawMarket(); }
 
 /* ---- the quantity pop-up: built ONCE and moved under the selected row on every redraw, so a number you are typing survives.
    While the box has focus, redraws wait until you leave it. ---- */
@@ -243,6 +241,7 @@ function problemText(qd) {
 }
 // one info line for an order: the exact total from the server, or why it cannot be priced yet
 function quoteLine(verb, q, nm, qd) {
+  if (qd && qd.d && qd.d.ok && !nm) { const l = el('div', '', verb + ' ' + whole(q) + ': ' + money(qd.d.total) + ' in total, ' + money(qd.d.unit_price) + ' avg'); l.style.whiteSpace = 'nowrap'; return l; }
   if (qd && qd.d && qd.d.ok) return el('div', '', verb + ' ' + whole(q) + ' ' + nm + ': ' + money(qd.d.total) + ' in total (' + money(qd.d.unit_price) + ' each on average)');
   if (qd && qd.err) return el('div', 'muted', 'Could not get the exact price: ' + marketError(qd.err));
   return el('div', 'muted', 'Checking the price...');
@@ -267,14 +266,13 @@ function refreshPop() {
   if (cargo) { p.b2.textContent = 'Unload'; p.b2.disabled = bad || q > it.quantity || mbusy; }
   else { p.b2.textContent = 'Load'; p.b2.disabled = bad || !d.here || q > it.quantity || q > maxLoad(d, it) || mbusy; }
   if (!sells) p.info.appendChild(el('div', 'muted', 'This place does not buy that.'));
-  else if (!isNaN(q) && q >= 1 && q <= it.quantity) { p.info.appendChild(quoteLine('Sell', q, it.name, wantQuote(q))); p.info.appendChild(el('div', 'muted', 'You have ' + whole(it.quantity) + '.')); }
-  if (cargo) p.info.appendChild(el('div', 'muted', 'Unload moves it into your storage here.'));
-  else p.info.appendChild(el('div', 'muted', d.here ? 'Load moves it into your hold (room for ' + whole(maxLoad(d, it)) + ').' : 'Load needs your ship docked here.'));
+  else if (!isNaN(q) && q >= 1 && q <= it.quantity) { p.info.appendChild(quoteLine('Sell', q, '', wantQuote(q))); p.info.appendChild(el('div', 'muted', 'You have ' + whole(it.quantity) + '.')); }
   if (!isNaN(q) && q > it.quantity) p.info.appendChild(el('div', 'err', 'You only have ' + whole(it.quantity) + '.'));
 }
 function placePop(d, kind, it) {
   const p = pop;
-  p.title.textContent = (kind === 'goods' ? 'Buy ' : kind === 'cargo' ? 'Cargo: ' : 'Stored: ') + it.name;
+  p.title.textContent = kind === 'goods' ? 'Buy ' + it.name : '';
+  p.title.style.display = kind === 'goods' ? '' : 'none';   // cargo / stored: the row above already says what it is
   if (!mEdited) { if (kind === 'goods') { const mq = quotes[qKey(0)]; p.inp.value = mq && mq.d && mq.d.ok ? mq.d.max_quantity : ''; } else p.inp.value = it.quantity; }
   p.chips.replaceChildren();
   addChip('1', () => { p.inp.value = 1; mEdited = true; refreshPop(); });
