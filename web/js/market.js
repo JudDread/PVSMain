@@ -17,6 +17,36 @@ let dd = null, ddBusy = false;   // open destinations list { loc, kind, good, da
 let mbusy = false, mEdited = false, mRedraw = false, longFired = false, lastTap = { id: null, t: 0 };
 let buyTo = LS.get('pvs_buyto') === 'hold' ? 'hold' : 'storage';   // where bought goods go (remembered)
 
+/* ---- For sale list: sorting (header buttons) and tight rows ---- */
+const gSort = { col: 'name', dir: 1 };   // dir 1 = low to high / a to z, -1 = high to low / z to a
+function pressSort(col) {
+  if (gSort.col === col) gSort.dir = -gSort.dir;
+  else { gSort.col = col; gSort.dir = col === 'name' ? 1 : -1; }   // Good starts a-z; numbers start high-to-low
+  drawMarket();
+}
+function sortGoods(list) {
+  const k = gSort.col, f = gSort.dir;
+  return [...list].sort((a, b) => {
+    if (k === 'name') return f * a.name.localeCompare(b.name);
+    const d = (a[k] || 0) - (b[k] || 0);
+    return d ? f * d : a.name.localeCompare(b.name);
+  });
+}
+// compact spacing for the Market lists (written here because the page's own styles were not changed; !important so it wins)
+(() => {
+  const st = document.createElement('style');
+  st.textContent = [
+    '#mbody .mrow, #mbody .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; }',
+    '#mbody .sub { line-height: 1.15 !important; }',
+    '#mbody .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; }',
+    '#mbody .sech button { padding: 2px 10px !important; min-height: 0 !important; }',
+    '#mbody .mhead { padding-top: 2px !important; padding-bottom: 2px !important; min-height: 0 !important; }',
+    '#mbody .mhead button { background: none !important; border: 0 !important; box-shadow: none !important; color: inherit; font: inherit; width: 100%; padding: 4px 0 !important; min-height: 0 !important; margin: 0 !important; text-align: left; white-space: nowrap; cursor: pointer; }',
+    '#mbody .mhead .num button { text-align: right; }'
+  ].join('\n');
+  document.head.appendChild(st);
+})();
+
 const dockedAt = () => { const s = S.last && (S.last.ships || [])[0]; return s && s.state === 'docked' ? s.location_id : null; };
 // Default place: where the ship is docked; else the last place it docked (remembered); else the start of the current trip.
 function defaultLoc() {
@@ -344,12 +374,18 @@ function drawLoc(parent, loc) {
   });
   section(parent, loc, 'goods', 'For sale', goods.length, null, box => {
     if (!goods.length) { box.appendChild(el('div', 'muted pad', 'Nothing is traded here.')); return; }
-    const hd = el('div', 'mhead'); hd.append(el('span', '', 'Good'), el('span', 'num', 'Buy for'), el('span', 'num', 'Sell at'), el('span', 'num', 'Stock'));
+    const hd = el('div', 'mhead');
+    [['name', 'Good', ''], ['buy_price', 'Buy for', 'num'], ['sell_price', 'Sell at', 'num'], ['stock', 'Stock', 'num']].forEach(([col, label, cls]) => {
+      const sp = el('span', cls), b = document.createElement('button');
+      b.type = 'button'; b.textContent = label + (gSort.col === col ? (gSort.dir === 1 ? ' \u25B2' : ' \u25BC') : '');
+      b.onclick = () => pressSort(col);
+      sp.appendChild(b); hd.appendChild(sp);
+    });
     box.appendChild(hd);
-    goods.forEach(g => {
+    sortGoods(goods).forEach(g => {
       const sel = isSel(loc, 'goods', g.good_id);
       const r = el('div', 'mrow' + (sel ? ' sel' : ''));
-      r.append(cell('', g.name, 'per ' + g.unit), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), 'target ' + whole(g.target_stock)));
+      r.append(cell('', g.name), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock)));
       wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
       box.appendChild(r);
       if (sel) box.appendChild(placePop(d, 'goods', g));
