@@ -42,11 +42,6 @@ function curItem() {
 const isSel = (loc, kind, good) => !!msel && msel.loc === loc && msel.kind === kind && msel.good === good;
 const isDD = (loc, kind, good) => !!dd && dd.loc === loc && dd.kind === kind && dd.good === good;
 const buyDest = d => (buyTo === 'hold' && d.here) ? 'hold' : 'storage';
-function maxBuy(d, g) {
-  let m = Math.min(g.stock, d.credits / g.buy_price);
-  if (buyDest(d) === 'hold') m = Math.min(m, (d.hold_size - d.hold_used + 1e-9) / g.hold_per_unit);
-  return Math.max(0, Math.floor(m));
-}
 function buyBlockReason(d, g) {
   if (!g || g.stock < 1) return 'Sold out';
   if (d.credits / g.buy_price < 1) return 'Low funds';
@@ -209,18 +204,62 @@ const pop = (() => {
   return { root, title, inp, b1, b2, chips, info };
 })();
 function addChip(label, fn) { const b = el('button', 'alt', label); b.onclick = fn; pop.chips.appendChild(b); }
+/* ---- server quotes: the exact price of an order and the real maximum come from the server ('quote'), never from the page.
+   A quote with quantity 0 = "just tell me the most I can do". Answers are kept 15 s; typing waits 300 ms before asking. ---- */
+const quotes = {};                      // key -> { d: answer | null, err, at }
+const qBusy = {};
+let qTimer = null, qTimerKey = null;
+const qKind = () => msel.kind === 'goods' ? 'buy' : 'sell';
+const qStack = d => msel.kind === 'goods' ? (buyDest(d) === 'hold' ? 'cargo' : 'storage') : (msel.kind === 'cargo' ? 'cargo' : 'storage');
+const qKey = q => { const d = curData(); return d && msel ? [msel.loc, qKind(), msel.good, qStack(d), q].join('|') : ''; };
+function wantQuote(q) {
+  const d = curData(); if (!msel || !d) return null;
+  const key = qKey(q), have = quotes[key];
+  if (have && Date.now() - have.at <= 15000) return have;
+  if (qBusy[key] || qTimerKey === key) return have || null;
+  const args = { location: msel.loc, kind: qKind(), good: msel.good, quantity: q, stack: qStack(d) };
+  if (q === 0) { qBusy[key] = true; fetchQuote(key, args); }
+  else { clearTimeout(qTimer); qTimerKey = key; qTimer = setTimeout(() => { qTimerKey = null; qBusy[key] = true; fetchQuote(key, args); }, have ? 0 : 300); }
+  return have || null;
+}
+async function fetchQuote(key, args) {
+  let rec;
+  try { rec = { d: await call('quote', args), at: Date.now() }; }
+  catch (e) { rec = { d: null, err: e, at: Date.now() }; }
+  qBusy[key] = false; quotes[key] = rec;
+  if (!msel || !curData()) return;
+  // the maximum has arrived and you have not typed your own number: fill it in
+  if (msel.kind === 'goods' && !mEdited && !isTyping() && key === qKey(0) && rec.d && rec.d.ok) pop.inp.value = rec.d.max_quantity;
+  refreshPop();
+}
+const clearQuotes = () => { Object.keys(quotes).forEach(k => delete quotes[k]); };
+function problemText(qd) {
+  const r = qd.d, p = r.problem;
+  if (p === 'not_enough_stock') return 'The market only has ' + whole(Math.floor(r.stock)) + '.';
+  if (p === 'not_enough_hold') return 'Not enough free hold space.';
+  if (p === 'not_enough_credits') return 'Not enough credits: this costs ' + money(r.total) + '.';
+  if (p === 'not_enough_cargo' || p === 'not_enough_stored') return 'You do not have that many.';
+  return 'This cannot be done right now.';
+}
+// one info line for an order: the exact total from the server, or why it cannot be priced yet
+function quoteLine(verb, q, nm, qd) {
+  if (qd && qd.d && qd.d.ok) return el('div', '', verb + ' ' + whole(q) + ' ' + nm + ': ' + money(qd.d.total) + ' in total (' + money(qd.d.unit_price) + ' each on average)');
+  if (qd && qd.err) return el('div', 'muted', 'Could not get the exact price: ' + marketError(qd.err));
+  return el('div', 'muted', 'Checking the price...');
+}
 function refreshPop() {
   const it = curItem(), d = curData(); if (!it || !d) return;
   const q = qtyOf(pop.inp), bad = isNaN(q) || q < 1, p = pop;
   p.info.replaceChildren();
-  if (isNaN(q)) p.info.appendChild(el('div', '', 'Enter a whole number (0 or more).'));
+  if (isNaN(q)) p.info.appendChild(el('div', '', msel.kind === 'goods' && !mEdited ? 'Checking the most you can buy...' : 'Enter a whole number (0 or more).'));
   if (msel.kind === 'goods') {
-    const dest = buyDest(d), max = maxBuy(d, it);
+    const dest = buyDest(d), mq = wantQuote(0);
     p.b1.textContent = 'Buy'; p.b1.disabled = bad || mbusy;
     p.b2.textContent = 'To: ' + (dest === 'hold' ? 'Hold' : 'Storage'); p.b2.disabled = mbusy || !d.here;
-    if (!isNaN(q)) p.info.appendChild(el('div', '', 'Buy ' + whole(q) + ' ' + it.name + ': about ' + money(q * it.buy_price) + (dest === 'hold' ? ' (hold space free: ' + r2(Math.max(0, d.hold_size - d.hold_used)) + ')' : '')));
+    if (!isNaN(q)) { const qd = q >= 1 ? wantQuote(q) : null; if (q >= 1) { p.info.appendChild(quoteLine('Buy', q, it.name, qd)); if (qd && qd.d && qd.d.ok && qd.d.problem) p.info.appendChild(el('div', 'err', problemText(qd))); if (qd && qd.d && qd.d.can_do === false) p.b1.disabled = true; } if (dest === 'hold') p.info.appendChild(el('div', 'muted', 'Hold space free: ' + r2(Math.max(0, d.hold_size - d.hold_used)))); }
     p.info.appendChild(el('div', 'muted', 'Goes into ' + (dest === 'hold' ? 'your hold.' : 'your storage at ' + d.location_name + '.') + (d.here ? '' : ' Hold needs your ship docked here.')));
-    if (max === 0) p.info.appendChild(el('div', 'muted', 'You cannot buy any right now: ' + buyBlockReason(d, it).toLowerCase() + '.'));
+    if (mq && mq.d && mq.d.ok && mq.d.max_quantity === 0) p.info.appendChild(el('div', 'muted', 'You cannot buy any right now: ' + ({ stock: 'sold out', credits: 'low funds', hold: 'hold full' }[mq.d.limit] || 'not available') + '.'));
+    else if (mq && mq.d && mq.d.ok) p.info.appendChild(el('div', 'muted', 'Most you can buy now: ' + whole(mq.d.max_quantity) + '.'));
     return;
   }
   const sells = it.sell_here != null, cargo = msel.kind === 'cargo';
@@ -228,7 +267,7 @@ function refreshPop() {
   if (cargo) { p.b2.textContent = 'Unload'; p.b2.disabled = bad || q > it.quantity || mbusy; }
   else { p.b2.textContent = 'Load'; p.b2.disabled = bad || !d.here || q > it.quantity || q > maxLoad(d, it) || mbusy; }
   if (!sells) p.info.appendChild(el('div', 'muted', 'This place does not buy that.'));
-  else if (!isNaN(q)) p.info.appendChild(el('div', '', 'Sell ' + whole(q) + ' ' + it.name + ': about ' + money(q * it.sell_here) + ' (you have ' + whole(it.quantity) + ')'));
+  else if (!isNaN(q) && q >= 1 && q <= it.quantity) { p.info.appendChild(quoteLine('Sell', q, it.name, wantQuote(q))); p.info.appendChild(el('div', 'muted', 'You have ' + whole(it.quantity) + '.')); }
   if (cargo) p.info.appendChild(el('div', 'muted', 'Unload moves it into your storage here.'));
   else p.info.appendChild(el('div', 'muted', d.here ? 'Load moves it into your hold (room for ' + whole(maxLoad(d, it)) + ').' : 'Load needs your ship docked here.'));
   if (!isNaN(q) && q > it.quantity) p.info.appendChild(el('div', 'err', 'You only have ' + whole(it.quantity) + '.'));
@@ -236,12 +275,12 @@ function refreshPop() {
 function placePop(d, kind, it) {
   const p = pop;
   p.title.textContent = (kind === 'goods' ? 'Buy ' : kind === 'cargo' ? 'Cargo: ' : 'Stored: ') + it.name;
-  if (!mEdited) p.inp.value = kind === 'goods' ? maxBuy(d, it) : it.quantity;
+  if (!mEdited) { if (kind === 'goods') { const mq = quotes[qKey(0)]; p.inp.value = mq && mq.d && mq.d.ok ? mq.d.max_quantity : ''; } else p.inp.value = it.quantity; }
   p.chips.replaceChildren();
   addChip('1', () => { p.inp.value = 1; mEdited = true; refreshPop(); });
   addChip('10', () => { p.inp.value = 10; mEdited = true; refreshPop(); });
   if (kind === 'storage') addChip('Full', () => { mEdited = true; p.inp.value = maxLoad(d, it); refreshPop(); });   // as much as fits the empty hold space
-  addChip(kind === 'goods' ? 'Max' : 'All', () => { mEdited = false; p.inp.value = kind === 'goods' ? maxBuy(d, it) : it.quantity; refreshPop(); });
+  addChip(kind === 'goods' ? 'Max' : 'All', () => { mEdited = false; if (kind === 'goods') { delete quotes[qKey(0)]; p.inp.value = ''; } else p.inp.value = it.quantity; refreshPop(); });
   refreshPop();
   return p.root;
 }
@@ -383,7 +422,7 @@ async function doAct(which) {
   mbusy = true; refreshPop(); drawMarket();
   try { const r = await call(action, args); say(okText(r), 'ok'); }
   catch (e) { say(marketError(e), 'err'); }
-  finally { mbusy = false; mEdited = false; mRedraw = false; refreshMarket(); }
+  finally { mbusy = false; mEdited = false; mRedraw = false; clearQuotes(); refreshMarket(); }
 }
 async function doUnloadAll() {
   if (mbusy) return;
@@ -414,4 +453,5 @@ addScreen('market', 'Market', $('scr-market'), {
 export function resetMarket() {
   mloc = null; mdock = undefined; msel = null; dd = null; stAll = null; hold = null;
   Object.keys(mc).forEach(k => delete mc[k]);
+  clearQuotes();
 }
