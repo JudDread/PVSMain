@@ -1,9 +1,10 @@
 // main.js - the app shell: login, the 15 s refresh, the 1 s clock tick, buttons outside the screens.
-// Loads fly.js and market.js (each registers its own screen).
+// Loads fly.js, market.js and assets.js (each registers its own screen).
 import { J2000_MS } from 'physics';
 import { S, $, say, li, call, fmt, curGd, locName, screens, openScreen, setShipLine } from 'core';
 import { invalidateDeps, resetFly } from 'fly';
 import { resetMarket } from 'market';
+import { resetAssets } from 'assets';
 
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
 let timer = null, lastNudge = 0;
@@ -79,7 +80,7 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-$('out').onclick = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); show('auth'); };
+$('out').onclick = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); show('auth'); };
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
   catch (e) { say('Error: ' + e.message, 'err'); }
