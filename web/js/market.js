@@ -1,5 +1,5 @@
 // market.js - the Market screen (goods in markets, in storage and in the hold). Display only: the server decides every trade.
-import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine } from 'core';
+import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine } from 'core';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
 
@@ -15,6 +15,9 @@ const secOpen = {};         // which sections are collapsed: key 'place:section'
 let msel = null;            // selected row { loc, kind: 'cargo' | 'storage' | 'goods', good }
 let dd = null, ddBusy = false;   // open destinations list { loc, kind, good, data }
 let mbusy = false, mEdited = false, mRedraw = false, longFired = false, lastTap = { id: null, t: 0 };
+const frQty = {};            // freight board: contract id -> what is typed in its units box (survives redraws)
+let frSel = null, frBusy = false;   // the selected freight row; an Accept is in progress
+let frChain = Promise.resolve();    // freight calls go one after the other (the server settles freight on each call)
 let buyTo = LS.get('pvs_buyto') === 'hold' ? 'hold' : 'storage';   // where bought goods go (remembered)
 
 /* ---- For sale list: sorting (header buttons) and tight rows ---- */
@@ -93,6 +96,7 @@ async function loadLoc(loc) {
     if (S.last && S.last.character) S.last.character.credits = d.credits;
     setShipLine(); drawMarket();
     loadBest(loc);
+    loadFreight(loc);
     if (dd && dd.loc === loc) loadDD();
   } catch (e) { say('Error: ' + e.message, 'err'); }
   finally { mLoading[loc] = false; }
@@ -106,6 +110,16 @@ async function loadBest(loc) {
   if (c.d.here && (c.d.cargo || []).length) jobs.push(call('cargo_routes').then(r => { c.bestCg = idx(r); })); else c.bestCg = null;
   try { await Promise.all(jobs); } catch (e) { c.bestSt = c.bestCg = null; }
   drawMarket();
+}
+// the freight board for one place: contracts that start there (no good, no owner name: the server hides them from haulers)
+function loadFreight(loc) {
+  frChain = frChain.then(async () => {
+    if (!S.sb) return;
+    try { const r = await call('freight_board', { location: loc }); const c = mc[loc]; if (c) { c.fr = (r && r.items) || []; c.frErr = null; } }
+    catch (e) { const c = mc[loc]; if (c) c.frErr = e.message; }
+    drawMarket();
+  });
+  return frChain;
 }
 async function loadStorageAll() {
   if (stAllBusy || !S.sb) return;
@@ -358,6 +372,81 @@ function stackRow(box, d, loc, kind, x, cb) {
   if (sel) box.appendChild(placePop(d, kind, x));
   if (isDD(loc, kind, x.good_id)) box.appendChild(ddBox());
 }
+/* ---- freight board (bottom of a place): take a contract that starts here ---- */
+const frFree = d => Math.max(0, d.hold_size - d.hold_used);
+function frMax(d, x) {
+  const byHold = x.hold_each > 0 ? Math.floor((frFree(d) + 1e-9) / x.hold_each) : x.units_open;
+  return Math.max(0, Math.min(x.units_open, byHold));
+}
+function freightError(e) {
+  const d = e.data || {}, m = e.message;
+  if (m === 'contract_not_found' || m === 'not_open') return 'That contract is no longer open.';
+  if (m === 'not_enough_units') return 'Only ' + whole(d.available || 0) + ' units are still open.';
+  if (m === 'not_enough_hold') return 'Not enough room in the hold (free ' + r2(d.hold_free || 0) + ', needed ' + r2(d.hold_needed || 0) + ').';
+  if (m === 'freight_limit') return 'Freight limit reached (limit ' + r2(d.limit || 0) + ', carrying ' + r2(d.carrying || 0) + ').';
+  if (m === 'market_rep_too_low') return 'Your market reputation is too low for this contract (needed ' + r2(d.needed || 0) + ', you have ' + r2(d.have || 0) + ').';
+  if (m === 'own_contract') return 'You cannot haul your own contract.';
+  if (m === 'not_docked_here') return 'Your ship must be docked at this place to accept freight.';
+  if (m === 'no_route') return 'No route to that destination can be planned right now.';
+  if (m === 'no_ship') return 'You have no ship.';
+  if (m === 'bad_quantity') return 'Enter a whole number of 1 or more.';
+  return 'Error: ' + m;
+}
+function frPop(d, loc, x, scale) {
+  const root = el('div', 'pop sell'), left = el('div', 'popl'), right = el('div', 'popr');
+  const row = el('div', 'poprow'), brow = el('div', 'poprow'), info = el('div', 'popinfo');
+  const max = frMax(d, x), win = fmt(x.window_days * 86400 / scale);
+  if (frQty[x.contract_id] === undefined) frQty[x.contract_id] = String(max);
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'qin'; inp.setAttribute('aria-label', 'Units to haul');
+  inp.value = frQty[x.contract_id];
+  const acc = el('button', '', 'Accept'), chips = el('div', 'chips');
+  const upd = () => {
+    const q = qtyOf(inp); info.replaceChildren();
+    let why = null, soft = false;
+    if (!d.here) { why = 'Your ship is not docked at ' + locName(loc) + ', so you cannot accept this here.'; soft = true; }
+    else if (max < 1) why = 'Not enough free hold space (free ' + r2(frFree(d)) + ', each unit needs ' + r2(x.hold_each) + ').';
+    else if (isNaN(q) || q < 1) why = 'Enter a whole number of 1 or more.';
+    else if (q > x.units_open) why = 'Only ' + whole(x.units_open) + ' are open.';
+    else if (q * x.hold_each > frFree(d) + 1e-9) why = 'Not enough free hold space: needs ' + r2(q * x.hold_each) + ', free ' + r2(frFree(d)) + '.';
+    if (!isNaN(q) && q >= 1) info.appendChild(el('div', '', 'For ' + whole(q) + ': ' + money(q * x.pay_per_unit) + ' on delivery, plus up to ' + money(q * x.bonus_max_per_cu) + ' bonus if early.'));
+    info.appendChild(el('div', 'muted', 'Deliver within ' + win + ' of accepting. Late = the load fails. The bonus shrinks as time passes. Uses ' + r2(x.hold_each) + ' hold per unit.'));
+    if (why) info.appendChild(el('div', soft ? 'muted' : 'err', why));
+    acc.disabled = !!why || frBusy;
+  };
+  const chip = (label, fn) => { const b = el('button', 'alt', label); b.onclick = () => { fn(); frQty[x.contract_id] = inp.value; upd(); }; chips.appendChild(b); };
+  chip('1', () => { inp.value = 1; }); chip('10', () => { inp.value = 10; }); chip('Max', () => { inp.value = max; });
+  inp.addEventListener('input', () => { frQty[x.contract_id] = inp.value; upd(); });
+  inp.addEventListener('blur', () => setTimeout(() => { if (mRedraw && !isTyping()) { mRedraw = false; drawMarket(); } }, 350));
+  acc.onclick = async () => {
+    const q = qtyOf(inp); if (frBusy || !(q >= 1)) return;
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    frBusy = true; acc.disabled = true;
+    try {
+      const r = await call('freight_accept', { contract: x.contract_id, units: q });
+      delete frQty[x.contract_id]; frSel = null;
+      const left = r.deadline_t != null && curGd() != null ? (r.deadline_t - curGd()) * 86400 / scale : (r.window_days || x.window_days) * 86400 / scale;
+      say('Accepted ' + whole(r.units) + ' CU to ' + locName(r.dest_location) + '. Deliver within ' + fmt(left) + '.', 'ok');
+    } catch (e) { say(freightError(e), 'err'); }
+    finally { frBusy = false; mRedraw = false; clearQuotes(); refreshMarket(); }
+  };
+  row.append(inp, chips); brow.append(acc); left.append(info); right.append(row, brow); root.append(left, right);
+  upd();
+  return root;
+}
+function drawFreight(box, d, loc, items) {
+  const scale = (S.last && S.last.scale) || 60;
+  [...items].sort((a, b) => (b.pay_per_unit - a.pay_per_unit) || a.dest_name.localeCompare(b.dest_name)).forEach(x => {
+    const sel = frSel === x.contract_id;
+    const r = el('div', 'row' + (sel ? ' sel' : ''));
+    r.append(
+      cell('', 'To ' + x.dest_name + (x.mine ? ' (yours)' : ''), whole(x.units_open) + ' CU open, window ' + fmt(x.window_days * 86400 / scale)),
+      cell('num get', money(x.pay_per_unit) + ' / CU', 'bonus up to ' + money(x.bonus_max_per_cu)));
+    r.onclick = () => { frSel = sel ? null : x.contract_id; drawMarket(); };
+    box.appendChild(r);
+    if (sel) box.appendChild(frPop(d, loc, x, scale));
+  });
+}
 function drawLoc(parent, loc) {
   const c = mc[loc];
   if (!c || !c.d) { parent.appendChild(el('div', 'muted pad', 'Loading...')); return; }
@@ -394,6 +483,9 @@ function drawLoc(parent, loc) {
       if (isDD(loc, 'goods', g.good_id)) box.appendChild(ddBox());
     });
   });
+  const fr = c.fr || [];
+  if (fr.length) section(parent, loc, 'freight', 'Freight', fr.length, null, box => drawFreight(box, d, loc, fr));
+  else if (c.frErr) parent.appendChild(el('div', 'muted hint pad', 'The freight board could not load: ' + c.frErr));
 }
 function drawMarket() {
   if (isTyping()) { mRedraw = true; return; }
@@ -469,7 +561,7 @@ async function doUnloadAll() {
 }
 
 $('mloc').onchange = () => {
-  mloc = $('mloc').value; msel = null; dd = null; mEdited = false;
+  mloc = $('mloc').value; msel = null; dd = null; mEdited = false; frSel = null;
   if (mloc === 'ALL') refreshMarket(); else { mAt = Date.now(); loadLoc(mloc); }
   drawMarket();
 };
@@ -487,7 +579,8 @@ addScreen('market', 'Market', $('scr-market'), {
 
 /* called by main.js on log out */
 export function resetMarket() {
-  mloc = null; mdock = undefined; msel = null; dd = null; stAll = null; hold = null;
+  mloc = null; mdock = undefined; msel = null; dd = null; stAll = null; hold = null; frSel = null; frBusy = false;
+  Object.keys(frQty).forEach(k => delete frQty[k]);
   Object.keys(mc).forEach(k => delete mc[k]);
   clearQuotes();
 }
