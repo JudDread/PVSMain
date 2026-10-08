@@ -69,3 +69,14 @@ export function setShipLine() {
     ship.state === 'docked' ? 'Docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
     'Traveling (thrust ' + ship.thrust_g + ' g)') + cr;
 }
+
+/* ---------- shared by the Market and Assets screens ---------- */
+// The place the ship is docked at, or null while it travels.
+export const dockedAt = () => { const s = S.last && (S.last.ships || [])[0]; return s && s.state === 'docked' ? s.location_id : null; };
+// Default place for a location box: where the ship is docked; else the last place it docked (remembered); else the start of the current trip; else Luna.
+export function defaultLoc() {
+  const dl = dockedAt(); if (dl) return dl;
+  const mem = LS.get('pvs_lastdock'); if (mem) return mem;
+  const a = ((S.last && S.last.actions) || []).find(x => x.status === 'pending');
+  return (a && a.payload && a.payload.from) || 'luna';
+}
