@@ -667,6 +667,7 @@ async function freightSettings(db) {
     window_factor: num(v.window_factor, 1.5),
     reference_thrust_g: num(v.reference_thrust_g, 1),
     min_window_days: num(v.min_window_days, 0.416667),
+    bonus_full_fraction: num(v.bonus_full_fraction, 0.5),
   };
 }
 
@@ -792,8 +793,40 @@ async function freightList(db, user, kind) {
   if (x.resp) return x.resp;
   const { data, error } = await db.rpc(kind === 'mine' ? 'freight_mine' : 'freight_hauling', { p_character: x.ch.id });
   if (error) throw error;
-  if (data && data.ok) { data.game_days = gameDaysAt(Date.now()); data.scale = CLOCK.scale; }
+  if (data && data.ok) {
+    const nowT = gameDaysAt(Date.now());
+    data.game_days = nowT; data.scale = CLOCK.scale;
+    if (kind === 'mine') await freightAddLoads(db, data);
+    else await freightAddBonusNow(db, data, nowT);
+  }
   return freightAnswer(data);
+}
+
+// OWNER view: one line per active load (batch) of my contracts, with its deadline (game days). The hauler is NOT named.
+// Read-only, uses the server's own access to freight_batches (no migration needed).
+async function freightAddLoads(db, data) {
+  const ids = (data.items || []).map(i => i.contract_id);
+  data.loads = [];
+  if (!ids.length) return;
+  const { data: rows, error } = await db.from('freight_batches')
+    .select('id,contract_id,units,dest_location,accepted_t,deadline_t')
+    .in('contract_id', ids).eq('status', 'active').order('deadline_t', { ascending: true });
+  if (error) throw error;
+  data.loads = (rows ?? []).map(b => ({ batch_id: b.id, contract_id: b.contract_id, units: b.units,
+    dest_location: b.dest_location, accepted_t: b.accepted_t, deadline_t: b.deadline_t }));
+}
+
+// HAULER view: what the delivery bonus is worth RIGHT NOW (same line as the SQL: falls straight to 0 at
+// `bonus_full_fraction` of the window). Display only; the SQL works out the real bonus at delivery.
+async function freightAddBonusNow(db, data, nowT) {
+  const fs = await freightSettings(db);
+  for (const it of data.items || []) {
+    if (it.status !== 'active') continue;
+    const span = Number(it.window_days) * fs.bonus_full_fraction;
+    const f = span > 0 ? Math.max(0, Math.min(1, 1 - (nowT - Number(it.accepted_t)) / span)) : 0;
+    it.bonus_now_per_cu = Math.round(Number(it.bonus_max_per_cu) * f * 100) / 100;
+    it.bonus_now_total = Math.round(Number(it.bonus_max_per_cu) * f * Number(it.units) * 100) / 100;
+  }
 }
 
 Deno.serve(async (req) => {
