@@ -200,6 +200,7 @@ async function me(db, user) {
   out.locations = locs ?? [];
   if (ch) {
     await resolveFor(db, ch.id); // settle any finished trip before reporting
+    await freightResolve(db, ch.id, false); // then settle freight that has arrived or run out of time
     const [ships, actions, events] = await Promise.all([
       db.from('ships').select('*').eq('character_id', ch.id),
       db.from('scheduled_actions').select('id,action_type,status,payload,resolve_at,resolved_at').eq('character_id', ch.id).order('created_at', { ascending: false }).limit(10),
@@ -284,7 +285,13 @@ async function loadCargo(db, ship) {
       avg_cost: r.avg_cost == null ? null : Number(r.avg_cost) };
   });
   cargo.sort((a, b) => a.name.localeCompare(b.name));
-  return { cargo, hold_used: Math.round(holdUsed * 1000) / 1000 };
+  // Freight riding in this ship's hold (active batches) also uses hold space. Same sum as SQL ship_hold_used.
+  const { data: fb, error: fe } = await db.from('freight_batches').select('hold_used').eq('ship_id', ship.id).eq('status', 'active');
+  if (fe) throw fe;
+  let freightUsed = 0;
+  for (const b of fb ?? []) freightUsed += Number(b.hold_used);
+  holdUsed += freightUsed;
+  return { cargo, hold_used: Math.round(holdUsed * 1000) / 1000, freight_used: Math.round(freightUsed * 1000) / 1000 };
 }
 
 // "routes": body = { good: 'water_ice', location?: 'luna' }. If I bought this good at the ORIGIN and flew to each other
@@ -644,6 +651,151 @@ async function unloadAll(db, user) {
   return json(data, data && data.ok ? 200 : 400);
 }
 
+// ---------- freight contracts (migrations 020/021) ----------
+// All money and goods maths lives in the database (freight_* functions). The server: checks who is asking,
+// works out game time and the delivery WINDOW per destination (trip time at the reference thrust x a factor),
+// calls the SQL, and passes the answer on. Delivery and expiry are resolved LAZILY: freightResolve runs at the
+// start of every freight action and in `me`.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function freightSettings(db) {
+  const { data, error } = await db.from('game_state').select('value').eq('key', 'freight').maybeSingle();
+  if (error) throw error;
+  const v = data?.value ?? {};
+  const num = (x, d) => (Number.isFinite(Number(x)) && x !== null && x !== '' ? Number(x) : d);
+  return {
+    window_factor: num(v.window_factor, 1.5),
+    reference_thrust_g: num(v.reference_thrust_g, 1),
+    min_window_days: num(v.min_window_days, 0.416667),
+  };
+}
+
+// Window (GAME days) for freight from `from` to `to`: trip time at the reference thrust x factor, never below the minimum.
+// Returns null when no trip can be planned. The SQL enforces the minimum again.
+function freightWindow(fs, from, to, nowT, cache) {
+  const est = estimateTrip(from, to, nowT, fs.reference_thrust_g, cache);
+  if (!est.ok) return null;
+  return Math.max(fs.min_window_days, est.days * fs.window_factor);
+}
+
+// Settle freight that has arrived (delivered) or run out of time (failed). `strict` = throw on an SQL error.
+async function freightResolve(db, characterId, strict = true) {
+  const { error } = await db.rpc('freight_resolve_due', { p_now_t: gameDaysAt(Date.now()), p_character: characterId });
+  if (error) {
+    if (strict) throw error;
+    console.error('freight resolve failed', error);
+  }
+}
+
+// Common start of every freight action: who is asking, settle trips, settle freight.
+async function freightStart(db, user) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return { resp: json({ error: 'no_character' }, 400) };
+  await resolveFor(db, ch.id);
+  await freightResolve(db, ch.id);
+  return { ch };
+}
+const freightAnswer = (data) => json(data, data && data.ok ? 200 : 400);
+
+// "freight_post": body = { good, pickup, dest, units, price }. price = credits per unit paid to the hauler.
+async function freightPost(db, user, body) {
+  const good = String(body.good ?? ''), pickup = String(body.pickup ?? ''), dest = String(body.dest ?? '');
+  const units = Number(body.units), price = Number(body.price);
+  if (!LOC_RE.test(good)) return json({ error: 'unknown_good' }, 400);
+  if (!LOC_RE.test(pickup) || !LOC_RE.test(dest)) return json({ error: 'unknown_location' }, 400);
+  if (!Number.isInteger(units) || units < 1 || units > 1000000) return json({ error: 'bad_quantity' }, 400);
+  if (!Number.isFinite(price) || price <= 0 || price > 1000000) return json({ error: 'bad_price' }, 400);
+  const x = await freightStart(db, user);
+  if (x.resp) return x.resp;
+  const { data, error } = await db.rpc('freight_post', { p_character: x.ch.id, p_good: good, p_pickup: pickup, p_dest: dest, p_units: units, p_price: price });
+  if (error) throw error;
+  return freightAnswer(data);
+}
+
+// "freight_cancel": body = { contract }.
+async function freightCancel(db, user, body) {
+  const contract = String(body.contract ?? '');
+  if (!UUID_RE.test(contract)) return json({ error: 'contract_not_found' }, 400);
+  const x = await freightStart(db, user);
+  if (x.resp) return x.resp;
+  const { data, error } = await db.rpc('freight_cancel', { p_character: x.ch.id, p_contract: contract });
+  if (error) throw error;
+  return freightAnswer(data);
+}
+
+// "freight_board": body = { location? }. The hauler's list at a pickup (default: where my ship is docked).
+// The server sends the window for every destination, measured from the pickup.
+async function freightBoard(db, user, body) {
+  const x = await freightStart(db, user);
+  if (x.resp) return x.resp;
+  let locId = body && body.location != null && body.location !== '' ? String(body.location) : null;
+  if (!locId) {
+    const ship = await getShip(db, x.ch.id);
+    if (!ship) return json({ error: 'no_ship' }, 400);
+    if (ship.state !== 'docked') return json({ ok: true, docked: false, location_id: null, items: [] });
+    locId = ship.location_id;
+  }
+  if (!LOC_RE.test(locId)) return json({ error: 'unknown_location' }, 400);
+  const from = await getLocation(db, locId);
+  if (!from) return json({ error: 'unknown_location' }, 400);
+  const fs = await freightSettings(db);
+  const { data: locs, error: le } = await db.from('locations').select('*');
+  if (le) throw le;
+  const nowT = gameDaysAt(Date.now()), cache = {}, windows = {};
+  for (const to of locs ?? []) {
+    if (to.id === from.id) continue;
+    const w = freightWindow(fs, from, to, nowT, cache);
+    if (w != null) windows[to.id] = w;
+  }
+  const { data, error } = await db.rpc('freight_board', { p_character: x.ch.id, p_location: locId, p_windows: windows });
+  if (error) throw error;
+  return freightAnswer(data);
+}
+
+// "freight_accept": body = { contract, units }. My ship (docked at the pickup) takes `units` of that contract.
+async function freightAccept(db, user, body) {
+  const contract = String(body.contract ?? ''), units = Number(body.units);
+  if (!UUID_RE.test(contract)) return json({ error: 'contract_not_found' }, 400);
+  if (!Number.isInteger(units) || units < 1 || units > 1000000) return json({ error: 'bad_quantity' }, 400);
+  const x = await freightStart(db, user);
+  if (x.resp) return x.resp;
+  // Find the route (pickup -> dest) to work out the window. The hauler cannot read contracts, the server can.
+  const { data: c, error: ce } = await db.from('freight_contracts').select('pickup_location,dest_location').eq('id', contract).maybeSingle();
+  if (ce) throw ce;
+  if (!c) return json({ error: 'contract_not_found' }, 400);
+  const [from, to] = await Promise.all([getLocation(db, c.pickup_location), getLocation(db, c.dest_location)]);
+  if (!from || !to) return json({ error: 'contract_not_found' }, 400);
+  const fs = await freightSettings(db);
+  const nowT = gameDaysAt(Date.now());
+  const windowDays = freightWindow(fs, from, to, nowT, {});
+  if (windowDays == null) return json({ error: 'no_route' }, 400);
+  const { data, error } = await db.rpc('freight_accept', { p_character: x.ch.id, p_contract: contract, p_units: units, p_now_t: nowT, p_window_days: windowDays });
+  if (error) throw error;
+  return freightAnswer(data);
+}
+
+// "freight_abandon": body = { batch }.
+async function freightAbandon(db, user, body) {
+  const batch = String(body.batch ?? '');
+  if (!UUID_RE.test(batch)) return json({ error: 'batch_not_found' }, 400);
+  const x = await freightStart(db, user);
+  if (x.resp) return x.resp;
+  const { data, error } = await db.rpc('freight_abandon', { p_character: x.ch.id, p_batch: batch });
+  if (error) throw error;
+  return freightAnswer(data);
+}
+
+// "freight_mine": my contracts (as owner). "freight_hauling": my loads (as hauler) + market rep + freight room.
+// Hauling also gets game_days so the page can count down deadlines.
+async function freightList(db, user, kind) {
+  const x = await freightStart(db, user);
+  if (x.resp) return x.resp;
+  const { data, error } = await db.rpc(kind === 'mine' ? 'freight_mine' : 'freight_hauling', { p_character: x.ch.id });
+  if (error) throw error;
+  if (data && data.ok) { data.game_days = gameDaysAt(Date.now()); data.scale = CLOCK.scale; }
+  return freightAnswer(data);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
@@ -679,6 +831,13 @@ Deno.serve(async (req) => {
       case 'trade_at': return await tradeAt(db, user, body);
       case 'quote': return await quote(db, user, body);
       case 'unload_all': return await unloadAll(db, user);
+      case 'freight_post': return await freightPost(db, user, body);
+      case 'freight_cancel': return await freightCancel(db, user, body);
+      case 'freight_board': return await freightBoard(db, user, body);
+      case 'freight_accept': return await freightAccept(db, user, body);
+      case 'freight_abandon': return await freightAbandon(db, user, body);
+      case 'freight_mine': return await freightList(db, user, 'mine');
+      case 'freight_hauling': return await freightList(db, user, 'hauling');
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
