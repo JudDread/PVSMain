@@ -71,8 +71,13 @@ export function estimateTrip(from, to, departT, g, cache) {
 // ---------- trading (step 4b) ----------
 // Prices, stock and the buy/sell maths all live in the database (migration 008).
 // The server only checks who is asking, calls the SQL functions, and passes the result on.
+// Step 2a: the ship being flown = the character's ACTIVE ship (characters.active_ship_id, set by SQL).
+// The SQL twin is public.active_ship_of(character). Returns null when there is none.
 export async function getShip(db, characterId) {
-  const { data, error } = await db.from('ships').select('*').eq('character_id', characterId).order('created_at').limit(1).maybeSingle();
+  const { data: ch, error: ce } = await db.from('characters').select('active_ship_id').eq('id', characterId).maybeSingle();
+  if (ce) throw ce;
+  if (!ch || !ch.active_ship_id) return null;
+  const { data, error } = await db.from('ships').select('*').eq('id', ch.active_ship_id).maybeSingle();
   if (error) throw error;
   return data;
 }
