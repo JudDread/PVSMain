@@ -161,7 +161,8 @@ function refreshPop() {
     const open = num(it.units_open), pay = num(it.price_per_unit);
     p.b1.textContent = 'Cancel contract'; p.b1.disabled = abusy;
     line('', 'Goes to ' + locName(it.dest_location) + '. Pays the hauler ' + money(pay) + ' per CU.');
-    line('muted', 'Cancelling returns ' + whole(open) + ' units to storage at ' + locName(it.pickup_location) + ' and refunds ' + money(open * pay) + ' credits.');
+    const fee = r100(open * pay * CANCEL_FEE_PCT), back = r100(open * num(it.bonus_per_unit));
+    line('muted', 'Cancelling returns ' + whole(open) + ' units to storage at ' + locName(it.pickup_location) + ' and refunds ' + money(r100(open * pay + back - fee)) + ' credits (' + money(r100(open * pay)) + ' pay' + (back > 0 ? ' + ' + money(back) + ' bonus pool' : '') + ' minus a ' + money(fee) + ' fee that is kept).');
     if (num(it.units_in_transit) > 0) line('muted', 'Loads already on the way are not affected.');
     return;
   }
@@ -293,7 +294,7 @@ function doAct(which) {
     run(() => call(act, { good: it.good_id, quantity: q }), () => (k === 'cargo' ? 'Unloaded ' : 'Loaded ') + q + ' ' + nm + (k === 'cargo' ? ' into storage.' : ' into the hold.'));
   } else if (k === 'open') {
     run(() => call('freight_cancel', { contract: it.contract_id }),
-      r => 'Contract cancelled: ' + whole(r.returned_units) + ' units back in storage at ' + locName(it.pickup_location) + ', ' + money(r.refund) + ' credits refunded.' + (r.still_in_transit ? ' ' + whole(r.still_in_transit) + ' units already on the way will still be delivered.' : ''));
+      r => 'Contract cancelled: ' + whole(r.returned_units) + ' units back in storage at ' + locName(it.pickup_location) + ', ' + money(r.refund) + ' credits refunded (' + money(r.fee || 0) + ' fee kept).' + (r.still_in_transit ? ' ' + whole(r.still_in_transit) + ' units already on the way will still be delivered.' : ''));
   } else if (k === 'hfreight') {
     if (!aconfirm) { aconfirm = true; refreshPop(); return; }
     run(() => call('freight_abandon', { batch: it.batch_id }), r => 'Abandoned ' + whole(r.units) + ' units of freight. They went back to the queue.');
@@ -329,24 +330,30 @@ const hire = (() => {
 })();
 let hs = null, hbusy = false;   // hs = { good, name, pickup, have }
 
+// These two must match game_state 'freight' (bonus_pct, cancel_fee_pct). The SERVER decides the real amounts;
+// this is only for the numbers shown before posting.
+const BONUS_PCT = 0.10, CANCEL_FEE_PCT = 0.01;
+const r100 = (x) => Math.round(x * 100) / 100;
 function hireCheck() {
   const q = qtyOf(hire.q), ps = hire.price.value.trim(), price = Number(ps);
   const qOk = !isNaN(q) && q >= 1 && q <= hs.have;
   const pOk = /^\d+(\.\d{1,2})?$/.test(ps) && price > 0 && price <= 1000000;
-  return { q, price, qOk, pOk, total: qOk && pOk ? Math.round(q * price * 100) / 100 : null };
+  const total = qOk && pOk ? r100(q * price) : null;
+  const bonus = total != null ? r100(q * r100(price * BONUS_PCT)) : null;
+  return { q, price, qOk, pOk, total, bonus, cost: total != null ? r100(total + bonus) : null };
 }
 function refreshHire() {
   if (!hs) return;
   const c = hireCheck(), cr = num(S.last && S.last.character && S.last.character.credits);
   hire.total.className = '';
-  if (c.total != null) hire.total.textContent = 'You pay now: ' + money(c.total) + ' (' + whole(c.q) + ' x ' + money(c.price) + '). It is held until delivery and returned if you cancel.';
+  if (c.total != null) hire.total.textContent = 'You pay now: ' + money(c.cost) + ' = ' + money(c.total) + ' pay (' + whole(c.q) + ' x ' + money(c.price) + ') + ' + money(c.bonus) + ' bonus pool (fast-delivery bonus, paid by you; what the hauler does not earn comes back). All held until delivery. If you cancel you get it back minus ' + money(r100(c.total * CANCEL_FEE_PCT)) + ' (1% of the pay).';
   else { hire.total.className = 'muted'; hire.total.textContent = 'Enter a quantity and a price (up to 2 decimals).'; }
   hire.credits.textContent = 'Your credits: ' + money(cr);
   let msg = '';
   if (!isNaN(c.q) && c.q > hs.have) msg = 'You only have ' + whole(hs.have) + ' stored here.';
-  else if (c.total != null && c.total > cr) msg = 'Not enough credits for that.';
+  else if (c.cost != null && c.cost > cr) msg = 'Not enough credits for that.';
   if (msg) hire.err.textContent = msg; else if (!hbusy && hire.err.dataset.server !== '1') hire.err.textContent = '';
-  hire.bp.disabled = hbusy || c.total == null || c.total > cr;
+  hire.bp.disabled = hbusy || c.cost == null || c.cost > cr;
   hire.bc.disabled = hbusy;
 }
 function closeHire() { hire.root.hidden = true; document.body.style.overflow = ''; hs = null; }
@@ -378,7 +385,7 @@ hire.bp.onclick = async () => {
     LS.set('pvs_hdest', d);
     if (S.last && S.last.character && r.credits != null) { S.last.character.credits = r.credits; setShipLine(); }
     closeHire();
-    say('Posted: ' + whole(c.q) + ' x ' + h.name + ', ' + locName(h.pickup) + ' to ' + locName(d) + ', ' + money(c.price) + ' per CU. ' + money(r.escrow != null ? r.escrow : c.total) + ' credits held until delivery.', 'ok');
+    say('Posted: ' + whole(c.q) + ' x ' + h.name + ', ' + locName(h.pickup) + ' to ' + locName(d) + ', ' + money(c.price) + ' per CU. ' + money(r.escrow != null ? r.escrow : c.total) + ' pay + ' + money(r.bonus_pool != null ? r.bonus_pool : c.bonus) + ' bonus pool held until delivery.', 'ok');
     aEdited = false; if (S.refresh) S.refresh(); refreshAssets();
   } catch (e) {
     hire.err.textContent = assetError(e); hire.err.dataset.server = '1';
