@@ -37,8 +37,7 @@ async function queueTravel(db, user, body) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
   await resolveFor(db, ch.id); // settle any finished trip first
-  const { data: ship, error: se } = await db.from('ships').select('*').eq('character_id', ch.id).order('created_at').limit(1).maybeSingle();
-  if (se) throw se;
+  const ship = await getShip(db, ch.id); // the ACTIVE ship
   if (!ship) return json({ error: 'no_ship' }, 400);
   if (ship.state !== 'docked') return json({ error: 'ship_busy' }, 409);
 
@@ -116,8 +115,7 @@ async function departures(db, user) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
   await resolveFor(db, ch.id);
-  const { data: ship, error: se } = await db.from('ships').select('*').eq('character_id', ch.id).order('created_at').limit(1).maybeSingle();
-  if (se) throw se;
+  const ship = await getShip(db, ch.id); // the ACTIVE ship
   if (!ship) return json({ error: 'no_ship' }, 400);
   const out = { ok: true, game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, docked: ship.state === 'docked', from: null, departures: [] };
   if (!out.docked) return json(out);
@@ -155,7 +153,11 @@ async function me(db, user) {
       db.from('scheduled_actions').select('id,action_type,status,payload,resolve_at,resolved_at').eq('character_id', ch.id).order('created_at', { ascending: false }).limit(10),
       db.from('event_log').select('*').eq('character_id', ch.id).order('created_at', { ascending: false }).limit(20),
     ]);
-    out.ships = ships.data; out.actions = actions.data; out.events = events.data;
+    // Active ship FIRST (the page uses the first ship), then the others, oldest first.
+    const act = ch.active_ship_id;
+    out.ships = (ships.data ?? []).slice().sort((a, b) =>
+      ((b.id === act) - (a.id === act)) || String(a.created_at).localeCompare(String(b.created_at)));
+    out.actions = actions.data; out.events = events.data;
   }
   return json(out);
 }
