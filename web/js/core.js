@@ -62,12 +62,14 @@ export function fmt(sec) {
   const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
   return (h ? h + 'h ' : '') + m + 'm ' + s + 's';
 }
+// 'life_pod' -> 'Life Pod', 'elite_hauler' -> 'Elite Hauler'
+export const hullName = id => String(id || 'ship').split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 export function setShipLine() {
   const ship = S.last && (S.last.ships || [])[0];
   const cr = S.last && S.last.character ? '  |  Credits ' + money(S.last.character.credits) : '';
   $('ship').textContent = (!ship ? 'No ship' :
-    ship.state === 'docked' ? 'Docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
-    'Traveling (thrust ' + ship.thrust_g + ' g)') + cr;
+    ship.state === 'docked' ? hullName(ship.hull_id) + ' docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
+    hullName(ship.hull_id) + ' traveling (thrust ' + ship.thrust_g + ' g)') + cr;
 }
 
 /* ---------- shared by the Market and Assets screens ---------- */
