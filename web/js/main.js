@@ -1,118 +1,103 @@
-// core.js - shared state and helpers used by every other file. Imports only the pure physics file (for the pulse bar).
-import { pulseState } from 'physics';
-// S holds the few values that more than one file needs to READ AND CHANGE
-// (an imported variable cannot be reassigned by the file that imports it, so they live in this one object).
-export const S = {
-  sb: null,        // the Supabase client (set in main.js)
-  last: null,      // latest answer of the server action 'me'
-  current: null,   // name of the open screen
-  refresh: null,   // main.js puts its refresh() function here so other files can ask for a reload
-};
-export const $ = id => document.getElementById(id);
+// main.js - the app shell: login, the 15 s refresh, the 1 s clock tick, buttons outside the screens.
+// Loads fly.js, market.js and assets.js (each registers its own screen).
+import { J2000_MS } from 'physics';
+import { S, $, say, li, call, fmt, curGd, locName, screens, openScreen, setShipLine, enduranceNow } from 'core';
+import { invalidateDeps, resetFly } from 'fly';
+import { resetMarket } from 'market';
+import { resetAssets } from 'assets';
 
-export function locName(id) {
-  const l = ((S.last && S.last.locations) || []).find(x => x.id === id);
-  return l ? l.name : (id || '?');
+const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
+let timer = null, lastNudge = 0;
+S.refresh = refresh;
+
+function getKey() { try { return localStorage.getItem('pvs_key'); } catch (e) { return null; } }
+function show(which) { ['cfg', 'auth', 'game'].forEach(id => $(id).hidden = id !== which); }
+
+async function init() {
+  const k = getKey();
+  if (!k) return show('cfg');
+  S.sb = window.supabase.createClient(URL_, k);
+  const { data } = await S.sb.auth.getSession();
+  if (data.session) enterGame(data.session); else show('auth');
 }
-export function curGd() { return S.last ? S.last.game_days + (Date.now() - S.last.real_ms) * S.last.scale / 864e5 : null; }
-
-/* ---------- screen registry: add a screen = a div + addScreen(...) ---------- */
-export const screens = {};
-export function addScreen(name, title, el, hooks) { screens[name] = { title, el, ...(hooks || {}) }; }
-export function openScreen(name) {
-  S.current = name;
-  Object.entries(screens).forEach(([n, s]) => s.el.hidden = n !== name);
-  const nav = $('nav'); nav.replaceChildren();
-  nav.hidden = Object.keys(screens).length < 2;
-  Object.entries(screens).forEach(([n, s]) => {
-    const b = document.createElement('button'); b.textContent = s.title;
-    b.className = n === name ? 'on' : 'alt'; b.onclick = () => openScreen(n); nav.appendChild(b);
+async function enterGame(session) {
+  show('game');
+  $('who').textContent = 'Logged in as ' + session.user.email;
+  await refresh();
+  clearInterval(timer);
+  timer = setInterval(tick, 1000);
+}
+async function refresh() {
+  try { S.last = await call('me'); render(); }
+  catch (e) { say('Error: ' + e.message, 'err'); }
+}
+function render() {
+  if (!S.last) return;
+  const hasChar = !!S.last.character;
+  $('speed').hidden = !(S.last.dev && hasChar);
+  $('speed').textContent = 'Speed: ' + (Math.round((S.last.speed || 1) * 100) / 100) + 'x (tap to change)';
+  $('nochar').hidden = hasChar; $('haschar').hidden = !hasChar;
+  if (!hasChar) return;
+  const ship = (S.last.ships || [])[0];
+  setShipLine();
+  if (!S.current) openScreen('travel');
+  const s = screens[S.current]; if (s && s.update) s.update(ship);
+  const evs = $('evs'); evs.replaceChildren();
+  (S.last.events || []).forEach(e => evs.appendChild(li(new Date(e.created_at).toLocaleString() + ' - ' + e.message)));
+  tick();
+}
+function tick() {
+  if (!S.last) return;
+  const gd = curGd();
+  setShipLine();                                   /* thrust and endurance move every second */
+  /* the bar reached 0 while draining: ask the server at once (it has switched to the slow 3 g refill) */
+  if (S.last.pilot && S.last.pilot.endurance_rate_hour < 0 && enduranceNow() <= 0 && Date.now() - lastNudge > 3000) { lastNudge = Date.now(); refresh(); }
+  $('gtime').textContent = new Date(J2000_MS + gd * 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC (game) - speed ' + (Math.round((S.last.speed || 1) * 100) / 100) + 'x';
+  const acts = $('acts'); acts.replaceChildren();
+  (S.last.actions || []).forEach(a => {
+    const left = (new Date(a.resolve_at) - Date.now()) / 1000;
+    const p = a.payload || {};
+    let t = 'trip ' + locName(p.from) + ' -> ' + locName(p.to_location || (p.to || '').toLowerCase()) + ' [' + a.status + ']';
+    if (a.status === 'pending') {
+      t += left > 0 ? ' arrives in ' + fmt(left) : ' arriving...';
+      if (left <= 0 && Date.now() - lastNudge > 5000) { lastNudge = Date.now(); refresh(); }
+    }
+    acts.appendChild(li(t));
   });
-  if (screens[name].onShow) screens[name].onShow();
 }
 
-/* ---------- small display helpers ---------- */
-export const money = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-export const whole = n => Math.round(Number(n)).toLocaleString();
-export const r2 = n => Math.round(Number(n) * 100) / 100;
-export function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
-export function cell(cls, main, sub) { const c = el('span', cls, main); if (sub) c.appendChild(el('span', 'sub', sub)); return c; }
-export const sgn = n => (Number(n) > 0 ? '+' : '') + money(n);
-export const tone = n => Number(n) > 0 ? 'win' : Number(n) < 0 ? 'lose' : 'muted';
-export const LS = {
-  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+$('savekey').onclick = () => {
+  const v = $('key').value.trim();
+  if (v.length < 20) return say('That key looks too short.', 'err');
+  try { localStorage.setItem('pvs_key', v); } catch (e) {}
+  say(''); init();
+};
+$('signup').onclick = async () => {
+  const { data, error } = await S.sb.auth.signUp({ email: $('email').value.trim(), password: $('pw').value });
+  if (error) return say(error.message, 'err');
+  if (data.session) enterGame(data.session);
+  else say('Registered. Check your email to confirm, then log in.', 'ok');
+};
+$('login').onclick = async () => {
+  const { data, error } = await S.sb.auth.signInWithPassword({ email: $('email').value.trim(), password: $('pw').value });
+  if (error) return say(error.message, 'err');
+  say(''); enterGame(data.session);
+};
+$('out').onclick = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); show('auth'); };
+$('mk').onclick = async () => {
+  try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
+  catch (e) { say('Error: ' + e.message, 'err'); }
+};
+$('speed').onclick = async () => {
+  const b = $('speed'); b.disabled = true;
+  try {
+    const r = await call('cycle_speed');
+    say('Game speed is now ' + r.speed + 'x.', 'ok');
+    invalidateDeps();               /* ETAs change with speed: fetch them again */
+    await refresh();
+  } catch (e) { say('Error: ' + (e.message === 'not_allowed' ? 'this account is not on the developer list' : e.message), 'err'); }
+  finally { b.disabled = false; }
 };
 
-export function say(t, cls) { const m = $('msg'); m.textContent = t || ''; m.className = cls || ''; }
-export const li = t => { const e = document.createElement('li'); e.textContent = t; return e; };
-
-export async function call(action, extra) {
-  const { data, error } = await S.sb.functions.invoke('game', { body: { action, ...(extra || {}) } });
-  if (error) {
-    let d = null;
-    try { d = await error.context.json(); } catch (e) {}
-    const err = new Error(d && d.error ? d.error : error.message);
-    err.data = d;
-    throw err;
-  }
-  return data;
-}
-export function fmt(sec) {
-  sec = Math.max(0, Math.round(sec));
-  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
-  return (h ? h + 'h ' : '') + m + 'm ' + s + 's';
-}
-// 'life_pod' -> 'Life Pod', 'elite_hauler' -> 'Elite Hauler'
-export const hullName = id => String(id || 'ship').split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-// The pulse numbers of the flight in progress (from the pending trip), shaped for pulseState; null if the flight does not pulse.
-function pulseOf(a) {
-  const q = a && a.payload && a.payload.pulse; if (!q) return null;
-  return { g: q.g, bar: q.bar0, regen0: q.regen0, mx: q.mx, freeG: q.freeG, refill: q.refill, perG: q.perG, share: q.share, t0: q.t0 };
-}
-// The thrust the ship is flying at RIGHT NOW: the chosen thrust while a burn lasts, the free thrust while the bar refills.
-// Worked out from the pending trip. null when not flying.
-export function flightG() {
-  const ship = S.last && (S.last.ships || [])[0];
-  if (!ship || ship.state === 'docked') return null;
-  const a = ((S.last.actions) || []).find(x => x.status === 'pending');
-  const free = S.last.pilot && S.last.pilot.free_g != null ? Number(S.last.pilot.free_g) : 3;
-  const pn = pulseOf(a);
-  if (pn) return pulseState(pn, curGd() - pn.t0).burning ? Number(pn.g) : Number(pn.freeG);
-  const p = a && a.payload;
-  if (!p || p.g == null) return Number(ship.thrust_g);
-  return Number(p.g) > free && p.burn_days != null && curGd() < Number(p.departT) + Number(p.burn_days) ? Number(p.g) : Math.min(Number(p.g), free);
-}
-// The endurance bar now. Pulsed flight: the page works the saw-tooth out itself with the same rule as the server.
-// Otherwise: the value from the last 'me' answer, moved on at its rate since then (display only).
-export function enduranceNow() {
-  const p = S.last && S.last.pilot; if (!p || p.endurance == null) return null;
-  if (p.flight && p.cfg) {
-    const f = p.flight, k = p.cfg, gd = Math.min(curGd(), Number(f.until));
-    return pulseState({ g: f.g, bar: f.bar0, regen0: f.regen0, mx: k.mx, freeG: k.free_g, refill: k.refill, perG: k.per_g, share: k.share }, gd - Number(f.t0)).v;
-  }
-  const hours = (Date.now() - S.last.real_ms) * S.last.scale / 3.6e6;
-  const v = Number(p.endurance) + Number(p.endurance_rate_hour || 0) * hours;
-  return Math.max(0, Math.min(Number(p.endurance_max), v));
-}
-export function setShipLine() {
-  const ship = S.last && (S.last.ships || [])[0];
-  const cr = S.last && S.last.character ? '  |  Credits ' + money(S.last.character.credits) : '';
-  const en = enduranceNow();
-  const bar = en == null ? '' : '  |  Endurance ' + Math.round(en) + ' / ' + Math.round(S.last.pilot.endurance_max);
-  const g = flightG();
-  $('ship').textContent = (!ship ? 'No ship' :
-    ship.state === 'docked' ? hullName(ship.hull_id) + ' docked at ' + locName(ship.location_id) :
-    hullName(ship.hull_id) + ' traveling at ' + (Math.round(g * 10) / 10) + ' g') + bar + cr;
-}
-
-/* ---------- shared by the Market and Assets screens ---------- */
-// The place the ship is docked at, or null while it travels.
-export const dockedAt = () => { const s = S.last && (S.last.ships || [])[0]; return s && s.state === 'docked' ? s.location_id : null; };
-// Default place for a location box: where the ship is docked; else the last place it docked (remembered); else the start of the current trip; else Luna.
-export function defaultLoc() {
-  const dl = dockedAt(); if (dl) return dl;
-  const mem = LS.get('pvs_lastdock'); if (mem) return mem;
-  const a = ((S.last && S.last.actions) || []).find(x => x.status === 'pending');
-  return (a && a.payload && a.payload.from) || 'luna';
-}
+setInterval(() => { if (S.last && S.sb) refresh(); }, 15000);
+init();
