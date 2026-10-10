@@ -4,7 +4,7 @@
 // trip estimates, hold and storage views. index.ts, market.ts and freight.ts
 // all import from here. This file imports NOTHING from them (no circles).
 // ======================================================================
-import { BODY_INDEX, bodyId, gToAuDay2, planTravel } from './physics_bundle.ts';
+import { BODY_INDEX, bodyId, gToAuDay2, planTravel, planTravelBar } from './physics_bundle.ts';
 
 // ---------- server ----------
 export const cors = {
@@ -150,5 +150,65 @@ export async function enduranceSpend(db, characterId, g, days, nowT) {
   const { data, error } = await db.rpc('endurance_use', { p_character: characterId, p_g: g, p_days: days, p_now_t: nowT });
   if (error) throw error;
   if (!data?.ok) console.error('endurance_use refused after launch', data);
+  return data;
+}
+
+// ---------- step 4: flights the endurance bar can pay for ----------
+// Any thrust up to the hull's limit may launch. The ship burns at that thrust while the bar lasts, then flies on at
+// the free thrust (3 g). SQL holds the numbers; these helpers only plan with them.
+
+// The numbers a plan needs, read from SQL at game time nowT (one call, nothing saved).
+//   bar = endurance now, max = size of the bar, freeG = thrust that costs nothing,
+//   perG = bar lost per game hour for every g above freeG, drainHour = bar lost per game hour at thrust g.
+export async function pilotNumbers(db, characterId, g, nowT) {
+  const chk = await enduranceCheck(db, characterId, g, [], nowT);
+  const freeG = Number(chk.free_g), perG = Number(chk.drain_per_g_hour);
+  return { bar: Number(chk.endurance), max: Number(chk.max), freeG, perG, drainHour: Math.max(0, g - freeG) * perG };
+}
+
+// A hop is a short straight line (accelerate half the way, brake the rest), so a mid-hop drop to 3 g could overshoot.
+// Rule for hops: fly at the highest thrust, up to g, whose whole hop the bar can pay for (never below the free thrust).
+// Returns {g: thrust used, days, cost}.
+export function hopWithBar(offsetA, offsetB, g, p) {
+  const days = gg => hopDurationDays(offsetA, offsetB, gg);
+  const cost = gg => Math.max(0, gg - p.freeG) * p.perG * days(gg) * 24;
+  if (g <= p.freeG || cost(g) <= p.bar + 1e-9) return { g, days: days(g), cost: cost(g) };
+  let lo = p.freeG, hi = g;                              // cost grows with g: find the highest g the bar can pay
+  for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (cost(mid) <= p.bar) lo = mid; else hi = mid; }
+  return { g: lo, days: days(lo), cost: cost(lo) };
+}
+
+// Like estimateTrip, but with the bar. p = pilotNumbers(...). Returns
+// {ok, days, sun_danger, cost, burn_days, drops, g_eff, r} or {ok:false, reason}. NOTHING is saved.
+// r = the full plan result of a long flight (queue_travel saves its plan); long flights are cached per destination body.
+export function estimateTripBar(from, to, departT, g, cache, p) {
+  if (from.id === to.id) return { ok: false, reason: 'already_here' };
+  if (!(to.anchor_body in BODY_INDEX) || BODY_INDEX[to.anchor_body] < 1) return { ok: false, reason: 'bad_destination' };
+  if (!(from.anchor_body in BODY_INDEX)) return { ok: false, reason: 'bad_origin' };
+  if (from.anchor_body === to.anchor_body) {
+    const h = hopWithBar(Number(from.offset_au), Number(to.offset_au), g, p);
+    return h.days > 0
+      ? { ok: true, days: h.days, sun_danger: false, cost: h.cost, burn_days: h.cost > 0 ? h.days : 0, drops: h.g < g - 1e-9, g_eff: h.g }
+      : { ok: false, reason: 'bad_destination' };
+  }
+  let r = cache[to.anchor_body];
+  if (!r) {
+    r = cache[to.anchor_body] = planTravelBar({
+      from: { body: bodyId(from.anchor_body) },
+      to: { body: bodyId(to.anchor_body) },
+      departT, g, bar: p.bar, freeG: p.freeG, drainHour: p.drainHour,
+    });
+  }
+  return r.ok
+    ? { ok: true, days: r.durationDays, sun_danger: r.sunDanger, cost: r.cost, burn_days: r.burnDays, drops: r.drops, g_eff: r.gEff, r }
+    : { ok: false, reason: r.reason };
+}
+
+// SPENDS the endurance for one flight (SQL endurance_fly). Call once, right after the flight was saved.
+// burnDays = game days above the free thrust, totalDays = the whole flight. It never refuses.
+export async function enduranceFly(db, characterId, g, burnDays, totalDays, nowT) {
+  const { data, error } = await db.rpc('endurance_fly', { p_character: characterId, p_g: g, p_burn_days: burnDays, p_total_days: totalDays, p_now_t: nowT });
+  if (error) throw error;
+  if (!data?.ok) console.error('endurance_fly failed', data);
   return data;
 }
