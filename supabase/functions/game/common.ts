@@ -127,3 +127,28 @@ export async function storageAt(db, characterId, locId) {
       quantity: r.quantity, avg_cost: r.avg_cost == null ? null : Number(r.avg_cost) };
   }).sort((a, b) => a.name.localeCompare(b.name));
 }
+
+// ---------- step 3: pilot, thrust and endurance ----------
+// Highest thrust the ship may use = its hull's max_g (never above the code limit of 12 g).
+export async function getMaxG(db, ship) {
+  const { data, error } = await db.from('hulls').select('max_g').eq('id', ship.hull_id).maybeSingle();
+  if (error) throw error;
+  return Math.min(12, Number(data?.max_g ?? ship.thrust_g ?? 3));
+}
+
+// READ-ONLY. For a list of trip durations (game days) flown at `g`: what each costs in endurance and whether
+// the pilot can pay it now. All the maths is in SQL (endurance_check); this only passes it on.
+export async function enduranceCheck(db, characterId, g, durations, nowT) {
+  const { data, error } = await db.rpc('endurance_check', { p_character: characterId, p_g: g, p_durations: durations, p_now_t: nowT });
+  if (error) throw error;
+  return data;
+}
+
+// SPENDS the endurance for one flight (SQL endurance_use). Call once, right after the flight was saved.
+// A refusal here could only come from a race (the check passed a moment ago): log it, the flight stands.
+export async function enduranceSpend(db, characterId, g, days, nowT) {
+  const { data, error } = await db.rpc('endurance_use', { p_character: characterId, p_g: g, p_days: days, p_now_t: nowT });
+  if (error) throw error;
+  if (!data?.ok) console.error('endurance_use refused after launch', data);
+  return data;
+}
