@@ -9,6 +9,7 @@ import { J2000_MS, G0, AU_M, DAY_S, KMS, C_KMS, KM_PER_AU, DOCK_RADIUS_AU, DOCK_
 import { cors, json, getCharacter, getLocation, resolveFor, getShip, estimateTrip, hopDurationDays } from './common.ts';
 import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll } from './market.ts';
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
+import { shipLeave, shipBoard } from './ships.ts';
 
 // ---------- server ----------
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
@@ -249,6 +250,8 @@ Deno.serve(async (req) => {
       case 'freight_abandon': return await freightAbandon(db, user, body);
       case 'freight_mine': return await freightList(db, user, 'mine');
       case 'freight_hauling': return await freightList(db, user, 'hauling');
+      case 'ship_leave': return await shipLeave(db, user);
+      case 'ship_board': return await shipBoard(db, user, body);
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
