@@ -267,3 +267,125 @@ export function planTravelBar({ from, to, departT, g, bar, freeG = 3, drainHour 
   };
   return { ...summarizePlan(plan, departT), g, gEff: g, burnDays: tEmpty - departT, cost: bar, drops: true };
 }
+
+// ---------------- Step 4: pulsed thrust (burn part of the bar, refill at the free thrust, repeat) ----------------
+// THE RULE (the SQL function pulse_bar in migration 029 is its twin: keep them the same):
+//   floor = (1 - share) x mx.  Burn at g while the bar is above the floor; at the floor fly at the free thrust until the
+//   bar is full; burn again; and so on for the whole flight. Start: bar above the floor (and not regen0) -> burn first;
+//   otherwise refill first until full. drain = (g - freeG) x perG per game hour, refill per game hour; times are game days.
+// o = {g, bar, mx, freeG, refill, perG, share, regen0}.   dt = game days since the flight started.
+// Returns {v: the bar, burning: true while the thrust limit is g, false while it is freeG}.
+export function pulseState(o, dt) {
+  const { g, mx, freeG = 3, refill, perG, share = 0.5, regen0 = false } = o;
+  const bar0 = Math.max(0, Math.min(mx, o.bar));
+  const drain = (g - freeG) * perG, fl = (1 - share) * mx;
+  const tb = share * mx / drain / 24, tr = share * mx / refill / 24;          // days: burn, refill
+  const burnFirst = !regen0 && bar0 > fl;
+  const dA = burnFirst ? (bar0 - fl) / drain / 24 : Math.max(0, (mx - bar0) / refill / 24);
+  const cl = (v) => Math.max(0, Math.min(mx, v));
+  if (!(dt > 0)) return { v: bar0, burning: burnFirst };
+  if (dt < dA) return burnFirst ? { v: cl(bar0 - drain * 24 * dt), burning: true } : { v: cl(bar0 + refill * 24 * dt), burning: false };
+  const u = dt - dA, cyc = tb + tr, ph = u - Math.floor(u / cyc) * cyc;
+  if (burnFirst) return ph < tr ? { v: cl(fl + refill * 24 * ph), burning: false } : { v: cl(mx - drain * 24 * (ph - tr)), burning: true };
+  return ph < tb ? { v: cl(mx - drain * 24 * ph), burning: true } : { v: cl(fl + refill * 24 * (ph - tb)), burning: false };
+}
+
+// The thrust limit over time as a list of windows [{t0, t1, w}] (days from the start; w = limit / burn limit,
+// so 1 while burning and freeG/g while refilling), up to `hor` days. null if there would be too many windows.
+function pulseWindows(o, hor) {
+  const { g, mx, freeG = 3, refill, perG, share = 0.5, regen0 = false } = o;
+  const bar0 = Math.max(0, Math.min(mx, o.bar));
+  const drain = (g - freeG) * perG, fl = (1 - share) * mx;
+  const tb = share * mx / drain / 24, tr = share * mx / refill / 24, rho = freeG / g;
+  if (hor / (tb + tr) * 2 > 600) return null;
+  const burnFirst = !regen0 && bar0 > fl;
+  const dA = burnFirst ? (bar0 - fl) / drain / 24 : Math.max(0, (mx - bar0) / refill / 24);
+  const W = []; let t = 0, burn;
+  if (dA > 0) { W.push({ t0: 0, t1: dA, w: burnFirst ? 1 : rho }); t = dA; }
+  burn = !burnFirst;                                    // after a burn comes a refill; after a refill comes a burn
+  while (t < hor) { const len = burn ? tb : tr; W.push({ t0: t, t1: t + len, w: burn ? 1 : rho }); t += len; burn = !burn; }
+  return W;
+}
+
+// Flight plan under the pulse rule. Same inputs as planTravel plus the pilot numbers:
+//   bar (now), mx (size of the bar), freeG, refill (per game hour at or below freeG), perG (drain per g above freeG per
+//   game hour), share (0.5), regen0 (true = keep refilling to full before the first burn; used when replanning mid-refill).
+// Method: like solvePlan (two phases, one constant direction vector each) but the acceleration of a phase is
+// c x w(t), where w(t) follows the pulse windows. The equations stay linear in c, so they are solved exactly.
+// Returns what planTravel returns plus: g, gEff (g, or freeG when it fell back), pulse (the numbers the bar needs:
+// {g, bar0, regen0, mx, freeG, refill, perG, share, t0}) or null when the flight has no pulses, pulsed, gAvg.
+export function planTravelPulse(o) {
+  const { from, to, departT, g, bar, mx, freeG = 3, refill, perG, share = 0.5, regen0 = false } = o;
+  const first = planTravel({ from, to, departT, g });
+  if (!first.ok) return first;
+  const drain = (g - freeG) * perG;
+  if (!(g > freeG) || !(drain > 0) || !(refill > 0) || !(mx > 0) || !(share > 0 && share <= 1))
+    return { ...first, g, gEff: g, pulse: null, pulsed: false, gAvg: g };
+  const low = planTravel({ from, to, departT, g: freeG });
+  if (!low.ok) return low;
+  const hor = low.durationDays * 1.5 + 0.5;
+  const pn = { g, bar, mx, freeG, refill, perG, share, regen0 };
+  const W = pulseWindows(pn, hor);
+  if (!W) return { ...low, g, gEff: freeG, pulse: null, pulsed: false, gAvg: freeG };
+
+  // prefix sums so F(t) = integral of w, Gm(t) = integral of s*w ds, are quick
+  const n = W.length, cF = new Array(n), cG = new Array(n);
+  let sf = 0, sg = 0;
+  for (let i = 0; i < n; i++) {
+    cF[i] = sf; cG[i] = sg;
+    sf += W[i].w * (W[i].t1 - W[i].t0); sg += W[i].w * (W[i].t1 * W[i].t1 - W[i].t0 * W[i].t0) / 2;
+  }
+  const idx = (t) => { let lo = 0, hi = n - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (W[m].t0 <= t) lo = m; else hi = m - 1; } return lo; };
+  const F = (t) => { if (t <= 0) return 0; const i = idx(t); return cF[i] + W[i].w * (t - W[i].t0); };
+  const Gm = (t) => { if (t <= 0) return 0; const i = idx(t); return cG[i] + W[i].w * (t * t - W[i].t0 * W[i].t0) / 2; };
+
+  const st = from.body != null ? targetState({ body: from.body }, departT) : from.state;
+  const Aref = gToAuDay2(g);
+  const solve = (T) => {
+    const q = targetState(to, departT + T);
+    const FT = F(T), half = FT / 2;
+    let lo = 0, hi = T;
+    for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (F(m) < half) lo = m; else hi = m; }
+    const tau = hi, sg2 = T - tau, W1 = F(tau), W2 = FT - W1;
+    const X1 = tau * W1 - Gm(tau), X2 = T * W2 - (Gm(T) - Gm(tau)), P = X1 + W1 * sg2;
+    const det = W1 * X2 - W2 * P;
+    const sol = (dv, dx) => [(dv * X2 - W2 * dx) / det, (W1 * dx - P * dv) / det];
+    const [c1x, c2x] = sol(q.vx - st.vx, q.x - st.x - st.vx * T);
+    const [c1y, c2y] = sol(q.vy - st.vy, q.y - st.y - st.vy * T);
+    return { m: Math.max(mag(c1x, c1y), mag(c2x, c2y)), tau, c1x, c1y, c2x, c2y, q };
+  };
+  let T = 0.01, prev = T;
+  while (T < hor && solve(T).m > Aref) { prev = T; T *= 1.03; }
+  if (T >= hor) return { ...low, g, gEff: freeG, pulse: null, pulsed: false, gAvg: freeG };
+  let lo = prev, hi = T;
+  for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (solve(mid).m > Aref) lo = mid; else hi = mid; }
+  const c = solve(hi), TT = hi, tau = c.tau;
+
+  // build the segments: one per pulse window piece, split where phase 1 ends
+  const cuts = [0, tau, TT];
+  for (const w of W) { if (w.t0 > 0 && w.t0 < TT) cuts.push(w.t0); }
+  cuts.sort((a, b) => a - b);
+  const segs = []; let s = { x: st.x, y: st.y, vx: st.vx, vy: st.vy };
+  for (let k = 0; k + 1 < cuts.length; k++) {
+    const p = cuts[k], q2 = cuts[k + 1];
+    if (!(q2 - p > 1e-12)) continue;
+    const w = W[idx((p + q2) / 2)].w, ph1 = (p + q2) / 2 < tau;
+    const seg = { t0: departT + p, dur: q2 - p, x: s.x, y: s.y, vx: s.vx, vy: s.vy,
+      ax: (ph1 ? c.c1x : c.c2x) * w, ay: (ph1 ? c.c1y : c.c2y) * w };
+    segs.push(seg); s = segmentEnd(seg);
+  }
+  const plan = { segs, t0: departT, T: TT, tEnd: departT + TT, tgt: to, dock: to.body != null ? to.body : -1,
+    end: { x: c.q.x, y: c.q.y, vx: c.q.vx, vy: c.q.vy } };
+  return { ...summarizePlan(plan, departT), g, gEff: g,
+    pulse: { g, bar0: Math.max(0, Math.min(mx, bar)), regen0, mx, freeG, refill, perG, share, t0: departT },
+    pulsed: true, gAvg: freeG * Math.pow(low.durationDays / TT, 2) };
+}
+
+// Ship state in SPACE (absolute frame). A plan with plan.frame = body index is stored relative to that body
+// (used for hops): add the body's position and velocity. Other plans are already absolute.
+export function shipStateAbs(plan, t) {
+  const s = stateAt(plan, t);
+  if (plan.frame == null) return s;
+  const b = BODIES[plan.frame], p = bodyPos(b, t), v = bodyVel(b, t);
+  return { ...s, x: s.x + p[0], y: s.y + p[1], vx: s.vx + v[0], vy: s.vy + v[1] };
+}
