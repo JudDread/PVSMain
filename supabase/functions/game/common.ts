@@ -166,16 +166,32 @@ export async function pilotNumbers(db, characterId, g, nowT) {
   return { bar: Number(chk.endurance), max: Number(chk.max), freeG, perG, drainHour: Math.max(0, g - freeG) * perG };
 }
 
-// A hop is a short straight line (accelerate half the way, brake the rest), so a mid-hop drop to 3 g could overshoot.
-// Rule for hops: fly at the highest thrust, up to g, whose whole hop the bar can pay for (never below the free thrust).
-// Returns {g: thrust used, days, cost}.
+// A hop is a short straight line: accelerate at the limit, then brake at the limit. Same rule as long flights:
+// burn at g until the bar is empty (te), then at the free thrust. The moment to start braking (ts) is searched so the
+// ship stops exactly at the destination (no overshoot). Returns {g, days, cost, burn_days, drops, g_eff}.
 export function hopWithBar(offsetA, offsetB, g, p) {
-  const days = gg => hopDurationDays(offsetA, offsetB, gg);
-  const cost = gg => Math.max(0, gg - p.freeG) * p.perG * days(gg) * 24;
-  if (g <= p.freeG || cost(g) <= p.bar + 1e-9) return { g, days: days(g), cost: cost(g) };
-  let lo = p.freeG, hi = g;                              // cost grows with g: find the highest g the bar can pay
-  for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (cost(mid) <= p.bar) lo = mid; else hi = mid; }
-  return { g: lo, days: days(lo), cost: cost(lo) };
+  const d = Math.abs(offsetA - offsetB);
+  const a1 = gToAuDay2(g), a3 = gToAuDay2(p.freeG);
+  const full = 2 * Math.sqrt(d / a1);
+  const drainHour = Math.max(0, g - p.freeG) * p.perG;
+  if (!(g > p.freeG) || !(drainHour > 0)) return { g, days: full, cost: 0, burn_days: 0, drops: false, g_eff: g };
+  if (!(p.bar > 1e-6)) return { g, days: 2 * Math.sqrt(d / a3), cost: 0, burn_days: 0, drops: true, g_eff: p.freeG };
+  const te = p.bar / drainHour / 24;                                   // days until the bar is empty
+  if (te >= full) return { g, days: full, cost: drainHour * full * 24, burn_days: full, drops: false, g_eff: g };
+  // Distance covered and total time if braking starts at ts (limit = a1 before te, a3 after).
+  const run = ts => {
+    let v, x;
+    if (ts <= te) { v = a1 * ts; x = 0.5 * a1 * ts * ts; }
+    else { const dt = ts - te, v1 = a1 * te; v = v1 + a3 * dt; x = 0.5 * a1 * te * te + v1 * dt + 0.5 * a3 * dt * dt; }
+    if (ts >= te) return { D: x + v * v / (2 * a3), end: ts + v / a3 };
+    const tb = v / a1;
+    if (ts + tb <= te) return { D: x + v * v / (2 * a1), end: ts + tb };
+    const dt1 = te - ts, v2 = v - a1 * dt1, x2 = v * dt1 - 0.5 * a1 * dt1 * dt1;
+    return { D: x + x2 + v2 * v2 / (2 * a3), end: te + v2 / a3 };
+  };
+  let lo = 0, hi = Math.sqrt(d / a3);                                 // hi = the all-free-g switch time: always enough
+  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (run(mid).D < d) lo = mid; else hi = mid; }
+  return { g, days: run(hi).end, cost: p.bar, burn_days: te, drops: true, g_eff: g };
 }
 
 // Like estimateTrip, but with the bar. p = pilotNumbers(...). Returns
@@ -188,7 +204,7 @@ export function estimateTripBar(from, to, departT, g, cache, p) {
   if (from.anchor_body === to.anchor_body) {
     const h = hopWithBar(Number(from.offset_au), Number(to.offset_au), g, p);
     return h.days > 0
-      ? { ok: true, days: h.days, sun_danger: false, cost: h.cost, burn_days: h.cost > 0 ? h.days : 0, drops: h.g < g - 1e-9, g_eff: h.g }
+      ? { ok: true, days: h.days, sun_danger: false, cost: h.cost, burn_days: h.burn_days, drops: h.drops, g_eff: h.g_eff }
       : { ok: false, reason: 'bad_destination' };
   }
   let r = cache[to.anchor_body];
