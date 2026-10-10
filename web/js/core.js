@@ -74,7 +74,6 @@ export function flightG() {
   const free = S.last.pilot && S.last.pilot.free_g != null ? Number(S.last.pilot.free_g) : 3;
   if (!p || p.g == null) return Number(ship.thrust_g);
   const burn = Number(p.burn_days || 0);
-  if (a.action_type === 'hop') return Number(p.g);
   return burn > 0 && curGd() < Number(p.departT) + burn ? Number(p.g) : (Number(p.g) > free ? free : Number(p.g));
 }
 // The endurance bar now: the value from the last 'me' answer, moved on at its rate since then (display only).
