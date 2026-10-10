@@ -4,7 +4,7 @@
 // trip estimates, hold and storage views. index.ts, market.ts and freight.ts
 // all import from here. This file imports NOTHING from them (no circles).
 // ======================================================================
-import { BODY_INDEX, bodyId, gToAuDay2, planTravel, planTravelBar } from './physics_bundle.ts';
+import { BODY_INDEX, bodyId, gToAuDay2, planTravel, planTravelBar, planTravelPulse } from './physics_bundle.ts';
 
 // ---------- server ----------
 export const cors = {
@@ -159,65 +159,51 @@ export async function enduranceSpend(db, characterId, g, days, nowT) {
 
 // The numbers a plan needs, read from SQL at game time nowT (one call, nothing saved).
 //   bar = endurance now, max = size of the bar, freeG = thrust that costs nothing,
-//   perG = bar lost per game hour for every g above freeG, drainHour = bar lost per game hour at thrust g.
+//   perG = bar lost per game hour for every g above freeG, drainHour = bar lost per game hour at thrust g,
+//   refill = bar gained per game hour at or below freeG, share = part of the bar a pulse burns (0.5).
 export async function pilotNumbers(db, characterId, g, nowT) {
   const chk = await enduranceCheck(db, characterId, g, [], nowT);
   const freeG = Number(chk.free_g), perG = Number(chk.drain_per_g_hour);
-  return { bar: Number(chk.endurance), max: Number(chk.max), freeG, perG, drainHour: Math.max(0, g - freeG) * perG };
+  return { bar: Number(chk.endurance), max: Number(chk.max), freeG, perG, refill: Number(chk.refill_flight_hour), share: Number(chk.pulse_share),
+    drainHour: Math.max(0, g - freeG) * perG };
 }
 
-// A hop is a short straight line: accelerate at the limit, then brake at the limit. Same rule as long flights:
-// burn at g until the bar is empty (te), then at the free thrust. The moment to start braking (ts) is searched so the
-// ship stops exactly at the destination (no overshoot). Returns {g, days, cost, burn_days, drops, g_eff}.
-export function hopWithBar(offsetA, offsetB, g, p) {
-  const d = Math.abs(offsetA - offsetB);
-  const a1 = gToAuDay2(g), a3 = gToAuDay2(p.freeG);
-  const full = 2 * Math.sqrt(d / a1);
-  const drainHour = Math.max(0, g - p.freeG) * p.perG;
-  if (!(g > p.freeG) || !(drainHour > 0)) return { g, days: full, cost: 0, burn_days: 0, drops: false, g_eff: g };
-  if (!(p.bar > 1e-6)) return { g, days: 2 * Math.sqrt(d / a3), cost: 0, burn_days: 0, drops: true, g_eff: p.freeG };
-  const te = p.bar / drainHour / 24;                                   // days until the bar is empty
-  if (te >= full) return { g, days: full, cost: drainHour * full * 24, burn_days: full, drops: false, g_eff: g };
-  // Distance covered and total time if braking starts at ts (limit = a1 before te, a3 after).
-  const run = ts => {
-    let v, x;
-    if (ts <= te) { v = a1 * ts; x = 0.5 * a1 * ts * ts; }
-    else { const dt = ts - te, v1 = a1 * te; v = v1 + a3 * dt; x = 0.5 * a1 * te * te + v1 * dt + 0.5 * a3 * dt * dt; }
-    if (ts >= te) return { D: x + v * v / (2 * a3), end: ts + v / a3 };
-    const tb = v / a1;
-    if (ts + tb <= te) return { D: x + v * v / (2 * a1), end: ts + tb };
-    const dt1 = te - ts, v2 = v - a1 * dt1, x2 = v * dt1 - 0.5 * a1 * dt1 * dt1;
-    return { D: x + x2 + v2 * v2 / (2 * a3), end: te + v2 / a3 };
-  };
-  let lo = 0, hi = Math.sqrt(d / a3);                                 // hi = the all-free-g switch time: always enough
-  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (run(mid).D < d) lo = mid; else hi = mid; }
-  return { g, days: run(hi).end, cost: p.bar, burn_days: te, drops: true, g_eff: g };
-}
-
-// Like estimateTrip, but with the bar. p = pilotNumbers(...). Returns
-// {ok, days, sun_danger, cost, burn_days, drops, g_eff, r} or {ok:false, reason}. NOTHING is saved.
-// r = the full plan result of a long flight (queue_travel saves its plan); long flights are cached per destination body.
-export function estimateTripBar(from, to, departT, g, cache, p) {
+// Plans ONE trip under the pulse rule (burn part of the bar, refill at the free thrust, repeat). NOTHING is saved.
+// p = pilotNumbers(...). `cache` remembers flights per destination body for the departure list.
+// A trip between two places at the SAME body is a "hop": a plan in the body's own frame (positions = the places'
+// offsets in AU along a fixed axis; plan.frame = the body's index), so the ship's position and speed are known at every
+// moment of the hop. Returns {ok, hop, r (the planner's answer, with r.plan), days, sun_danger} or {ok:false, reason}.
+export function planTrip(from, to, departT, g, p, cache = {}) {
   if (from.id === to.id) return { ok: false, reason: 'already_here' };
   if (!(to.anchor_body in BODY_INDEX) || BODY_INDEX[to.anchor_body] < 1) return { ok: false, reason: 'bad_destination' };
   if (!(from.anchor_body in BODY_INDEX)) return { ok: false, reason: 'bad_origin' };
+  const nums = { g, bar: p.bar, mx: p.max, freeG: p.freeG, refill: p.refill, perG: p.perG, share: p.share };
   if (from.anchor_body === to.anchor_body) {
-    const h = hopWithBar(Number(from.offset_au), Number(to.offset_au), g, p);
-    return h.days > 0
-      ? { ok: true, days: h.days, sun_danger: false, cost: h.cost, burn_days: h.burn_days, drops: h.drops, g_eff: h.g_eff }
-      : { ok: false, reason: 'bad_destination' };
+    const a = Number(from.offset_au), b = Number(to.offset_au);
+    if (!(Math.abs(a - b) > 1e-9)) return { ok: false, reason: 'bad_destination' };
+    const key = 'hop|' + from.id + '|' + to.id;
+    const r = cache[key] ?? (cache[key] = planTravelPulse({ from: { state: { x: a, y: 0, vx: 0, vy: 0 } }, to: { x: b, y: 0 }, departT, ...nums }));
+    if (!r.ok) return { ok: false, reason: r.reason };
+    r.plan.frame = bodyId(from.anchor_body);
+    return { ok: true, hop: true, r, days: r.durationDays, sun_danger: false };
   }
-  let r = cache[to.anchor_body];
-  if (!r) {
-    r = cache[to.anchor_body] = planTravelBar({
-      from: { body: bodyId(from.anchor_body) },
-      to: { body: bodyId(to.anchor_body) },
-      departT, g, bar: p.bar, freeG: p.freeG, drainHour: p.drainHour,
-    });
-  }
-  return r.ok
-    ? { ok: true, days: r.durationDays, sun_danger: r.sunDanger, cost: r.cost, burn_days: r.burnDays, drops: r.drops, g_eff: r.gEff, r }
-    : { ok: false, reason: r.reason };
+  const key = 'to|' + to.anchor_body;
+  const r = cache[key] ?? (cache[key] = planTravelPulse({ from: { body: bodyId(from.anchor_body) }, to: { body: bodyId(to.anchor_body) }, departT, ...nums }));
+  return r.ok ? { ok: true, hop: false, r, days: r.durationDays, sun_danger: r.sunDanger } : { ok: false, reason: r.reason };
+}
+
+// SPENDS the endurance for a flight planned by planTrip, once, right after the flight was saved.
+// A pulsed flight stores the launch bar and the thrust (the bar is then a formula, SQL pulse_bar); any other flight is a
+// plain refill at the free thrust. Neither refuses.
+export async function spendEndurance(db, characterId, g, r, departT) {
+  if (r.pulsed) return await enduranceFlyPulse(db, characterId, g, r.durationDays, departT, false);
+  return await enduranceFly(db, characterId, r.gEff, 0, r.durationDays, departT);
+}
+export async function enduranceFlyPulse(db, characterId, g, totalDays, nowT, regen0) {
+  const { data, error } = await db.rpc('endurance_fly_pulse', { p_character: characterId, p_g: g, p_total_days: totalDays, p_now_t: nowT, p_regen0: !!regen0 });
+  if (error) throw error;
+  if (!data?.ok) console.error('endurance_fly_pulse failed', data);
+  return data;
 }
 
 // SPENDS the endurance for one flight (SQL endurance_fly). Call once, right after the flight was saved.
