@@ -1,7 +1,7 @@
 // main.js - the app shell: login, the 15 s refresh, the 1 s clock tick, buttons outside the screens.
 // Loads fly.js, market.js and assets.js (each registers its own screen).
 import { J2000_MS } from 'physics';
-import { S, $, say, li, call, fmt, curGd, locName, screens, openScreen, setShipLine, enduranceNow } from 'core';
+import { S, $, say, li, call, fmt, curGd, nowMs, locName, screens, openScreen, setShipLine, enduranceNow } from 'core';
 import { invalidateDeps, resetFly } from 'fly';
 import { resetMarket } from 'market';
 import { resetAssets } from 'assets';
@@ -28,7 +28,20 @@ async function enterGame(session) {
   timer = setInterval(tick, 1000);
 }
 async function refresh() {
-  try { S.last = await call('me'); render(); }
+  try {
+    const t0 = Date.now();
+    const d = await call('me');
+    const t1 = Date.now();
+    /* Several refreshes can be in flight at once (timer, launch, speed button, arrival). An answer that was started
+       earlier than the one already shown must never replace it, or the ship jumps back to an old state. */
+    if (S.last && d && d.real_ms < S.last.real_ms) return;
+    /* Clock check (the NTP way): the server stamped the answer when it started (real_ms) and when it left (sent_ms).
+       Averaging the two differences cancels the travel time. Keep the sample with the shortest round trip. */
+    if (d && d.sent_ms && (!S.skewAt || t1 - t0 <= S.skewRtt || t1 - S.skewAt > 120000)) {
+      S.skew = ((d.real_ms - t0) + (d.sent_ms - t1)) / 2; S.skewRtt = t1 - t0; S.skewAt = t1;
+    }
+    S.last = d; render();
+  }
   catch (e) { say('Error: ' + e.message, 'err'); }
 }
 function render() {
@@ -55,7 +68,7 @@ function tick() {
   $('gtime').textContent = new Date(J2000_MS + gd * 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC (game) - speed ' + (Math.round((S.last.speed || 1) * 100) / 100) + 'x';
   const acts = $('acts'); acts.replaceChildren();
   (S.last.actions || []).forEach(a => {
-    const left = (new Date(a.resolve_at) - Date.now()) / 1000;
+    const left = (new Date(a.resolve_at) - nowMs()) / 1000;
     const p = a.payload || {};
     let t = 'trip ' + locName(p.from) + ' -> ' + locName(p.to_location || (p.to || '').toLowerCase()) + ' [' + a.status + ']';
     if (a.status === 'pending') {
