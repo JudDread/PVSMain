@@ -1,8 +1,9 @@
 // fly.js - the Fly screen: thrust slider, departure list, ship position, blue preview course, Launch button.
 // Step 4a: moving the thrust slider only makes a POSSIBLE course (blue line + new ETAs). Nothing changes
 // until the Launch button is pressed (that is the confirmation).
-// Any thrust may launch: the ship burns while the endurance bar lasts, then flies on at the free thrust (3 g).
-import { BODIES, bodyPos, stateAt, planTravelBar } from 'physics';
+// Any thrust may launch. Above the free thrust (3 g) the flight PULSES: burn half the bar, refill at 3 g until full,
+// burn again, for the whole trip. The rows show the average thrust that gives.
+import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse } from 'physics';
 import { S, $, say, call, fmt, whole, curGd, addScreen } from 'core';
 import { createMap } from 'map';
 
@@ -36,7 +37,7 @@ function ensureThrust(maxG) {
 function drawThrust() {
   if (!thrustBox) return;
   const free = thrustG <= (deps && deps.free_g != null ? deps.free_g : 3);
-  let t = 'Thrust ' + thrustG.toFixed(1) + ' g' + (free ? ' (free, refills endurance)' : ' (uses endurance, then 3 g)');
+  let t = 'Thrust ' + thrustG.toFixed(1) + ' g' + (free ? ' (free, refills endurance)' : ' (pulses: burns half the bar, refills, repeats)');
   if (deps && deps.endurance != null) t += '  |  Endurance ' + whole(deps.endurance) + ' / ' + whole(deps.endurance_max);
   thrustTxt.textContent = t;
   thrustIn.value = String(thrustG);
@@ -80,8 +81,7 @@ function drawDeps() {
         const n = document.createElement('span'); n.textContent = d.name + (d.sun_danger ? ' (near Sun!)' : '');
         const e = document.createElement('span'); e.className = 'eta';
         let t = fmt(d.eta_real_minutes * 60);
-        if (d.drops && d.burn_real_minutes > 0) t += '  |  ' + deps.free_g + ' g after ' + fmt(d.burn_real_minutes * 60);
-        else if (d.drops) t += '  |  at ' + (d.g_eff != null ? d.g_eff.toFixed(1) : deps.free_g) + ' g (bar too low)';
+        if (d.pulsed) t += '  |  avg ' + d.g_avg.toFixed(1) + ' g';
         e.textContent = t;
         r.append(n, e);
         r.onclick = () => { selected = d.id; drawDeps(); };
@@ -93,7 +93,7 @@ function drawDeps() {
   go.disabled = !pick || !fresh;
   go.textContent = !pick ? 'Pick a destination'
     : !fresh ? 'Updating times...'
-    : 'Launch to ' + pick.name + ' at ' + thrustG.toFixed(1) + ' g' + (pick.drops ? ' then ' + deps.free_g + ' g' : '') + ' (' + fmt(pick.eta_real_minutes * 60) + ')';
+    : 'Launch to ' + pick.name + ' at ' + thrustG.toFixed(1) + ' g' + (pick.pulsed ? ' (avg ' + pick.g_avg.toFixed(1) + ' g)' : '') + ' (' + fmt(pick.eta_real_minutes * 60) + ')';
   map.need();
 }
 
@@ -102,6 +102,8 @@ function shipPoint() {
   const ship = S.last && (S.last.ships || [])[0]; if (!ship) return null;
   const gd = curGd();
   if (ship.state === 'traveling' && ship.plan) { const s = stateAt(ship.plan, gd); return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: ship.plan }; }
+  /* a hop: its plan is stored relative to the body (plan.frame); shipStateAbs adds the body. No path line: it is tiny. */
+  if (ship.state === 'hopping' && ship.plan && ship.plan.frame != null) { const s = shipStateAbs(ship.plan, gd); return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: null }; }
   let body = null;
   if (ship.state === 'docked') { const l = (S.last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; }
   else if (ship.state === 'hopping') { const a = (S.last.actions || []).find(x => x.status === 'pending'); body = a && a.payload && a.payload.to; }
@@ -121,10 +123,10 @@ function previewPlan() {
   if (!l || l.anchor_body === d.anchor_body) return null;      /* same-body hop: no course line */
   const key = selected + '|' + thrustG + '|' + Math.floor(Date.now() / 3000);
   if (pv.key !== key) {
-    const free = deps.free_g != null ? deps.free_g : 3;
-    const r = planTravelBar({ from: { body: BODIES.findIndex(b => b.n === l.anchor_body) },
+    const r = planTravelPulse({ from: { body: BODIES.findIndex(b => b.n === l.anchor_body) },
       to: { body: BODIES.findIndex(b => b.n === d.anchor_body) }, departT: curGd(), g: thrustG,
-      bar: Number(deps.endurance), freeG: free, drainHour: Math.max(0, thrustG - free) * Number(deps.drain_per_g_hour || 0) });
+      bar: Number(deps.endurance), mx: Number(deps.endurance_max), freeG: Number(deps.free_g), refill: Number(deps.refill),
+      perG: Number(deps.per_g), share: Number(deps.share) });
     pv = { key, plan: r.ok ? r.plan : null };
   }
   return pv.plan;
@@ -158,9 +160,8 @@ $('go').onclick = async () => {
   const go = $('go'); go.disabled = true;
   try {
     const r = await call('queue_travel', { to: selected, g: thrustG });
-    say('Launched to ' + r.to + ' at ' + r.g + ' g. Trip takes ' + r.duration_real_minutes.toFixed(1) + ' real minutes.' +
-      (r.drops && r.burn_real_minutes > 0 ? ' The bar runs out after ' + fmt(r.burn_real_minutes * 60) + '; the ship then flies on at 3 g.' : '') +
-      (r.endurance_cost > 0 ? ' Endurance used: ' + whole(r.endurance_cost) + '.' : '') +
+    say('Launched to ' + r.to + ' at ' + r.g + ' g' + (r.pulsed ? ' (pulsing, average ' + r.g_avg.toFixed(1) + ' g)' : '') +
+      '. Trip takes ' + r.duration_real_minutes.toFixed(1) + ' real minutes.' +
       (r.sun_danger ? ' WARNING: passes close to the Sun.' : ''), 'ok');
     deps = null; selected = null; drawDeps();
     await S.refresh();
