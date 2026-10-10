@@ -59,7 +59,7 @@ async function queueTravel(db, user, body) {
   if (!(g >= 1) || g > maxG + 1e-9) return json({ error: 'bad_thrust', max_g: maxG }, 400);
   const p = await pilotNumbers(db, ch.id, g, departT); // bar now, free g, drain per g (SQL holds the numbers)
 
-  // Same planet: a short "hop" (accelerate half way, brake the rest). Flown at the highest thrust the bar can pay.
+  // Same planet: a short "hop". Same rule as long flights: burn at g while the bar lasts, then the free thrust.
   if (from.anchor_body === to.anchor_body) {
     const h = hopWithBar(Number(from.offset_au), Number(to.offset_au), g, p);
     const dur = h.days;
@@ -67,7 +67,7 @@ async function queueTravel(db, user, body) {
     const hopAt = new Date(realMsAt(departT + dur)).toISOString();
     const { data: hop, error: h1 } = await db.from('scheduled_actions').insert({
       character_id: ch.id, ship_id: ship.id, action_type: 'hop',
-      payload: { from: from.id, to: to.anchor_body, to_location: to.id, departT, arriveT: departT + dur, g: h.g, g_asked: g, distance_au: Math.abs(Number(from.offset_au) - Number(to.offset_au)) },
+      payload: { from: from.id, to: to.anchor_body, to_location: to.id, departT, arriveT: departT + dur, g, burn_days: h.burn_days, distance_au: Math.abs(Number(from.offset_au) - Number(to.offset_au)) },
       resolve_at: hopAt,
     }).select().single();
     if (h1) {
@@ -81,9 +81,9 @@ async function queueTravel(db, user, body) {
       await db.from('scheduled_actions').update({ status: 'failed' }).eq('id', hop.id);
       throw h2;
     }
-    const fly = await enduranceFly(db, ch.id, h.g, h.cost > 0 ? dur : 0, dur, departT);
+    const fly = await enduranceFly(db, ch.id, g, h.burn_days, dur, departT);
     return json({
-      ok: true, kind: 'hop', g: h.g, g_asked: g, endurance_cost: fly.cost, action_id: hop.id, from: from.name, to: to.name, resolve_at: hopAt,
+      ok: true, kind: 'hop', g, drops: h.drops, burn_real_minutes: h.burn_days * 1440 / CLOCK.scale, endurance_cost: fly.cost, action_id: hop.id, from: from.name, to: to.name, resolve_at: hopAt,
       duration_game_days: dur, duration_real_minutes: dur * 1440 / CLOCK.scale, sun_danger: false,
     });
   }
