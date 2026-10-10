@@ -49,6 +49,7 @@ function render() {
 function tick() {
   if (!S.last) return;
   const gd = curGd();
+     setShipLine();
   $('gtime').textContent = new Date(J2000_MS + gd * 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC (game) - speed ' + (Math.round((S.last.speed || 1) * 100) / 100) + 'x';
   const acts = $('acts'); acts.replaceChildren();
   (S.last.actions || []).forEach(a => {
