@@ -156,6 +156,7 @@ async function me(db, user) {
     if (pe) throw pe;
     out.pilot = pilot;
   }
+  out.sent_ms = Date.now(); // server time when this answer leaves: the page uses it to measure how far its own clock is off
   return json(out);
 }
 
