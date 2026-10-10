@@ -7,14 +7,17 @@ export const S = {
   last: null,      // latest answer of the server action 'me'
   current: null,   // name of the open screen
   refresh: null,   // main.js puts its refresh() function here so other files can ask for a reload
+  skew: 0,         // server clock minus this device's clock, in ms (measured by main.js; a device clock can be minutes off)
 };
+// Server time now, as far as we can tell. Use this instead of Date.now() whenever comparing with a server time.
+export const nowMs = () => Date.now() + (S.skew || 0);
 export const $ = id => document.getElementById(id);
 
 export function locName(id) {
   const l = ((S.last && S.last.locations) || []).find(x => x.id === id);
   return l ? l.name : (id || '?');
 }
-export function curGd() { return S.last ? S.last.game_days + (Date.now() - S.last.real_ms) * S.last.scale / 864e5 : null; }
+export function curGd() { return S.last ? S.last.game_days + (nowMs() - S.last.real_ms) * S.last.scale / 864e5 : null; }
 
 /* ---------- screen registry: add a screen = a div + addScreen(...) ---------- */
 export const screens = {};
@@ -91,7 +94,7 @@ export function enduranceNow() {
     const f = p.flight, k = p.cfg, gd = Math.min(curGd(), Number(f.until));
     return pulseState({ g: f.g, bar: f.bar0, regen0: f.regen0, mx: k.mx, freeG: k.free_g, refill: k.refill, perG: k.per_g, share: k.share }, gd - Number(f.t0)).v;
   }
-  const hours = (Date.now() - S.last.real_ms) * S.last.scale / 3.6e6;
+  const hours = (nowMs() - S.last.real_ms) * S.last.scale / 3.6e6;
   const v = Number(p.endurance) + Number(p.endurance_rate_hour || 0) * hours;
   return Math.max(0, Math.min(Number(p.endurance_max), v));
 }
