@@ -64,12 +64,35 @@ export function fmt(sec) {
 }
 // 'life_pod' -> 'Life Pod', 'elite_hauler' -> 'Elite Hauler'
 export const hullName = id => String(id || 'ship').split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+// The thrust the ship is flying at RIGHT NOW: the chosen thrust while the burn lasts, then the free thrust (3 g).
+// Worked out from the pending trip (payload g, departT, burn_days). null when not flying.
+export function flightG() {
+  const ship = S.last && (S.last.ships || [])[0];
+  if (!ship || ship.state === 'docked') return null;
+  const a = ((S.last.actions) || []).find(x => x.status === 'pending');
+  const p = a && a.payload;
+  const free = S.last.pilot && S.last.pilot.free_g != null ? Number(S.last.pilot.free_g) : 3;
+  if (!p || p.g == null) return Number(ship.thrust_g);
+  const burn = Number(p.burn_days || 0);
+  if (a.action_type === 'hop') return Number(p.g);
+  return burn > 0 && curGd() < Number(p.departT) + burn ? Number(p.g) : (Number(p.g) > free ? free : Number(p.g));
+}
+// The endurance bar now: the value from the last 'me' answer, moved on at its rate since then (display only).
+export function enduranceNow() {
+  const p = S.last && S.last.pilot; if (!p || p.endurance == null) return null;
+  const hours = (Date.now() - S.last.real_ms) * S.last.scale / 3.6e6;
+  const v = Number(p.endurance) + Number(p.endurance_rate_hour || 0) * hours;
+  return Math.max(0, Math.min(Number(p.endurance_max), v));
+}
 export function setShipLine() {
   const ship = S.last && (S.last.ships || [])[0];
   const cr = S.last && S.last.character ? '  |  Credits ' + money(S.last.character.credits) : '';
+  const en = enduranceNow();
+  const bar = en == null ? '' : '  |  Endurance ' + Math.round(en) + ' / ' + Math.round(S.last.pilot.endurance_max);
+  const g = flightG();
   $('ship').textContent = (!ship ? 'No ship' :
-    ship.state === 'docked' ? hullName(ship.hull_id) + ' docked at ' + locName(ship.location_id) + ' (thrust ' + ship.thrust_g + ' g)' :
-    hullName(ship.hull_id) + ' traveling (thrust ' + ship.thrust_g + ' g)') + cr;
+    ship.state === 'docked' ? hullName(ship.hull_id) + ' docked at ' + locName(ship.location_id) :
+    hullName(ship.hull_id) + ' traveling at ' + (Math.round(g * 10) / 10) + ' g') + bar + cr;
 }
 
 /* ---------- shared by the Market and Assets screens ---------- */
