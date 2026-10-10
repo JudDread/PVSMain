@@ -4,9 +4,9 @@
 // Physics + clock live in ./physics_bundle.ts (auto-bundled from shared/).
 // ======================================================================
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { J2000_MS, G0, AU_M, DAY_S, KMS, C_KMS, KM_PER_AU, DOCK_RADIUS_AU, DOCK_SPEED_KMS, SUN_DANGER_AU, BODIES, BODY_INDEX, bodyId, bodyName, mag, gToAuDay2, bodyAngle, bodyPos, bodyVel, targetState, segmentEnd, stateAt, solvePlan, stopPlan, coastPlan, sunClearance, shipStateAt, planTravel, planTravelBar, LAUNCH_MS, CLOCK, gameDaysAt, realMsAt, rescale, gameDate } from './physics_bundle.ts';
+import { J2000_MS, G0, AU_M, DAY_S, KMS, C_KMS, KM_PER_AU, DOCK_RADIUS_AU, DOCK_SPEED_KMS, SUN_DANGER_AU, BODIES, BODY_INDEX, bodyId, bodyName, mag, gToAuDay2, bodyAngle, bodyPos, bodyVel, targetState, segmentEnd, stateAt, solvePlan, stopPlan, coastPlan, sunClearance, shipStateAt, planTravel, planTravelBar, planTravelPulse, pulseState, shipStateAbs, LAUNCH_MS, CLOCK, gameDaysAt, realMsAt, rescale, gameDate } from './physics_bundle.ts';
 
-import { cors, json, getCharacter, getLocation, resolveFor, getShip, estimateTripBar, hopWithBar, pilotNumbers, getMaxG, enduranceFly } from './common.ts';
+import { cors, json, getCharacter, getLocation, resolveFor, getShip, planTrip, pilotNumbers, getMaxG, spendEndurance } from './common.ts';
 import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll } from './market.ts';
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard } from './ships.ts';
@@ -52,53 +52,22 @@ async function queueTravel(db, user, body) {
   const departT = gameDaysAt(Date.now());
 
   // Thrust for this flight: any value from 1 g up to the hull's limit may LAUNCH (step 4).
-  // The ship burns at that thrust while the endurance bar lasts, then flies on at the free thrust (3 g).
-  // The whole two-phase flight is planned here at launch, so the arrival time is exact from the start.
+  // Above the free thrust (3 g) the flight PULSES: burn half the bar, refill at the free thrust until full, burn again,
+  // for the whole trip. The whole flight is planned here at launch, so the arrival time is exact from the start.
+  // A trip between two places at the same body is a hop: a real plan in the body's own frame (plan.frame).
   const maxG = await getMaxG(db, ship);
   const g = body.g == null ? Number(ship.thrust_g) : Number(body.g);
   if (!(g >= 1) || g > maxG + 1e-9) return json({ error: 'bad_thrust', max_g: maxG }, 400);
-  const p = await pilotNumbers(db, ch.id, g, departT); // bar now, free g, drain per g (SQL holds the numbers)
-
-  // Same planet: a short "hop". Same rule as long flights: burn at g while the bar lasts, then the free thrust.
-  if (from.anchor_body === to.anchor_body) {
-    const h = hopWithBar(Number(from.offset_au), Number(to.offset_au), g, p);
-    const dur = h.days;
-    if (!(dur > 0)) return json({ error: 'bad_destination' }, 400);
-    const hopAt = new Date(realMsAt(departT + dur)).toISOString();
-    const { data: hop, error: h1 } = await db.from('scheduled_actions').insert({
-      character_id: ch.id, ship_id: ship.id, action_type: 'hop',
-      payload: { from: from.id, to: to.anchor_body, to_location: to.id, departT, arriveT: departT + dur, g, burn_days: h.burn_days, distance_au: Math.abs(Number(from.offset_au) - Number(to.offset_au)) },
-      resolve_at: hopAt,
-    }).select().single();
-    if (h1) {
-      if (h1.code === '23505') return json({ error: 'ship_busy' }, 409);
-      throw h1;
-    }
-    const { error: h2 } = await db.from('ships')
-      .update({ state: 'hopping', plan: null, location_id: null })
-      .eq('id', ship.id).eq('state', 'docked');
-    if (h2) {
-      await db.from('scheduled_actions').update({ status: 'failed' }).eq('id', hop.id);
-      throw h2;
-    }
-    const fly = await enduranceFly(db, ch.id, g, h.burn_days, dur, departT);
-    return json({
-      ok: true, kind: 'hop', g, drops: h.drops, burn_real_minutes: h.burn_days * 1440 / CLOCK.scale, endurance_cost: fly.cost, action_id: hop.id, from: from.name, to: to.name, resolve_at: hopAt,
-      duration_game_days: dur, duration_real_minutes: dur * 1440 / CLOCK.scale, sun_danger: false,
-    });
-  }
-
-  const r = planTravelBar({
-    from: { body: bodyId(from.anchor_body) },
-    to: { body: bodyId(to.anchor_body) },
-    departT, g, bar: p.bar, freeG: p.freeG, drainHour: p.drainHour,
-  });
-  if (!r.ok) return json({ error: r.reason }, 400);
+  const p = await pilotNumbers(db, ch.id, g, departT); // bar now, free g, refill, drain (SQL holds the numbers)
+  const t = planTrip(from, to, departT, g, p);
+  if (!t.ok) return json({ error: t.reason }, 400);
+  const r = t.r;
+  const dist = t.hop ? Math.abs(Number(from.offset_au) - Number(to.offset_au)) : r.distanceAU;
 
   const resolveAt = new Date(realMsAt(r.arriveT)).toISOString();
   const { data: action, error: e1 } = await db.from('scheduled_actions').insert({
-    character_id: ch.id, ship_id: ship.id, action_type: 'travel',
-    payload: { from: from.id, to: to.anchor_body, to_location: to.id, departT, arriveT: r.arriveT, g, distance_au: r.distanceAU, burn_days: r.burnDays },
+    character_id: ch.id, ship_id: ship.id, action_type: t.hop ? 'hop' : 'travel',
+    payload: { from: from.id, to: to.anchor_body, to_location: to.id, departT, arriveT: r.arriveT, g, distance_au: dist, pulse: r.pulse ?? null },
     resolve_at: resolveAt,
   }).select().single();
   if (e1) {
@@ -106,20 +75,19 @@ async function queueTravel(db, user, body) {
     throw e1;
   }
   const { error: e2 } = await db.from('ships')
-    .update({ state: 'traveling', plan: r.plan, location_id: null })
+    .update({ state: t.hop ? 'hopping' : 'traveling', plan: r.plan, location_id: null })
     .eq('id', ship.id).eq('state', 'docked');
   if (e2) {
     await db.from('scheduled_actions').update({ status: 'failed' }).eq('id', action.id);
     throw e2;
   }
-  const fly = await enduranceFly(db, ch.id, g, r.burnDays, r.durationDays, departT);
+  await spendEndurance(db, ch.id, g, r, departT);
   return json({
-    ok: true, g, endurance_cost: fly.cost, drops: r.drops, burn_game_days: r.burnDays,
-    burn_real_minutes: r.burnDays * 1440 / CLOCK.scale,
+    ok: true, kind: t.hop ? 'hop' : 'travel', g, pulsed: !!r.pulsed, g_avg: Math.round(r.gAvg * 100) / 100,
     action_id: action.id, from: from.name, to: to.name, resolve_at: resolveAt,
     duration_game_days: r.durationDays,
     duration_real_minutes: r.durationDays * 1440 / CLOCK.scale,
-    sun_danger: r.sunDanger,
+    sun_danger: t.sun_danger,
   });
 }
 
@@ -144,22 +112,20 @@ async function departures(db, user, body) {
   const { data: locs, error: le } = await db.from('locations').select('*');
   if (le) throw le;
   const departT = out.game_days, cache = {};
-  // Bar now, free thrust, drain per g (SQL). Every trip is allowed: above the free thrust the ship burns while the
-  // bar lasts, then flies on at the free thrust. Each row says how long the burn lasts and what it costs.
+  // Bar now and the pilot numbers (SQL). Every trip is allowed: above the free thrust the flight pulses (burn part of the
+  // bar, refill at the free thrust, repeat). Each row says whether it pulses and the average thrust that gives.
   const p = await pilotNumbers(db, ch.id, g, departT);
-  out.endurance = p.bar; out.endurance_max = p.max; out.free_g = p.freeG; out.drain_per_g_hour = p.perG; out.drain_hour = p.drainHour;
+  out.endurance = p.bar; out.endurance_max = p.max; out.free_g = p.freeG; out.refill = p.refill; out.per_g = p.perG; out.share = p.share;
   for (const to of locs ?? []) {
-    const est = estimateTripBar(from, to, departT, g, cache, p);
+    const est = planTrip(from, to, departT, g, p, cache);
     if (!est.ok) continue; // the place we are at, or a place we cannot reach
     out.departures.push({
       id: to.id, name: to.name, anchor_body: to.anchor_body, kind: to.kind, is_default: to.is_default,
       eta_game_days: est.days,
       eta_real_minutes: est.days * 1440 / CLOCK.scale,
       sun_danger: est.sun_danger,
-      endurance_cost: Math.round(est.cost * 100) / 100,
-      drops: est.drops,                                        // true: the bar runs out first (or hop thrust was cut)
-      burn_real_minutes: est.burn_days * 1440 / CLOCK.scale,   // how long the burn at the chosen thrust lasts
-      g_eff: Math.round(est.g_eff * 100) / 100,
+      pulsed: !!est.r.pulsed,
+      g_avg: Math.round(est.r.gAvg * 100) / 100,
     });
   }
   out.departures.sort((a, b) => a.eta_real_minutes - b.eta_real_minutes);
