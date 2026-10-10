@@ -222,6 +222,61 @@ function planTravel({ from, to, departT, g }) {
   };
 }
 
+// ---------------- Step 4: thrust that the endurance bar can pay for ----------------
+// Same as planTravel, but the pilot's endurance bar is part of the plan.
+//   bar = endurance now. freeG = thrust that costs nothing (3). drainHour = bar lost per GAME HOUR at thrust g
+//   (0 at or below freeG). The caller gets these numbers from the database (SQL is the one place for them).
+// At or below freeG: exactly planTravel. Above it the ship burns at g until the bar is empty; then it keeps its
+// speed and direction and replans to the SAME target at freeG. One plan holds both phases, so stateAt() and the
+// arrival time are exact from the moment of launch (nothing has to be scheduled).
+// Returns what planTravel returns, plus: g (asked), gEff (thrust actually used first), burnDays (game days spent
+// above freeG), cost (bar used), drops (true when the bar runs out before arrival, or was empty at launch).
+function summarizePlan(plan, departT) {
+  const s0 = plan.segs[0];
+  const mid = stateAt(plan, departT + plan.T / 2);
+  const sun = sunClearance(plan);
+  return {
+    ok: true, plan, departT,
+    arriveT: plan.tEnd,
+    durationDays: plan.T,
+    distanceAU: Math.hypot(plan.end.x - s0.x, plan.end.y - s0.y),
+    midSpeedKms: mag(mid.vx, mid.vy) * KMS,
+    sunClearanceAU: sun,
+    sunDanger: sun < SUN_DANGER_AU,
+    arrival: plan.dock >= 0 ? { kind: 'docked', body: plan.dock } : { kind: 'drifting' },
+  };
+}
+
+function planTravelBar({ from, to, departT, g, bar, freeG = 3, drainHour = 0 }) {
+  const first = planTravel({ from, to, departT, g });
+  if (!first.ok) return first;
+  if (!(g > freeG) || !(drainHour > 0))                       // free thrust: no limit from the bar
+    return { ...first, g, gEff: g, burnDays: 0, cost: 0, drops: false };
+  if (!(bar > 1e-6)) {                                         // empty bar: the whole flight at freeG
+    const low = planTravel({ from, to, departT, g: freeG });
+    return low.ok ? { ...low, g, gEff: freeG, burnDays: 0, cost: 0, drops: true } : low;
+  }
+  const tEmpty = departT + bar / drainHour / 24;               // game time the bar reaches zero
+  if (tEmpty >= first.arriveT)                                 // the bar lasts the whole flight
+    return { ...first, g, gEff: g, burnDays: first.durationDays, cost: drainHour * first.durationDays * 24, drops: false };
+
+  // Phase 1: the high-g plan, cut at tEmpty.
+  const segs = [];
+  for (const s of first.plan.segs) {
+    if (s.t0 >= tEmpty) break;
+    segs.push(s.t0 + s.dur > tEmpty ? { ...s, dur: tEmpty - s.t0 } : s);
+  }
+  // Phase 2: from where the ship is then, same target, freeG.
+  const m = stateAt(first.plan, tEmpty);
+  const p2 = solvePlan({ x: m.x, y: m.y, vx: m.vx, vy: m.vy }, tEmpty, to, freeG);
+  if (!p2) return { ok: false, reason: 'no_route' };
+  const plan = {
+    segs: [...segs, ...p2.segs], t0: departT, T: p2.tEnd - departT, tEnd: p2.tEnd,
+    tgt: p2.tgt, dock: p2.dock, end: p2.end,
+  };
+  return { ...summarizePlan(plan, departT), g, gEff: g, burnDays: tEmpty - departT, cost: bar, drops: true };
+}
+
 // ---------- shared/clock.js ----------
 // =====================================================================
 // Vacuum State - game clock ("time contract")
@@ -257,4 +312,4 @@ function rescale(c, nowMs, newScale) {
 
 const gameDate = (gameDays) => new Date(J2000_MS + gameDays * 864e5).toISOString();
 
-export { J2000_MS, G0, AU_M, DAY_S, KMS, C_KMS, KM_PER_AU, DOCK_RADIUS_AU, DOCK_SPEED_KMS, SUN_DANGER_AU, BODIES, BODY_INDEX, bodyId, bodyName, mag, gToAuDay2, bodyAngle, bodyPos, bodyVel, targetState, segmentEnd, stateAt, solvePlan, stopPlan, coastPlan, sunClearance, shipStateAt, planTravel, LAUNCH_MS, CLOCK, gameDaysAt, realMsAt, rescale, gameDate };
+export { J2000_MS, G0, AU_M, DAY_S, KMS, C_KMS, KM_PER_AU, DOCK_RADIUS_AU, DOCK_SPEED_KMS, SUN_DANGER_AU, BODIES, BODY_INDEX, bodyId, bodyName, mag, gToAuDay2, bodyAngle, bodyPos, bodyVel, targetState, segmentEnd, stateAt, solvePlan, stopPlan, coastPlan, sunClearance, shipStateAt, planTravel, planTravelBar, LAUNCH_MS, CLOCK, gameDaysAt, realMsAt, rescale, gameDate };
