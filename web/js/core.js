@@ -1,4 +1,5 @@
-// core.js - shared state and helpers used by every other file. Imports nothing.
+// core.js - shared state and helpers used by every other file. Imports only the pure physics file (for the pulse bar).
+import { pulseState } from 'physics';
 // S holds the few values that more than one file needs to READ AND CHANGE
 // (an imported variable cannot be reassigned by the file that imports it, so they live in this one object).
 export const S = {
@@ -64,21 +65,32 @@ export function fmt(sec) {
 }
 // 'life_pod' -> 'Life Pod', 'elite_hauler' -> 'Elite Hauler'
 export const hullName = id => String(id || 'ship').split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-// The thrust the ship is flying at RIGHT NOW: the chosen thrust while the burn lasts, then the free thrust (3 g).
-// Worked out from the pending trip (payload g, departT, burn_days). null when not flying.
+// The pulse numbers of the flight in progress (from the pending trip), shaped for pulseState; null if the flight does not pulse.
+function pulseOf(a) {
+  const q = a && a.payload && a.payload.pulse; if (!q) return null;
+  return { g: q.g, bar: q.bar0, regen0: q.regen0, mx: q.mx, freeG: q.freeG, refill: q.refill, perG: q.perG, share: q.share, t0: q.t0 };
+}
+// The thrust the ship is flying at RIGHT NOW: the chosen thrust while a burn lasts, the free thrust while the bar refills.
+// Worked out from the pending trip. null when not flying.
 export function flightG() {
   const ship = S.last && (S.last.ships || [])[0];
   if (!ship || ship.state === 'docked') return null;
   const a = ((S.last.actions) || []).find(x => x.status === 'pending');
-  const p = a && a.payload;
   const free = S.last.pilot && S.last.pilot.free_g != null ? Number(S.last.pilot.free_g) : 3;
+  const pn = pulseOf(a);
+  if (pn) return pulseState(pn, curGd() - pn.t0).burning ? Number(pn.g) : Number(pn.freeG);
+  const p = a && a.payload;
   if (!p || p.g == null) return Number(ship.thrust_g);
-  const burn = Number(p.burn_days || 0);
-  return burn > 0 && curGd() < Number(p.departT) + burn ? Number(p.g) : (Number(p.g) > free ? free : Number(p.g));
+  return Number(p.g) > free && p.burn_days != null && curGd() < Number(p.departT) + Number(p.burn_days) ? Number(p.g) : Math.min(Number(p.g), free);
 }
-// The endurance bar now: the value from the last 'me' answer, moved on at its rate since then (display only).
+// The endurance bar now. Pulsed flight: the page works the saw-tooth out itself with the same rule as the server.
+// Otherwise: the value from the last 'me' answer, moved on at its rate since then (display only).
 export function enduranceNow() {
   const p = S.last && S.last.pilot; if (!p || p.endurance == null) return null;
+  if (p.flight && p.cfg) {
+    const f = p.flight, k = p.cfg, gd = Math.min(curGd(), Number(f.until));
+    return pulseState({ g: f.g, bar: f.bar0, regen0: f.regen0, mx: k.mx, freeG: k.free_g, refill: k.refill, perG: k.per_g, share: k.share }, gd - Number(f.t0)).v;
+  }
   const hours = (Date.now() - S.last.real_ms) * S.last.scale / 3.6e6;
   const v = Number(p.endurance) + Number(p.endurance_rate_hour || 0) * hours;
   return Math.max(0, Math.min(Number(p.endurance_max), v));
