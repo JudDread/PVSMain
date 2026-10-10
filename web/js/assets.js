@@ -2,7 +2,7 @@
 // Sections (each hides when empty): Hold -> Stored here -> Freight (contracts I posted, at their pickup).
 // Display only: the server decides everything. Data: 'storage', 'freight_mine', 'freight_hauling'.
 // Creates its own screen block (#scr-assets) and the "Hire hauler" pop-up (#ahire), so index.html needs only the import-map line.
-import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc } from 'core';
+import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc, hullName } from 'core';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
 
@@ -39,6 +39,11 @@ $('scr-market').after(scr);
     '#ahire .arow input { flex: 1 1 auto; min-width: 0; }',
     '#ahire .abtns { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }',
     '#ahire .abtns button { margin: 0; padding: 8px 18px; }',
+    '#aship { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }',
+    '#aship .abox { background: #131a2a; border: 2px solid #e8b64a; border-radius: 10px; padding: 12px; width: 100%; max-width: 420px; max-height: 92%; overflow-y: auto; box-sizing: border-box; }',
+    '#aship .abox div { margin: 8px 0; }',
+    '#aship .abtns { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }',
+    '#aship .abtns button { margin: 0; padding: 8px 18px; }',
   ].join('\n');
   document.head.appendChild(st);
 })();
@@ -82,6 +87,13 @@ function assetError(e) {
   if (m === 'contract_not_found' || m === 'batch_not_found') return 'That contract or load no longer exists.';
   if (m === 'already_closed' || m === 'already_cancelled') return 'That contract is already closed.';
   if (m === 'not_active') return 'That load is no longer active.';
+  if (m === 'already_out') return 'You are already out of your ship.';
+  if (m === 'already_aboard') return 'You are already aboard that ship.';
+  if (m === 'ship_not_found' || m === 'bad_ship') return 'That ship was not found.';
+  if (m === 'ship_busy') return 'That ship is not parked (it is travelling).';
+  if (m === 'not_same_place') return 'Your current ship and that ship must be docked at the same place.';
+  if (m === 'no_ship') return 'You have no ship.';
+  if (m === 'stow_failed') return 'Could not store the cargo or abandon the freight' + (d.detail ? ' (' + d.detail + ')' : '') + '. Nothing was changed.';
   if (m === 'server_error') return 'Server error. Check the function logs.';
   return 'Error: ' + m;
 }
@@ -225,6 +237,23 @@ function drawAssets() {
   const cargo = stAll.cargo || [], hf = (fh.items || []).filter(b => b.status === 'active'), stored = storedHere();
   let shown = 0;
 
+  // 0) SHIPS of mine that are docked at this place (the one I fly, and parked ones)
+  const here_ships = (S.last.ships || []).filter(s => s.state === 'docked' && s.location_id === aloc);
+  if (here_ships.length) {
+    shown++;
+    section(body, 'ships', 'Ships here', here_ships.length, null, box => here_ships.forEach(s => {
+      const isAct = !!sh && s.id === sh.id, r = el('div', 'row'), right = el('span', 'num');
+      r.append(cell('', hullName(s.hull_id) + (isAct ? ' (flying)' : ''), 'hold ' + r2(s.hold_size) + ', thrust ' + r2(s.thrust_g) + ' g'), right);
+      if (isAct && s.hull_id !== 'life_pod') {
+        const b = el('button', 'alt', 'Leave ship'); b.disabled = abusy; b.onclick = () => openShip('leave', s); right.appendChild(b);
+      } else if (!isAct && here) {
+        const b = el('button', 'alt', 'Board'); b.disabled = abusy;
+        b.onclick = () => (sh.hull_id === 'life_pod' ? doBoard(s) : openShip('board', s)); right.appendChild(b);
+      } else if (!isAct) right.appendChild(el('span', 'muted', 'parked'));
+      box.appendChild(r);
+    }));
+  }
+
   // 1) HOLD: where the ship is docked, or anywhere while it is travelling
   if ((here || moving) && (cargo.length || hf.length)) {
     shown++;
@@ -303,6 +332,63 @@ function doAct(which) {
 function doUnloadAll() {
   run(() => call('unload_all'), r => r.units_moved ? 'Unloaded ' + r.goods_moved + ' kinds of goods (' + whole(r.units_moved) + ' units) into storage.' : 'The hold is already empty.');
 }
+
+/* ---------- Leave ship / Board ship (step 2b): the server does it; this is the confirm box and the messages ---------- */
+function stowText(r) {
+  return (r.units_moved ? ' Stored ' + r.goods_moved + ' kinds of goods (' + whole(r.units_moved) + ' units).' : '') +
+    (r.freight_loads ? ' Abandoned ' + r.freight_loads + ' freight load(s).' : '');
+}
+function doBoard(s) {   // from the life pod: nothing to store, so no confirm box
+  run(() => call('ship_board', { ship: s.id }), r => 'You boarded your ' + hullName(r.hull_id || s.hull_id) + ' at ' + locName(r.location_id || s.location_id) + '.');
+}
+const shipDlg = (() => {
+  const root = document.createElement('div'); root.id = 'aship'; root.hidden = true;
+  root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true');
+  const box = el('div', 'abox'), title = el('h2', ''), text = el('div', ''), err = el('div', 'err');
+  const bc = el('button', 'alt', 'Cancel'), bo = el('button', '', 'Confirm');
+  const btns = el('div', 'abtns'); btns.append(bc, bo);
+  box.append(title, text, err, btns); root.appendChild(box); document.body.appendChild(root);
+  return { root, title, text, err, bc, bo };
+})();
+let sp = null, sbusy = false;   // sp = { act: 'leave' | 'board', ship }
+function closeShip() { shipDlg.root.hidden = true; document.body.style.overflow = ''; sp = null; }
+function openShip(act, ship) {
+  if (sbusy || abusy) return;
+  const cargo = (stAll && stAll.cargo) || [], hf = ((fh && fh.items) || []).filter(b => b.status === 'active');
+  const units = cargo.reduce((n, x) => n + num(x.quantity), 0), cur = (S.last.ships || [])[0], d = shipDlg;
+  sp = { act, ship }; d.err.textContent = ''; d.text.replaceChildren();
+  const add = (cls, t) => d.text.appendChild(el('div', cls, t));
+  if (act === 'leave') {
+    d.title.textContent = 'Leave your ship?';
+    add('', 'Your ' + hullName(ship.hull_id) + ' stays parked at ' + locName(ship.location_id) + '. You will fly a life pod, which has no cargo hold.');
+  } else {
+    d.title.textContent = 'Board your ' + hullName(ship.hull_id) + '?';
+    add('', 'Your ' + hullName(cur.hull_id) + ' stays parked at ' + locName(cur.location_id) + '.');
+  }
+  add('', cargo.length ? 'All cargo in the hold (' + cargo.length + ' kinds, ' + whole(units) + ' units) will be stored here.' : 'The hold is empty, so nothing needs storing.');
+  if (hf.length) add('err', 'All freight on board (' + hf.length + ' loads) will be abandoned. It goes back to the queue and you may lose market reputation.');
+  else add('muted', 'No freight on board.');
+  add('', 'Are you sure?');
+  d.bc.disabled = false; d.bo.disabled = false;
+  d.root.hidden = false; document.body.style.overflow = 'hidden';
+}
+shipDlg.bc.onclick = () => { if (!sbusy) closeShip(); };
+shipDlg.bo.onclick = async () => {
+  if (sbusy || !sp) return;
+  const { act, ship } = sp, d = shipDlg;
+  sbusy = true; d.err.textContent = ''; d.bo.disabled = true; d.bc.disabled = true;
+  try {
+    const r = await (act === 'leave' ? call('ship_leave') : call('ship_board', { ship: ship.id }));
+    closeShip();
+    say(act === 'leave'
+      ? 'You left your ' + hullName(r.left_hull || ship.hull_id) + ' at ' + locName(r.location_id) + ' and are now in a life pod.' + stowText(r)
+      : 'You boarded your ' + hullName(r.hull_id || ship.hull_id) + '.' + stowText(r), 'ok');
+    asel = null; aEdited = false; aconfirm = false;
+    if (S.refresh) S.refresh(); refreshAssets();
+  } catch (e) {
+    d.err.textContent = assetError(e);
+  } finally { sbusy = false; d.bo.disabled = false; d.bc.disabled = false; }
+};
 
 /* ---------- the "Hire hauler" pop-up: centred, on top of everything, nothing else works until it closes ---------- */
 const hire = (() => {
@@ -409,6 +495,6 @@ addScreen('assets', 'Assets', scr, {
 /* called by main.js on log out */
 export function resetAssets() {
   aloc = null; adock = undefined; asel = null; stAll = fm = fh = null; aconfirm = false; aEdited = false;
-  closeHire();
+  closeHire(); closeShip();
   abody.replaceChildren();
 }
