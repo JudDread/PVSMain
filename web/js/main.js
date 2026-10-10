@@ -1,7 +1,7 @@
 // main.js - the app shell: login, the 15 s refresh, the 1 s clock tick, buttons outside the screens.
 // Loads fly.js, market.js and assets.js (each registers its own screen).
 import { J2000_MS } from 'physics';
-import { S, $, say, li, call, fmt, curGd, locName, screens, openScreen, setShipLine } from 'core';
+import { S, $, say, li, call, fmt, curGd, locName, screens, openScreen, setShipLine, enduranceNow } from 'core';
 import { invalidateDeps, resetFly } from 'fly';
 import { resetMarket } from 'market';
 import { resetAssets } from 'assets';
@@ -49,7 +49,9 @@ function render() {
 function tick() {
   if (!S.last) return;
   const gd = curGd();
-     setShipLine();
+  setShipLine();                                   /* thrust and endurance move every second */
+  /* the bar reached 0 while draining: ask the server at once (it has switched to the slow 3 g refill) */
+  if (S.last.pilot && S.last.pilot.endurance_rate_hour < 0 && enduranceNow() <= 0 && Date.now() - lastNudge > 3000) { lastNudge = Date.now(); refresh(); }
   $('gtime').textContent = new Date(J2000_MS + gd * 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC (game) - speed ' + (Math.round((S.last.speed || 1) * 100) / 100) + 'x';
   const acts = $('acts'); acts.replaceChildren();
   (S.last.actions || []).forEach(a => {
