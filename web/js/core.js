@@ -77,7 +77,7 @@ function pulseOf(a) {
 // Worked out from the pending trip. null when not flying.
 export function flightG() {
   const ship = S.last && (S.last.ships || [])[0];
-  if (!ship || ship.state === 'docked') return null;
+  if (!ship || ship.state === 'docked' || ship.state === 'drifting') return null;   /* drifting: no thrust, no destination */
   const a = ((S.last.actions) || []).find(x => x.status === 'pending');
   const free = S.last.pilot && S.last.pilot.free_g != null ? Number(S.last.pilot.free_g) : 3;
   const pn = pulseOf(a);
@@ -106,6 +106,7 @@ export function setShipLine() {
   const g = flightG();
   $('ship').textContent = (!ship ? 'No ship' :
     ship.state === 'docked' ? hullName(ship.hull_id) + ' docked at ' + locName(ship.location_id) :
+    ship.state === 'drifting' ? hullName(ship.hull_id) + ' drifting (no destination)' :
     hullName(ship.hull_id) + ' traveling at ' + (Math.round(g * 10) / 10) + ' g') + bar + cr;
 }
 
