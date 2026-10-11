@@ -13,7 +13,7 @@
 // The old trip is cancelled and the new course saved in ONE step (SQL ship_replan), so a ship never has two trips.
 // ======================================================================
 import { BODY_INDEX, bodyId, KMS, stateAt, shipStateAbs, stopPlan, coastPlan, planTravelPulse, pulseState, gameDaysAt, realMsAt, CLOCK } from './physics_bundle.ts';
-import { json, getCharacter, getLocation, resolveFor, getShip, getMaxG, pilotNumbers, enduranceFly, enduranceFlyPulse } from './common.ts';
+import { json, getCharacter, getLocation, resolveFor, getShip, getMaxG, pilotNumbers, enduranceFly, enduranceFlyPulse, placeXY } from './common.ts';
 
 const FLYING = ['traveling', 'hopping', 'drifting'];
 const REST_DAYS = 3650;   // a drifting ship refills its bar at the flight rate (not the faster docked rate) for this long
@@ -50,7 +50,7 @@ export function planGo(cur, to, t, g, p, regen0, cache = {}) {
   const nums = { g, bar: p.bar, mx: p.max, freeG: p.freeG, refill: p.refill, perG: p.perG, share: p.share, regen0 };
   if (cur.frame != null && cur.frame === dest) {
     const key = 'hop|' + to.id;
-    const r = cache[key] ?? (cache[key] = planTravelPulse({ from: { state: cur.rel }, to: { x: Number(to.offset_au), y: 0 }, departT: t, ...nums }));
+    const r = cache[key] ?? (cache[key] = planTravelPulse({ from: { state: cur.rel }, to: placeXY(to), departT: t, ...nums }));
     if (!r.ok) return { ok: false, reason: r.reason };
     r.plan.frame = cur.frame;
     return { ok: true, hop: true, r, days: r.durationDays, sun_danger: false };
