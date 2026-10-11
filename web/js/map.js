@@ -94,11 +94,11 @@ export function createMap(cv, hooks) {
       if (b.n === selB || b.a * view.s > 18) { ctx.fillStyle = '#9fb0d4'; ctx.fillText(b.n, x + rad + 5, y); }
     });
     /* places that sit a little away from their planet (moons, stations): drawn only when zoomed in far enough to tell apart.
-       Display only: a place is its planet's position plus its fixed offset along the +x axis (the same frame hops are flown in). */
+       Display only: a place is its planet's position plus its fixed offset at its fixed angle (the same frame hops are flown in). */
     const selP = hooks.selectedPlace ? hooks.selectedPlace() : null;
     (hooks.places ? hooks.places() : []).forEach(q => {
       if (q.off * view.s < 10) return;
-      const bp = bodyPos(BODIES[q.body], gd), x = X(bp[0] + q.off), y = Y(bp[1]);
+      const bp = bodyPos(BODIES[q.body], gd), x = X(bp[0] + q.off * Math.cos(q.ang || 0)), y = Y(bp[1] + q.off * Math.sin(q.ang || 0));
       if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
       ctx.fillStyle = '#aab4cf'; ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
       hits.push({ x, y, name: q.name, place: q.id });
@@ -149,8 +149,6 @@ export function createMap(cv, hooks) {
     ctx.strokeStyle = '#8d98b2'; ctx.fillStyle = '#8d98b2'; ctx.lineWidth = 2; ctx.textBaseline = 'alphabetic';
     ctx.beginPath(); ctx.moveTo(10, h - 18); ctx.lineTo(10 + px, h - 18); ctx.stroke();
     ctx.fillText(nice >= 1 ? nice + ' AU' : (nice * 149.598).toPrecision(2) + ' million km', 10, h - 24);
-    /* TEMPORARY check stamp (remove once the moons show): map version, places given to the map, zoom in pixels per AU */
-    ctx.textAlign = 'right'; ctx.fillText('map 4b-2 | places ' + (hooks.places ? hooks.places().length : 'none') + ' | zoom ' + Math.round(view.s), w - 8, 14); ctx.textAlign = 'left';
   }
   let lastDraw = 0;   /* redraw fast (10/s) only while a launched course is animating, else every 0.4 s */
   const _draw = draw;
