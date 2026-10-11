@@ -162,21 +162,20 @@ function shipPoint() {
   const gd = curGd();
   if (ship.state === 'traveling' && ship.plan) { const s = stateAt(ship.plan, gd); return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: ship.plan }; }
   /* a hop (or a drift that began in a hop): its plan is stored relative to the body (plan.frame); shipStateAbs adds the body.
-     A drift in space has no frame: shipStateAbs gives the plain state. No path line for these. */
+     A drift in space has no frame: shipStateAbs gives the plain state. */
   if ((ship.state === 'hopping' || ship.state === 'drifting') && ship.plan) {
     const s = shipStateAbs(ship.plan, gd);
     let course = null;
-    if (ship.state === 'drifting' && ship.plan.frame == null) {
-      if (ship.plan.segs.length) course = ship.plan;                                  /* after Stop: the braking path to the stopping point (nothing once at rest) */
-      else if (Math.hypot(s.vx, s.vy) > 1e-9) course = coastPreview({ x: s.x, y: s.y, vx: s.vx, vy: s.vy }, gd);   /* after Coast: a line ahead along the heading */
-    }
+    if (ship.state === 'hopping') course = ship.plan;                                 /* the hop itself (the map adds the body to a plan in its frame) */
+    else if (ship.plan.segs.length) course = ship.plan;                               /* after Stop: the braking path to the stopping point (nothing once at rest) */
+    else if (Math.hypot(s.vx, s.vy) > 1e-9) course = coastPreview({ x: s.x, y: s.y, vx: s.vx, vy: s.vy }, gd);   /* after Coast: a line ahead along the heading */
     return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: course };
   }
-  let body = null;
-  if (ship.state === 'docked') { const l = (S.last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; }
+  let body = null, off = 0;
+  if (ship.state === 'docked') { const l = (S.last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; off = l ? Number(l.offset_au) || 0 : 0; }
   else if (ship.state === 'hopping') { const a = (S.last.actions || []).find(x => x.status === 'pending'); body = a && a.payload && a.payload.to; }
   const i = BODIES.findIndex(b => b.n === body); if (i < 1) return null;
-  const p = bodyPos(BODIES[i], gd); return { x: p[0], y: p[1], plan: null };
+  const p = bodyPos(BODIES[i], gd); return { x: p[0] + off, y: p[1], plan: null };
 }
 
 /* Blue preview course. Display only: same shared physics as the server, recomputed every 3 s because the planets move
@@ -187,21 +186,34 @@ function coastPreview(st, t) {                                 /* 2 game days of
   const s = { t0: t, dur: 2, x: st.x, y: st.y, vx: st.vx, vy: st.vy, ax: 0, ay: 0 };
   return { segs: [s], t0: t, T: 2, tEnd: t + 2, tgt: null, dock: -1, end: segmentEnd(s) };
 }
+const locById = id => (S.last && S.last.locations || []).find(x => x.id === id);
+/* a hop is planned in the body's own frame: positions are the places' offsets from the body (AU) along one fixed axis */
+function hopPreview(fromState, toLoc, t, g, frame, regen0) {
+  const r = planTravelPulse({ from: { state: fromState }, to: { x: Number(toLoc.offset_au) || 0, y: 0 }, departT: t, g,
+    bar: Number(deps.endurance), mx: Number(deps.endurance_max), freeG: Number(deps.free_g), refill: Number(deps.refill),
+    perG: Number(deps.per_g), share: Number(deps.share), regen0: !!regen0 });
+  if (!r.ok) return null;
+  r.plan.frame = frame; return r.plan;
+}
 function previewPlan() {
   const ship = S.last && (S.last.ships || [])[0];
   if (!ship || !deps) return null;
   if (ship.state === 'docked') {
     if (!deps.docked) return null;
     const d = (deps.departures || []).find(x => x.id === selected); if (!d) return null;
-    const l = (S.last.locations || []).find(x => x.id === ship.location_id);
-    if (!l || l.anchor_body === d.anchor_body) return null;   /* same-body hop: no course line */
+    const l = locById(ship.location_id), dl = locById(d.id);
+    if (!l || !dl) return null;
     const key = 'D|' + selected + '|' + thrustG + '|' + Math.floor(Date.now() / 3000);
     if (pv.key !== key) {
-      const r = planTravelPulse({ from: { body: bodyIdx(l.anchor_body) },
-        to: { body: bodyIdx(d.anchor_body) }, departT: curGd(), g: thrustG,
-        bar: Number(deps.endurance), mx: Number(deps.endurance_max), freeG: Number(deps.free_g), refill: Number(deps.refill),
-        perG: Number(deps.per_g), share: Number(deps.share) });
-      pv = { key, plan: r.ok ? r.plan : null };
+      if (l.anchor_body === d.anchor_body) {                    /* same body: a hop */
+        pv = { key, plan: hopPreview({ x: Number(l.offset_au) || 0, y: 0, vx: 0, vy: 0 }, dl, curGd(), thrustG, bodyIdx(l.anchor_body), false) };
+      } else {
+        const r = planTravelPulse({ from: { body: bodyIdx(l.anchor_body) },
+          to: { body: bodyIdx(d.anchor_body) }, departT: curGd(), g: thrustG,
+          bar: Number(deps.endurance), mx: Number(deps.endurance_max), freeG: Number(deps.free_g), refill: Number(deps.refill),
+          perG: Number(deps.per_g), share: Number(deps.share) });
+        pv = { key, plan: r.ok ? r.plan : null };
+      }
     }
     return pv.plan;
   }
@@ -212,17 +224,26 @@ function previewPlan() {
   if (pv.key !== key) {
     pv = { key, plan: null };
     const st = { x: sp.x, y: sp.y, vx: sp.vx, vy: sp.vy }, t = curGd();
-    if (mode === 'stop') { if (frame == null) pv.plan = stopPlan(st, t, Number(deps.free_g)); }   /* a stop inside a hop is tiny: no line */
+    const rel = frame != null ? stateAt(ship.plan, t) : null;   /* state in the body's frame, when the ship is inside one */
+    const relSt = rel ? { x: rel.x, y: rel.y, vx: rel.vx, vy: rel.vy } : null;
+    if (mode === 'stop') {
+      if (frame == null) pv.plan = stopPlan(st, t, Number(deps.free_g));
+      else { const p = stopPlan(relSt, t, Number(deps.free_g)); if (p) { p.frame = frame; pv.plan = p; } }
+    }
     else if (mode === 'coast') pv.plan = coastPreview(st, t);
     else {
       const d = (deps.departures || []).find(x => x.id === (mode === 'hold' ? deps.dest : selected));
-      if (d && (frame == null || BODIES[frame].n !== d.anchor_body)) {
-        const bar = enduranceNow();
-        const r = planTravelPulse({ from: { state: st }, to: { body: bodyIdx(d.anchor_body) }, departT: t,
-          g: mode === 'hold' ? Number(deps.free_g) : thrustG,
-          bar: bar == null ? Number(deps.endurance) : bar, mx: Number(deps.endurance_max), freeG: Number(deps.free_g),
-          refill: Number(deps.refill), perG: Number(deps.per_g), share: Number(deps.share), regen0: !!deps.regen0 });
-        pv.plan = r.ok ? r.plan : null;
+      if (d) {
+        const g = mode === 'hold' ? Number(deps.free_g) : thrustG;
+        if (frame != null && BODIES[frame].n === d.anchor_body) {
+          const dl = locById(d.id); if (dl) pv.plan = hopPreview(relSt, dl, t, g, frame, deps.regen0);
+        } else {
+          const bar = enduranceNow();
+          const r = planTravelPulse({ from: { state: st }, to: { body: bodyIdx(d.anchor_body) }, departT: t, g,
+            bar: bar == null ? Number(deps.endurance) : bar, mx: Number(deps.endurance_max), freeG: Number(deps.free_g),
+            refill: Number(deps.refill), perG: Number(deps.per_g), share: Number(deps.share), regen0: !!deps.regen0 });
+          pv.plan = r.ok ? r.plan : null;
+        }
       }
     }
   }
@@ -233,6 +254,14 @@ const map = createMap($('map'), {
   ship: shipPoint,
   preview: previewPlan,
   selectedBody,
+  /* places a little away from their planet (offset > 0): the map draws them once zoomed in far enough, and they can be tapped */
+  places: () => (S.last && S.last.locations || []).filter(l => Number(l.offset_au) > 0 && bodyIdx(l.anchor_body) > 0)
+    .map(l => ({ id: l.id, name: l.name, body: bodyIdx(l.anchor_body), off: Number(l.offset_au) })),
+  selectedPlace: () => (mode === 'hold' && deps ? deps.dest : selected),
+  pickPlace: id => {
+    const d = deps && deps.departures && deps.departures.find(x => x.id === id);
+    if (d) { selected = d.id; mode = null; drawAll(); } else say('That place is not a destination from here.', 'muted');
+  },
   pick: name => {
     const d = deps && deps.departures && deps.departures.find(x => x.anchor_body === name && x.is_default);
     if (d) { selected = d.id; mode = null; drawAll(); } else say(name + ' is not a destination from here.', 'muted');
