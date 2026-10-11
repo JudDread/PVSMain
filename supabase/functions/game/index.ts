@@ -10,6 +10,7 @@ import { cors, json, getCharacter, getLocation, resolveFor, getShip, planTrip, p
 import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll } from './market.ts';
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard } from './ships.ts';
+import { courseOptions, courseChange } from './course.ts';
 
 // ---------- server ----------
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
@@ -229,6 +230,8 @@ Deno.serve(async (req) => {
       case 'create_character': return await createCharacter(db, user, body);
       case 'queue_travel': return await queueTravel(db, user, body);
       case 'departures': return await departures(db, user, body);
+      case 'course_options': return await courseOptions(db, user, body);
+      case 'course_change': return await courseChange(db, user, body);
       case 'cycle_speed': return await cycleSpeed(db, user);
       case 'routes': return await routes(db, user, body);
       case 'cargo_routes': return await cargoRoutes(db, user, body);
