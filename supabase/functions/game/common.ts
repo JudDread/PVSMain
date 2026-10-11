@@ -45,6 +45,18 @@ export function hopDurationDays(offsetA, offsetB, g) {
   return 2 * Math.sqrt(d / gToAuDay2(g));
 }
 
+// Where a place sits relative to its body, in AU, in the body's own frame: offset_au at angle_deg (fixed, no orbit).
+// angle_deg = 0 puts it on the +x axis (how every place was placed before migration 032). Missing values count as 0.
+export function placeXY(loc) {
+  const r = Number(loc.offset_au) || 0, a = (Number(loc.angle_deg) || 0) * Math.PI / 180;
+  return { x: r * Math.cos(a), y: r * Math.sin(a) };
+}
+// Straight-line distance between two places at the SAME body (AU).
+export function hopDistanceAu(from, to) {
+  const a = placeXY(from), b = placeXY(to);
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 // How long would a trip from location `from` to location `to` take if it left now?
 // Returns {ok, days, sun_danger} or {ok:false, reason}. NOTHING is saved.
 // `cache` remembers long flights per destination body, because every location at
@@ -54,7 +66,7 @@ export function estimateTrip(from, to, departT, g, cache) {
   if (!(to.anchor_body in BODY_INDEX) || BODY_INDEX[to.anchor_body] < 1) return { ok: false, reason: 'bad_destination' };
   if (!(from.anchor_body in BODY_INDEX)) return { ok: false, reason: 'bad_origin' };
   if (from.anchor_body === to.anchor_body) {
-    const days = hopDurationDays(Number(from.offset_au), Number(to.offset_au), g);
+    const days = hopDurationDays(0, hopDistanceAu(from, to), g);   /* same maths as before, on the true distance */
     return days > 0 ? { ok: true, days, sun_danger: false } : { ok: false, reason: 'bad_destination' };
   }
   let r = cache[to.anchor_body];
@@ -171,7 +183,7 @@ export async function pilotNumbers(db, characterId, g, nowT) {
 // Plans ONE trip under the pulse rule (burn part of the bar, refill at the free thrust, repeat). NOTHING is saved.
 // p = pilotNumbers(...). `cache` remembers flights per destination body for the departure list.
 // A trip between two places at the SAME body is a "hop": a plan in the body's own frame (positions = the places'
-// offsets in AU along a fixed axis; plan.frame = the body's index), so the ship's position and speed are known at every
+// positions in AU from placeXY: offset at a fixed angle; plan.frame = the body's index), so the ship's position and speed are known at every
 // moment of the hop. Returns {ok, hop, r (the planner's answer, with r.plan), days, sun_danger} or {ok:false, reason}.
 export function planTrip(from, to, departT, g, p, cache = {}) {
   if (from.id === to.id) return { ok: false, reason: 'already_here' };
@@ -179,10 +191,10 @@ export function planTrip(from, to, departT, g, p, cache = {}) {
   if (!(from.anchor_body in BODY_INDEX)) return { ok: false, reason: 'bad_origin' };
   const nums = { g, bar: p.bar, mx: p.max, freeG: p.freeG, refill: p.refill, perG: p.perG, share: p.share };
   if (from.anchor_body === to.anchor_body) {
-    const a = Number(from.offset_au), b = Number(to.offset_au);
-    if (!(Math.abs(a - b) > 1e-9)) return { ok: false, reason: 'bad_destination' };
+    const a = placeXY(from), b = placeXY(to);
+    if (!(Math.hypot(a.x - b.x, a.y - b.y) > 1e-9)) return { ok: false, reason: 'bad_destination' };
     const key = 'hop|' + from.id + '|' + to.id;
-    const r = cache[key] ?? (cache[key] = planTravelPulse({ from: { state: { x: a, y: 0, vx: 0, vy: 0 } }, to: { x: b, y: 0 }, departT, ...nums }));
+    const r = cache[key] ?? (cache[key] = planTravelPulse({ from: { state: { x: a.x, y: a.y, vx: 0, vy: 0 } }, to: { x: b.x, y: b.y }, departT, ...nums }));
     if (!r.ok) return { ok: false, reason: r.reason };
     r.plan.frame = bodyId(from.anchor_body);
     return { ok: true, hop: true, r, days: r.durationDays, sun_danger: false };
