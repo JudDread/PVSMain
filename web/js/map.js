@@ -149,6 +149,8 @@ export function createMap(cv, hooks) {
     ctx.strokeStyle = '#8d98b2'; ctx.fillStyle = '#8d98b2'; ctx.lineWidth = 2; ctx.textBaseline = 'alphabetic';
     ctx.beginPath(); ctx.moveTo(10, h - 18); ctx.lineTo(10 + px, h - 18); ctx.stroke();
     ctx.fillText(nice >= 1 ? nice + ' AU' : (nice * 149.598).toPrecision(2) + ' million km', 10, h - 24);
+    /* TEMPORARY check stamp (remove once the moons show): map version, places given to the map, zoom in pixels per AU */
+    ctx.textAlign = 'right'; ctx.fillText('map 4b-2 | places ' + (hooks.places ? hooks.places().length : 'none') + ' | zoom ' + Math.round(view.s), w - 8, 14); ctx.textAlign = 'left';
   }
   let lastDraw = 0;   /* redraw fast (10/s) only while a launched course is animating, else every 0.4 s */
   const _draw = draw;
