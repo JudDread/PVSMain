@@ -171,11 +171,11 @@ function shipPoint() {
     else if (Math.hypot(s.vx, s.vy) > 1e-9) course = coastPreview({ x: s.x, y: s.y, vx: s.vx, vy: s.vy }, gd);   /* after Coast: a line ahead along the heading */
     return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: course };
   }
-  let body = null, off = 0;
-  if (ship.state === 'docked') { const l = (S.last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; off = l ? Number(l.offset_au) || 0 : 0; }
+  let body = null, off = { x: 0, y: 0 };
+  if (ship.state === 'docked') { const l = (S.last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; off = l ? placeXY(l) : off; }
   else if (ship.state === 'hopping') { const a = (S.last.actions || []).find(x => x.status === 'pending'); body = a && a.payload && a.payload.to; }
   const i = BODIES.findIndex(b => b.n === body); if (i < 1) return null;
-  const p = bodyPos(BODIES[i], gd); return { x: p[0] + off, y: p[1], plan: null };
+  const p = bodyPos(BODIES[i], gd); return { x: p[0] + off.x, y: p[1] + off.y, plan: null };
 }
 
 /* Blue preview course. Display only: same shared physics as the server, recomputed every 3 s because the planets move
@@ -186,10 +186,12 @@ function coastPreview(st, t) {                                 /* 2 game days of
   const s = { t0: t, dur: 2, x: st.x, y: st.y, vx: st.vx, vy: st.vy, ax: 0, ay: 0 };
   return { segs: [s], t0: t, T: 2, tEnd: t + 2, tgt: null, dock: -1, end: segmentEnd(s) };
 }
+/* where a place sits relative to its planet (AU): its distance at its fixed angle (same rule as placeXY on the server) */
+const placeXY = l => { const r = Number(l.offset_au) || 0, a = (Number(l.angle_deg) || 0) * Math.PI / 180; return { x: r * Math.cos(a), y: r * Math.sin(a) }; };
 const locById = id => (S.last && S.last.locations || []).find(x => x.id === id);
 /* a hop is planned in the body's own frame: positions are the places' offsets from the body (AU) along one fixed axis */
 function hopPreview(fromState, toLoc, t, g, frame, regen0) {
-  const r = planTravelPulse({ from: { state: fromState }, to: { x: Number(toLoc.offset_au) || 0, y: 0 }, departT: t, g,
+  const r = planTravelPulse({ from: { state: fromState }, to: placeXY(toLoc), departT: t, g,
     bar: Number(deps.endurance), mx: Number(deps.endurance_max), freeG: Number(deps.free_g), refill: Number(deps.refill),
     perG: Number(deps.per_g), share: Number(deps.share), regen0: !!regen0 });
   if (!r.ok) return null;
@@ -206,7 +208,7 @@ function previewPlan() {
     const key = 'D|' + selected + '|' + thrustG + '|' + Math.floor(Date.now() / 3000);
     if (pv.key !== key) {
       if (l.anchor_body === d.anchor_body) {                    /* same body: a hop */
-        pv = { key, plan: hopPreview({ x: Number(l.offset_au) || 0, y: 0, vx: 0, vy: 0 }, dl, curGd(), thrustG, bodyIdx(l.anchor_body), false) };
+        pv = { key, plan: hopPreview({ ...placeXY(l), vx: 0, vy: 0 }, dl, curGd(), thrustG, bodyIdx(l.anchor_body), false) };
       } else {
         const r = planTravelPulse({ from: { body: bodyIdx(l.anchor_body) },
           to: { body: bodyIdx(d.anchor_body) }, departT: curGd(), g: thrustG,
@@ -256,7 +258,7 @@ const map = createMap($('map'), {
   selectedBody,
   /* places a little away from their planet (offset > 0): the map draws them once zoomed in far enough, and they can be tapped */
   places: () => (S.last && S.last.locations || []).filter(l => Number(l.offset_au) > 0 && bodyIdx(l.anchor_body) > 0)
-    .map(l => ({ id: l.id, name: l.name, body: bodyIdx(l.anchor_body), off: Number(l.offset_au) })),
+    .map(l => ({ id: l.id, name: l.name, body: bodyIdx(l.anchor_body), off: Number(l.offset_au), ang: (Number(l.angle_deg) || 0) * Math.PI / 180 })),
   selectedPlace: () => (mode === 'hold' && deps ? deps.dest : selected),
   pickPlace: id => {
     const d = deps && deps.departures && deps.departures.find(x => x.id === id);
