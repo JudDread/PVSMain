@@ -63,7 +63,7 @@ async function queueTravel(db, user, body) {
   const t = planTrip(from, to, departT, g, p);
   if (!t.ok) return json({ error: t.reason }, 400);
   const r = t.r;
-  const dist = t.hop ? Math.abs(Number(from.offset_au) - Number(to.offset_au)) : r.distanceAU;
+  const dist = r.distanceAU;   /* a hop's plan also knows its true distance (offsets at their angles) */
 
   const resolveAt = new Date(realMsAt(r.arriveT)).toISOString();
   const { data: action, error: e1 } = await db.from('scheduled_actions').insert({
@@ -136,7 +136,7 @@ async function departures(db, user, body) {
 async function me(db, user) {
   const ch = await getCharacter(db, user);
   const out = { game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, speed: CLOCK.scale / 60, dev: await isDev(db, user), character: ch };
-  const { data: locs } = await db.from('locations').select('id,name,anchor_body,kind,offset_au,is_default');
+  const { data: locs } = await db.from('locations').select('id,name,anchor_body,kind,offset_au,angle_deg,is_default');
   out.locations = locs ?? [];
   if (ch) {
     await resolveFor(db, ch.id); // settle any finished trip before reporting
