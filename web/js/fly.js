@@ -163,7 +163,15 @@ function shipPoint() {
   if (ship.state === 'traveling' && ship.plan) { const s = stateAt(ship.plan, gd); return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: ship.plan }; }
   /* a hop (or a drift that began in a hop): its plan is stored relative to the body (plan.frame); shipStateAbs adds the body.
      A drift in space has no frame: shipStateAbs gives the plain state. No path line for these. */
-  if ((ship.state === 'hopping' || ship.state === 'drifting') && ship.plan) { const s = shipStateAbs(ship.plan, gd); return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: null }; }
+  if ((ship.state === 'hopping' || ship.state === 'drifting') && ship.plan) {
+    const s = shipStateAbs(ship.plan, gd);
+    let course = null;
+    if (ship.state === 'drifting' && ship.plan.frame == null) {
+      if (ship.plan.segs.length) course = ship.plan;                                  /* after Stop: the braking path to the stopping point (nothing once at rest) */
+      else if (Math.hypot(s.vx, s.vy) > 1e-9) course = coastPreview({ x: s.x, y: s.y, vx: s.vx, vy: s.vy }, gd);   /* after Coast: a line ahead along the heading */
+    }
+    return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: course };
+  }
   let body = null;
   if (ship.state === 'docked') { const l = (S.last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; }
   else if (ship.state === 'hopping') { const a = (S.last.actions || []).find(x => x.status === 'pending'); body = a && a.payload && a.payload.to; }
