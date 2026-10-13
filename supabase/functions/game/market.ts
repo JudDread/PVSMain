@@ -258,6 +258,19 @@ export async function marketAt(db, user, body) {
     hold_per_unit: Number(g.hold_per_unit), target_stock: r2s(Number(g.target_stock)), stock: r2s(Number(g.stock)),
     mid_price: r2s(Number(g.mid_price)), buy_price: Number(g.buy_price), sell_price: Number(g.sell_price),
   }));
+  // Step 5 (migration 036): for each good, does this place PRODUCE or CONSUME it, and which other place has the best price?
+  // producer: the place that pays the most; consumer: the place where it is cheapest to buy. If the SQL function is missing
+  // (migration not run yet) the page simply shows one plain list, so this can never break the Market screen.
+  {
+    const { data: bst, error: bstErr } = await db.rpc('market_best_at', { p_character: ch.id, p_location: locId });
+    if (bstErr) console.error('market_best_at failed', bstErr);
+    const bestOf = {};
+    for (const b of bst ?? []) bestOf[b.good_id] = b;
+    for (const g of goods) {
+      const b = bestOf[g.good_id];
+      if (b) { g.role = b.role; g.best_id = b.best_id; g.best_name = b.best_name; g.best_price = b.best_price == null ? null : Number(b.best_price); }
+    }
+  }
 
   // my storage at this location
   const storage = await storageAt(db, ch.id, locId);
