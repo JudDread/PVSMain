@@ -118,8 +118,7 @@ function drawDeps() {
   list.forEach(d => (groups[d.anchor_body] = groups[d.anchor_body] || []).push(d));
   Object.entries(groups)
     .sort((x, y) => x[1][0].eta_real_minutes - y[1][0].eta_real_minutes)
-    .forEach(([body, rows]) => {
-      const h = document.createElement('div'); h.className = 'grp'; h.textContent = body; box.appendChild(h);
+    .forEach(([, rows]) => {
       rows.forEach(d => {
         const r = document.createElement('div');
         r.className = 'row' + (d.id === selected && !mode ? ' sel' : '');
