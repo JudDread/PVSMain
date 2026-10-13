@@ -6,9 +6,9 @@ import { invalidateDeps, resetFly } from 'fly';
 import { resetMarket } from 'market';
 import { resetAssets } from 'assets';
 import { resetProfile } from 'profile';
+import 'home';
 
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
-const HOME_URL = '';   /* where the VS box at the top left goes (the home page); empty = not set yet */
 let timer = null, lastNudge = 0;
 S.refresh = refresh;
 
@@ -50,15 +50,18 @@ function render() {
   if (!S.last) return;
   const hasChar = !!S.last.character;
   $('speed').hidden = !(S.last.dev && hasChar);
-  $('speed').textContent = 'Speed: ' + (Math.round((S.last.speed || 1) * 100) / 100) + 'x (tap to change)';
+  $('speed').textContent = String(Math.round((S.last.speed || 1) * 100) / 100);   /* just 1, 2 or 10 */
   $('nochar').hidden = hasChar; $('haschar').hidden = !hasChar; $('topbar').hidden = !hasChar;
   if (!hasChar) return;
   const ship = (S.last.ships || [])[0];
   setShipLine();
   if (!S.current) openScreen('travel');
   const s = screens[S.current]; if (s && s.update) s.update(ship);
+  /* event line: the latest event on one line; the full list is under it (tap the line to open / fold) */
+  const evl = (S.last.events || []).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  $('evlast').textContent = evl.length ? new Date(evl[0].created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' - ' + evl[0].message : 'No events yet';
   const evs = $('evs'); evs.replaceChildren();
-  (S.last.events || []).forEach(e => evs.appendChild(li(new Date(e.created_at).toLocaleString() + ' - ' + e.message)));
+  evl.forEach(e => evs.appendChild(li(new Date(e.created_at).toLocaleString() + ' - ' + e.message)));
   tick();
 }
 function tick() {
@@ -68,16 +71,9 @@ function tick() {
   /* the bar reached 0 while draining: ask the server at once (it has switched to the slow 3 g refill) */
   if (S.last.pilot && S.last.pilot.endurance_rate_hour < 0 && enduranceNow() <= 0 && Date.now() - lastNudge > 3000) { lastNudge = Date.now(); refresh(); }
   $('gtime').textContent = new Date(J2000_MS + gd * 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC (game) - speed ' + (Math.round((S.last.speed || 1) * 100) / 100) + 'x';
-  const acts = $('acts'); acts.replaceChildren();
+  /* a trip is due: ask the server at once (it docks the ship) */
   (S.last.actions || []).forEach(a => {
-    const left = (new Date(a.resolve_at) - nowMs()) / 1000;
-    const p = a.payload || {};
-    let t = 'trip ' + locName(p.from) + ' -> ' + locName(p.to_location || (p.to || '').toLowerCase()) + ' [' + a.status + ']';
-    if (a.status === 'pending') {
-      t += left > 0 ? ' arrives in ' + fmt(left) : ' arriving...';
-      if (left <= 0 && Date.now() - lastNudge > 5000) { lastNudge = Date.now(); refresh(); }
-    }
-    acts.appendChild(li(t));
+    if (a.status === 'pending' && (new Date(a.resolve_at) - nowMs()) / 1000 <= 0 && Date.now() - lastNudge > 5000) { lastNudge = Date.now(); refresh(); }
   });
 }
 
@@ -98,7 +94,8 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-$('out').onclick = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetProfile(); S.current = null; show('auth'); };
+const logout = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetProfile(); S.current = null; show('auth'); };
+$('out').onclick = logout; $('out2').onclick = logout;
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
   catch (e) { say('Error: ' + e.message, 'err'); }
@@ -114,9 +111,10 @@ $('speed').onclick = async () => {
   finally { b.disabled = false; }
 };
 
-$('vs').onclick = () => { if (HOME_URL) location.href = HOME_URL; else say('The home page link is not set yet.', 'muted'); };
+$('vs').onclick = () => { if (S.last && S.last.character) openScreen('home'); };
 $('pic').onclick = () => { if (S.last && S.last.character) openScreen('profile'); };
 $('enitem').onclick = () => { S.enTimer = !S.enTimer; setShipLine(); };   /* tap the endurance bar: time until full on / off */
+$('evline').onclick = () => { const l = $('evs'); l.hidden = !l.hidden; $('evcaret').textContent = l.hidden ? '+' : '-'; };   /* tap the event line: full list on / off */
 
 setInterval(() => { if (S.last && S.sb) refresh(); }, 15000);
 init();
