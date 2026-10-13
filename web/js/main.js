@@ -116,7 +116,7 @@ $('speed').onclick = async () => {
 
 $('vs').onclick = () => { if (HOME_URL) location.href = HOME_URL; else say('The home page link is not set yet.', 'muted'); };
 $('pic').onclick = () => { if (S.last && S.last.character) openScreen('profile'); };
-$('enrow').onclick = () => { S.enTimer = !S.enTimer; setShipLine(); };   /* tap the endurance bar: time until full on / off */
+$('enitem').onclick = () => { S.enTimer = !S.enTimer; setShipLine(); };   /* tap the endurance bar: time until full on / off */
 
 setInterval(() => { if (S.last && S.sb) refresh(); }, 15000);
 init();
