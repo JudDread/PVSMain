@@ -5,13 +5,15 @@ import { S, $, say, li, call, fmt, curGd, nowMs, locName, screens, openScreen, s
 import { invalidateDeps, resetFly } from 'fly';
 import { resetMarket } from 'market';
 import { resetAssets } from 'assets';
+import { resetProfile } from 'profile';
 
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
+const HOME_URL = '';   /* where the VS box at the top left goes (the home page); empty = not set yet */
 let timer = null, lastNudge = 0;
 S.refresh = refresh;
 
 function getKey() { try { return localStorage.getItem('pvs_key'); } catch (e) { return null; } }
-function show(which) { ['cfg', 'auth', 'game'].forEach(id => $(id).hidden = id !== which); }
+function show(which) { ['cfg', 'auth', 'game'].forEach(id => $(id).hidden = id !== which); $('title').hidden = which === 'game'; }
 
 async function init() {
   const k = getKey();
@@ -49,7 +51,7 @@ function render() {
   const hasChar = !!S.last.character;
   $('speed').hidden = !(S.last.dev && hasChar);
   $('speed').textContent = 'Speed: ' + (Math.round((S.last.speed || 1) * 100) / 100) + 'x (tap to change)';
-  $('nochar').hidden = hasChar; $('haschar').hidden = !hasChar;
+  $('nochar').hidden = hasChar; $('haschar').hidden = !hasChar; $('topbar').hidden = !hasChar;
   if (!hasChar) return;
   const ship = (S.last.ships || [])[0];
   setShipLine();
@@ -96,7 +98,7 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-$('out').onclick = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); show('auth'); };
+$('out').onclick = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetProfile(); S.current = null; show('auth'); };
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
   catch (e) { say('Error: ' + e.message, 'err'); }
@@ -111,6 +113,10 @@ $('speed').onclick = async () => {
   } catch (e) { say('Error: ' + (e.message === 'not_allowed' ? 'this account is not on the developer list' : e.message), 'err'); }
   finally { b.disabled = false; }
 };
+
+$('vs').onclick = () => { if (HOME_URL) location.href = HOME_URL; else say('The home page link is not set yet.', 'muted'); };
+$('pic').onclick = () => { if (S.last && S.last.character) openScreen('profile'); };
+$('enrow').onclick = () => { S.enTimer = !S.enTimer; setShipLine(); };   /* tap the endurance bar: time until full on / off */
 
 setInterval(() => { if (S.last && S.sb) refresh(); }, 15000);
 init();
