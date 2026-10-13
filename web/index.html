@@ -6,7 +6,7 @@
 <title>Vacuum State - Test Page</title>
 <style>
 [hidden]{display:none!important}
-body{font:16px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:12px}
+body{font:16px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:12px 12px 92px}
 #cfg,#auth{max-width:640px}
 h1{font-size:18px;margin:0 0 10px}h2{font-size:15px;margin:0 0 8px;color:#e8b64a}
 section{background:#131a2a;border:1px solid #222b40;border-radius:8px;padding:10px;margin-bottom:10px}
@@ -19,7 +19,10 @@ ul{margin:4px 0;padding-left:18px}
 #msg{min-height:1.4em;margin-bottom:8px}
 button:disabled{opacity:.45}
 /* screens + nav */
-#nav{display:flex;gap:6px;margin:6px 0}
+/* tab bar pinned to the bottom of the screen: square boxes with an icon and a small label */
+#nav{position:fixed;left:0;right:0;bottom:0;z-index:20;display:flex;justify-content:center;gap:12px;margin:0;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));background:#0b0f19;border-top:1px solid #222b40}
+#nav button{width:64px;height:64px;padding:4px 0 2px;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:8px;font-size:12px;font-weight:600;line-height:1.1}
+#nav button svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 #nav button.on{background:#e8b64a;color:#14100a}
 /* travel screen: portrait = stacked, landscape = map beside list */
 .travel{display:flex;flex-direction:column;gap:8px}
@@ -28,13 +31,16 @@ button:disabled{opacity:.45}
 .zb{position:absolute;top:6px;left:6px}
 .zb button{padding:4px 9px;font-size:13px;margin:0 4px 0 0;background:#2a3350cc;color:#e3e9f7;border:1px solid #444f70}
 .side{display:flex;flex-direction:column;min-width:0}
-#deps{max-height:300px;overflow-y:auto;border:1px solid #222b40;border-radius:6px;margin:4px 0}
-.grp{background:#0f1523;color:#e8b64a;font-size:13px;padding:5px 8px;position:sticky;top:0}
-.row{display:flex;justify-content:space-between;gap:8px;padding:10px 8px;border-top:1px solid #1c2438;cursor:pointer}
+/* destinations: a label that opens the list; flat rows with a line under each (no tiles) */
+.dephead{display:flex;justify-content:space-between;align-items:center;padding:12px 8px;color:#e8b64a;font-weight:600;border-bottom:1px solid #1c2438;cursor:pointer}
+.dephead span+span{color:#8d98b2}
+#deps{max-height:300px;overflow-y:auto;margin:0}
+.grp{color:#e8b64a;font-size:13px;padding:10px 8px 2px}
+.row{display:flex;justify-content:space-between;gap:8px;padding:10px 8px;border-bottom:1px solid #1c2438;cursor:pointer}
 .row.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
 .eta{white-space:nowrap;color:#6be08f}
 @media (orientation:landscape){
-  .travel{flex-direction:row;height:calc(100vh - 190px);min-height:240px}
+  .travel{flex-direction:row;height:calc(100vh - 270px);min-height:240px}
   .mapcol{flex:1;min-width:0;display:flex;flex-direction:column}
   .mapwrap{flex:1;height:auto;min-width:0}
   .side{width:330px;flex:none}
@@ -183,7 +189,8 @@ button:disabled{opacity:.45}
         </div>
       </div>
       <div class="side">
-        <div id="deps" class="muted">Loading destinations...</div>
+        <div id="depshead" class="dephead"><span>Destinations</span><span id="depscaret">+</span></div>
+        <div id="deps" class="muted" hidden>Loading destinations...</div>
       </div>
     </div>
 
