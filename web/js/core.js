@@ -8,6 +8,7 @@ export const S = {
   current: null,   // name of the open screen
   refresh: null,   // main.js puts its refresh() function here so other files can ask for a reload
   skew: 0,         // server clock minus this device's clock, in ms (measured by main.js; a device clock can be minutes off)
+  enTimer: false,  // the endurance bar shows 'mm:ss until full' while true (tap the bar to switch)
 };
 // Server time now, as far as we can tell. Use this instead of Date.now() whenever comparing with a server time.
 export const nowMs = () => Date.now() + (S.skew || 0);
@@ -26,8 +27,9 @@ export function openScreen(name) {
   S.current = name;
   Object.entries(screens).forEach(([n, s]) => s.el.hidden = n !== name);
   const nav = $('nav'); nav.replaceChildren();
-  nav.hidden = Object.keys(screens).length < 2;
-  Object.entries(screens).forEach(([n, s]) => {
+  const tabs = Object.entries(screens).filter(([n, s]) => !s.noTab);   /* noTab: a screen reached another way (the profile circle) */
+  nav.hidden = tabs.length < 2;
+  tabs.forEach(([n, s]) => {
     const b = document.createElement('button'); b.textContent = s.title;
     b.className = n === name ? 'on' : 'alt'; b.onclick = () => openScreen(n); nav.appendChild(b);
   });
@@ -86,28 +88,54 @@ export function flightG() {
   if (!p || p.g == null) return Number(ship.thrust_g);
   return Number(p.g) > free && p.burn_days != null && curGd() < Number(p.departT) + Number(p.burn_days) ? Number(p.g) : Math.min(Number(p.g), free);
 }
-// The endurance bar now. Pulsed flight: the page works the saw-tooth out itself with the same rule as the server.
+// The endurance bar now: {v (value), mx (size), burning (above the free thrust right now), rate (gain per game hour while refilling)}.
+// Pulsed flight: the page works the saw-tooth out itself with the same rule as the server.
 // Otherwise: the value from the last 'me' answer, moved on at its rate since then (display only).
-export function enduranceNow() {
+function enduranceInfo() {
   const p = S.last && S.last.pilot; if (!p || p.endurance == null) return null;
+  const mx = Number(p.endurance_max);
   if (p.flight && p.cfg) {
     const f = p.flight, k = p.cfg, gd = Math.min(curGd(), Number(f.until));
-    return pulseState({ g: f.g, bar: f.bar0, regen0: f.regen0, mx: k.mx, freeG: k.free_g, refill: k.refill, perG: k.per_g, share: k.share }, gd - Number(f.t0)).v;
+    const st = pulseState({ g: f.g, bar: f.bar0, regen0: f.regen0, mx: k.mx, freeG: k.free_g, refill: k.refill, perG: k.per_g, share: k.share }, gd - Number(f.t0));
+    return { v: st.v, mx, burning: !!st.burning, rate: Number(k.refill) };
   }
   const hours = (nowMs() - S.last.real_ms) * S.last.scale / 3.6e6;
-  const v = Number(p.endurance) + Number(p.endurance_rate_hour || 0) * hours;
-  return Math.max(0, Math.min(Number(p.endurance_max), v));
+  const rate = Number(p.endurance_rate_hour || 0);
+  return { v: Math.max(0, Math.min(mx, Number(p.endurance) + rate * hours)), mx, burning: false, rate };
 }
+export function enduranceNow() { const i = enduranceInfo(); return i ? i.v : null; }
+const clock = sec => { sec = Math.max(0, Math.round(sec)); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60, p = n => String(n).padStart(2, '0'); return (h ? h + ':' + p(m) : p(m)) + ':' + p(s); };
+// Text for the endurance bar after a tap: time until full in REAL time (game hours x 3600 / speed).
+function untilFull(i) {
+  if (i.v >= i.mx - 0.05) return 'Full';
+  if (i.burning) return 'Burning';
+  if (i.rate > 0) return clock((i.mx - i.v) / i.rate * 3600 / S.last.scale) + ' until full';
+  return '--:-- until full';
+}
+// The top bars: credits, XP (with level), endurance, and the profile circle. Display only; called from setShipLine every second.
+function setBars() {
+  const ch = S.last && S.last.character, p = S.last && S.last.pilot;
+  $('money').textContent = ch ? money(ch.credits) : '';
+  $('pic').textContent = ch && ch.name ? String(ch.name).trim().charAt(0).toUpperCase() : '?';
+  if (!p) return;
+  const xp = Number(p.xp), start = Number(p.xp_level_start), next = p.xp_next == null ? null : Number(p.xp_next);
+  $('lvl').textContent = 'Lv ' + p.level;
+  $('xpnum').textContent = next == null ? whole(xp) + ' (top level)' : whole(xp) + ' / ' + whole(next);
+  $('xpfill').style.width = (next == null ? 100 : Math.max(0, Math.min(100, (xp - start) / (next - start) * 100))) + '%';
+  const i = enduranceInfo(); if (!i) return;
+  $('ennum').textContent = Math.round(i.v) + ' / ' + Math.round(i.mx);
+  $('enfill').style.width = Math.max(0, Math.min(100, i.v / i.mx * 100)) + '%';
+  $('entext').textContent = S.enTimer ? untilFull(i) : '';
+}
+// The ship line (hull, place or thrust). Credits and endurance now live in the bars.
 export function setShipLine() {
   const ship = S.last && (S.last.ships || [])[0];
-  const cr = S.last && S.last.character ? '  |  Credits ' + money(S.last.character.credits) : '';
-  const en = enduranceNow();
-  const bar = en == null ? '' : '  |  Endurance ' + Math.round(en) + ' / ' + Math.round(S.last.pilot.endurance_max);
   const g = flightG();
-  $('ship').textContent = (!ship ? 'No ship' :
+  $('ship').textContent = !ship ? 'No ship' :
     ship.state === 'docked' ? hullName(ship.hull_id) + ' docked at ' + locName(ship.location_id) :
     ship.state === 'drifting' ? hullName(ship.hull_id) + ' drifting (no destination)' :
-    hullName(ship.hull_id) + ' traveling at ' + (Math.round(g * 10) / 10) + ' g') + bar + cr;
+    hullName(ship.hull_id) + ' traveling at ' + (Math.round(g * 10) / 10) + ' g';
+  setBars();
 }
 
 /* ---------- shared by the Market and Assets screens ---------- */
