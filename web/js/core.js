@@ -45,7 +45,7 @@ export function openScreen(name) {
 }
 
 /* ---------- small display helpers ---------- */
-export const money = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+export const money = n => Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });   // credits are shown WITHOUT cents, everywhere (decided)
 export const whole = n => Math.round(Number(n)).toLocaleString();
 export const r2 = n => Math.round(Number(n) * 100) / 100;
 export function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
