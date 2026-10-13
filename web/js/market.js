@@ -449,6 +449,36 @@ function drawFreight(box, d, loc, items) {
     if (sel) box.appendChild(frPop(d, loc, x, scale));
   });
 }
+/* one list of goods with its sortable header. showBest: the 'Best' column = the other place with the best price
+   (producer list: pays the most; consumer list: cheapest to buy). Touch a header to sort by it. */
+function goodsSection(parent, loc, d, key, title, list, showBest) {
+  const grid = showBest ? '' : '1fr 84px 84px 72px';   // without the Best column the old four columns
+  section(parent, loc, key, title, list.length, null, box => {
+    const hd = el('div', 'mhead'); if (grid) hd.style.gridTemplateColumns = grid;
+    const cols = [['name', 'Good', '']];
+    if (showBest) cols.push(['best_price', 'Best', 'num']);
+    cols.push(['buy_price', 'Buy for', 'num'], ['sell_price', 'Sell at', 'num'], ['stock', 'Stock', 'num']);
+    cols.forEach(([col, label, cls]) => {
+      const sp = el('span', cls), b = document.createElement('button');
+      b.type = 'button'; b.textContent = label + (gSort.col === col ? (gSort.dir === 1 ? ' \u25B2' : ' \u25BC') : '');
+      b.onclick = () => pressSort(col);
+      sp.appendChild(b); hd.appendChild(sp);
+    });
+    box.appendChild(hd);
+    sortGoods(list).forEach(g => {
+      const sel = isSel(loc, 'goods', g.good_id);
+      const r = el('div', 'mrow' + (sel ? ' sel' : '')); if (grid) r.style.gridTemplateColumns = grid;
+      const cells = [cell('', g.name)];
+      if (showBest) cells.push(g.best_name ? cell('num', g.best_name, money(g.best_price)) : cell('num muted', '-'));
+      cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock)));
+      r.append(...cells);
+      wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
+      box.appendChild(r);
+      if (sel) box.appendChild(placePop(d, 'goods', g));
+      if (isDD(loc, 'goods', g.good_id)) box.appendChild(ddBox());
+    });
+  });
+}
 function drawLoc(parent, loc) {
   const c = mc[loc];
   if (!c || !c.d) { parent.appendChild(el('div', 'muted pad', 'Loading...')); return; }
@@ -465,26 +495,13 @@ function drawLoc(parent, loc) {
     if (!stored.length) box.appendChild(el('div', 'muted pad', 'Nothing of yours is stored here.'));
     stored.forEach(x => stackRow(box, d, loc, 'storage', x, c.bestSt && c.bestSt[x.good_id]));
   });
-  section(parent, loc, 'goods', 'For sale', goods.length, null, box => {
-    if (!goods.length) { box.appendChild(el('div', 'muted pad', 'Nothing is traded here.')); return; }
-    const hd = el('div', 'mhead');
-    [['name', 'Good', ''], ['buy_price', 'Buy for', 'num'], ['sell_price', 'Sell at', 'num'], ['stock', 'Stock', 'num']].forEach(([col, label, cls]) => {
-      const sp = el('span', cls), b = document.createElement('button');
-      b.type = 'button'; b.textContent = label + (gSort.col === col ? (gSort.dir === 1 ? ' \u25B2' : ' \u25BC') : '');
-      b.onclick = () => pressSort(col);
-      sp.appendChild(b); hd.appendChild(sp);
-    });
-    box.appendChild(hd);
-    sortGoods(goods).forEach(g => {
-      const sel = isSel(loc, 'goods', g.good_id);
-      const r = el('div', 'mrow' + (sel ? ' sel' : ''));
-      r.append(cell('', g.name), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock)));
-      wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
-      box.appendChild(r);
-      if (sel) box.appendChild(placePop(d, 'goods', g));
-      if (isDD(loc, 'goods', g.good_id)) box.appendChild(ddBox());
-    });
-  });
+  /* goods: split by what this place does with them (role comes from the server, migration 036); without it: one plain list */
+  const prod = goods.filter(g => g.role === 'producer'), cons = goods.filter(g => g.role === 'consumer');
+  const rest = goods.filter(g => g.role !== 'producer' && g.role !== 'consumer');
+  if (!goods.length) section(parent, loc, 'goods', 'For sale', 0, null, box => box.appendChild(el('div', 'muted pad', 'Nothing is traded here.')));
+  if (prod.length) goodsSection(parent, loc, d, 'produced', 'Produced here', prod, true);
+  if (cons.length) goodsSection(parent, loc, d, 'consumed', 'Consumed here', cons, true);
+  if (rest.length) goodsSection(parent, loc, d, 'goods', 'For sale', rest, false);
   const fr = c.fr || [];
   if (fr.length) section(parent, loc, 'freight', 'Freight', fr.length, null, box => drawFreight(box, d, loc, fr));
   else if (c.frErr) parent.appendChild(el('div', 'muted hint pad', 'The freight board could not load: ' + c.frErr));
