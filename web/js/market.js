@@ -47,6 +47,8 @@ function sortGoods(list) {
     '#mbody .mhead button { background: none !important; border: 0 !important; box-shadow: none !important; color: inherit; font: inherit; width: 100%; padding: 4px 0 !important; min-height: 0 !important; margin: 0 !important; text-align: left; white-space: nowrap; cursor: pointer; }',
     '#mbody .mhead .num button { text-align: right; }',
     '#mbody .msec + .msec { margin-top: 14px !important; }',
+    '#mbody .sech button.ub { background: #e8b64a !important; color: #14100a !important; border: 0 !important; border-radius: 6px !important; font-weight: 700 !important; padding: 5px 14px !important; }',
+    '#mbody .sech button.ub:disabled { opacity: .45; }',
     '#mbody .sech { background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; }'
   ].join('\n');
   document.head.appendChild(st);
@@ -340,8 +342,8 @@ function drawLocBox() {
   }
   if (s.value !== mloc && document.activeElement !== s) s.value = mloc;
 }
-function section(parent, loc, key, title, count, btn, drawBody) {
-  const k = loc + ':' + key, open = secOpen[k] !== false;
+function section(parent, loc, key, title, count, btn, drawBody, defOpen) {
+  const k = loc + ':' + key, open = secOpen[k] !== undefined ? secOpen[k] : defOpen !== false;   /* defOpen: how it starts until you tap it */
   const box = el('div', 'msec'), h = el('div', 'sech');
   h.appendChild(el('span', '', (open ? ARROW_OPEN : ARROW_SHUT) + title + ' (' + count + ')'));
   if (btn) h.appendChild(btn);
@@ -453,11 +455,11 @@ function drawLoc(parent, loc) {
   const d = c.d, cargo = d.cargo || [], stored = d.storage || [], goods = d.goods || [];
   if (!d.here && d.remote_fee > 0) parent.appendChild(el('div', 'muted hint pad', 'Your ship is not docked here, so trades at this market carry an extra ' + Math.round(d.remote_fee * 100) + '% fee. Prices below include it.'));
   if (d.here) {
-    const ub = el('button', 'alt', 'Unload all'); ub.disabled = mbusy || !cargo.length; ub.onclick = doUnloadAll;
+    const ub = el('button', 'ub', 'Unload all'); ub.disabled = mbusy || !cargo.length; ub.onclick = doUnloadAll;
     section(parent, loc, 'cargo', 'Cargo, hold ' + r2(d.hold_used) + ' / ' + r2(d.hold_size), cargo.length, ub, box => {
       if (!cargo.length) box.appendChild(el('div', 'muted pad', 'Empty'));
       cargo.forEach(x => stackRow(box, d, loc, 'cargo', x, c.bestCg && c.bestCg[x.good_id]));
-    });
+    }, cargo.length > 0);   /* an empty hold starts folded */
   }
   section(parent, loc, 'storage', 'Stored here', stored.length, null, box => {
     if (!stored.length) box.appendChild(el('div', 'muted pad', 'Nothing of yours is stored here.'));
@@ -493,7 +495,6 @@ function drawMarket() {
   if (!mloc) return;
   const body = $('mbody'); body.replaceChildren();
   drawLocBox();
-  $('minfo').textContent = 'Credits ' + money((S.last && S.last.character) ? S.last.character.credits : 0) + (hold ? '   |   Hold ' + r2(hold.used) + ' / ' + r2(hold.size) : '');
   if (msel && curData() && !curItem()) { msel = null; mEdited = false; }
   if (dd && mc[dd.loc] && mc[dd.loc].d) {
     const d = mc[dd.loc].d, list = dd.kind === 'goods' ? d.goods : dd.kind === 'cargo' ? d.cargo : d.storage;
