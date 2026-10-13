@@ -90,7 +90,7 @@ button:disabled{opacity:.45}
 .srow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px;padding:8px;border-top:1px solid #1c2438}
 .srow .chips{display:flex;align-items:center;gap:4px}
 .srow .chips button{margin:2px 0}
-#mloc{width:100%;height:138px;font-size:28px;font-weight:800;padding:10px 14px;margin:0 0 8px;text-align:center;text-align-last:center;color:#e8b64a;background:linear-gradient(135deg,#1a2338,#0f1523);border:1px solid #333d57;border-radius:10px}   /* 3x higher; a background picture can come later */
+.locsel{width:100%;height:138px;box-sizing:border-box;font-size:28px;font-weight:800;padding:10px 18px;margin:0 0 8px;text-align:left;color:#f3d28a;text-shadow:0 2px 6px #000,0 0 3px #000;background:linear-gradient(135deg,#1a2338,#0f1523);border:1px solid #333d57;border-radius:10px}   /* the place selector (Market, Assets); backdrop.js draws the picture */
 .msec{border:1px solid #222b40;border-radius:6px;margin:6px 0;overflow:hidden}
 .sech,.locg{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#0f1523;color:#e8b64a;padding:8px;min-height:40px;cursor:pointer}
 .locg{background:#1a2338;border:1px solid #222b40;border-radius:6px;margin:6px 0}
@@ -196,7 +196,7 @@ button:disabled{opacity:.45}
 
     <!-- SCREEN: market (goods in markets, in storage and in the hold; trade from anywhere) -->
     <div id="scr-market" hidden>
-      <select id="mloc" aria-label="Choose a place"></select>
+      <select id="mloc" class="locsel" aria-label="Choose a place"></select>
       <div id="mbody" class="muted">Loading...</div>
     </div>
 
@@ -224,6 +224,7 @@ button:disabled{opacity:.45}
   "fly":     "./js/fly.js",
   "market":  "./js/market.js",
   "profile": "./js/profile.js",
+  "backdrop": "./js/backdrop.js",
   "home":    "./js/home.js",
   "assets":  "./js/assets.js"
 } }
