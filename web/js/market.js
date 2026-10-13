@@ -1,5 +1,6 @@
 // market.js - the Market screen (goods in markets, in storage and in the hold). Display only: the server decides every trade.
 import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine } from 'core';
+import { applyBackdrop } from 'backdrop';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
 
@@ -341,6 +342,7 @@ function drawLocBox() {
     s.dataset.sig = sig;
   }
   if (s.value !== mloc && document.activeElement !== s) s.value = mloc;
+  applyBackdrop(s, mloc);               /* the picture behind the selector follows the chosen place */
 }
 function section(parent, loc, key, title, count, btn, drawBody, defOpen) {
   const k = loc + ':' + key, open = secOpen[k] !== undefined ? secOpen[k] : defOpen !== false;   /* defOpen: how it starts until you tap it */
@@ -579,7 +581,7 @@ async function doUnloadAll() {
 }
 
 $('mloc').onchange = () => {
-  mloc = $('mloc').value; msel = null; dd = null; mEdited = false; frSel = null;
+  mloc = $('mloc').value; applyBackdrop($('mloc'), mloc); msel = null; dd = null; mEdited = false; frSel = null;
   if (mloc === 'ALL') refreshMarket(); else { mAt = Date.now(); loadLoc(mloc); }
   drawMarket();
 };
