@@ -90,7 +90,7 @@ button:disabled{opacity:.45}
 .srow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px;padding:8px;border-top:1px solid #1c2438}
 .srow .chips{display:flex;align-items:center;gap:4px}
 .srow .chips button{margin:2px 0}
-#mloc{width:100%;font-size:16px;padding:10px;margin:4px 0}
+#mloc{width:100%;height:138px;font-size:28px;font-weight:800;padding:10px 14px;margin:0 0 8px;text-align:center;text-align-last:center;color:#e8b64a;background:linear-gradient(135deg,#1a2338,#0f1523);border:1px solid #333d57;border-radius:10px}   /* 3x higher; a background picture can come later */
 .msec{border:1px solid #222b40;border-radius:6px;margin:6px 0;overflow:hidden}
 .sech,.locg{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#0f1523;color:#e8b64a;padding:8px;min-height:40px;cursor:pointer}
 .locg{background:#1a2338;border:1px solid #222b40;border-radius:6px;margin:6px 0}
@@ -196,10 +196,7 @@ button:disabled{opacity:.45}
 
     <!-- SCREEN: market (goods in markets, in storage and in the hold; trade from anywhere) -->
     <div id="scr-market" hidden>
-      <h2>Market</h2>
       <select id="mloc" aria-label="Choose a place"></select>
-      <div id="minfo" class="muted"></div>
-      <div class="muted hint">Tap a row for buttons. Long press (or double-tap) to compare destinations: trips start where the goods are.</div>
       <div id="mbody" class="muted">Loading...</div>
     </div>
 
