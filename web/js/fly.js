@@ -1,4 +1,5 @@
-// fly.js - the Fly screen: thrust slider, destination list, ship position, blue preview course, confirm button.
+// fly.js - the Fly screen: vertical thrust slider on the map, destination list, ship position, blue preview course, Launch / Confirm button
+// under the map (left) and the in-flight buttons under the map (right).
 // Step 4a: moving the thrust slider only makes a POSSIBLE course (blue line + new ETAs). Nothing changes until the
 //   confirm button is pressed.
 // Step 4b: the same works IN FLIGHT. While the ship flies or drifts you can pick a new destination (or the place you
@@ -13,23 +14,22 @@ import { createMap } from 'map';
 let deps = null, depsAt = 0, selected = null, depsLoading = false;
 let mode = null;                       /* in flight only: null (a picked destination) | 'hold' | 'stop' | 'coast' */
 let thrustG = 3;                       /* the slider value (game g); the server decides if it is allowed */
-let thrustBox = null, thrustIn = null, thrustTxt = null, loadTimer = null;
-let ctlBox = null, ctlTxt = null; const ctlBtn = {};
+let thrustBox = null, thrustIn = null, thrustTxt = null, thrustArea = null, loadTimer = null;
+let ctlBox = null; const ctlBtn = {};
 
 /* the ship, if it is NOT docked (traveling, hopping or drifting) */
 const flyingShip = () => { const s = S.last && (S.last.ships || [])[0]; return s && s.state !== 'docked' ? s : null; };
 const isFlying = () => !!(deps && deps.flying);
 
-/* ---------- thrust slider (made here, inserted above the destination list) ---------- */
+/* ---------- thrust slider: vertical, on the right side of the map (made here, put inside the map box) ---------- */
 function ensureThrust(maxG) {
   const top = Math.max(1, Math.floor(maxG * 2) / 2);          /* half-g steps */
   if (!thrustBox) {
-    thrustBox = document.createElement('div');
-    thrustBox.style.margin = '8px 0';
-    thrustTxt = document.createElement('div');
+    thrustBox = document.createElement('div'); thrustBox.className = 'thr';
+    thrustTxt = document.createElement('div'); thrustTxt.className = 'thrl';
+    thrustArea = document.createElement('div'); thrustArea.className = 'thra';
     thrustIn = document.createElement('input');
     thrustIn.type = 'range'; thrustIn.min = '1'; thrustIn.step = '0.5';
-    thrustIn.style.width = '100%';
     thrustIn.oninput = () => {
       thrustG = Number(thrustIn.value);
       /* in flight, moving the slider with nothing picked proposes the SAME destination at the new thrust */
@@ -39,49 +39,43 @@ function ensureThrust(maxG) {
       clearTimeout(loadTimer);
       loadTimer = setTimeout(loadDeps, 400);                  /* fresh ETAs and costs once the finger rests */
     };
-    thrustBox.append(thrustTxt, thrustIn);
-    $('deps').parentNode.insertBefore(thrustBox, $('deps'));
+    thrustArea.appendChild(thrustIn);
+    thrustBox.append(thrustTxt, thrustArea);
+    $('map').parentNode.appendChild(thrustBox);
+    window.addEventListener('resize', sizeThrust);
   }
   thrustIn.max = String(top);
   if (thrustG > top) thrustG = top;
   thrustIn.value = String(thrustG);
 }
+/* the slider is a normal range input turned 90 degrees: its length = the height of its area (max at the top) */
+function sizeThrust() {
+  if (!thrustArea) return;
+  const H = thrustArea.clientHeight, W = thrustArea.clientWidth;
+  if (!H || !W) return;
+  thrustIn.style.width = H + 'px'; thrustIn.style.height = W + 'px'; thrustIn.style.top = H + 'px';
+}
 function drawThrust() {
   if (!thrustBox) return;
   const free = thrustG <= (deps && deps.free_g != null ? deps.free_g : 3);
-  let t = 'Thrust ' + thrustG.toFixed(1) + ' g' + (free ? ' (free, refills endurance)' : ' (pulses: burns half the bar, refills, repeats)');
-  if (deps && deps.endurance != null) t += '  |  Endurance ' + whole(deps.endurance) + ' / ' + whole(deps.endurance_max);
-  thrustTxt.textContent = t;
+  thrustTxt.innerHTML = thrustG.toFixed(1) + ' g<br>' + (free ? 'free' : 'pulses');
   thrustIn.value = String(thrustG);
 }
 
-/* ---------- in-flight controls: Hold the bar / Stop / Coast (made here, inserted above the thrust slider) ---------- */
+/* ---------- in-flight controls: Hold the bar / Stop / Coast (buttons under the map, right side: #actr in index.html) ---------- */
 function ensureControls() {
   if (ctlBox) return;
-  ctlBox = document.createElement('div');
-  ctlBox.style.margin = '8px 0';
-  ctlTxt = document.createElement('div');
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px';
+  ctlBox = $('actr');
   [['hold', 'Hold the bar'], ['stop', 'Stop'], ['coast', 'Coast']].forEach(([m, label]) => {
     const b = document.createElement('button'); b.textContent = label; b.className = 'alt';
-    b.onclick = () => { mode = mode === m ? null : m; if (mode) selected = null; drawAll(); };   /* a proposal: confirm below */
-    ctlBtn[m] = b; row.appendChild(b);
+    b.onclick = () => { mode = mode === m ? null : m; if (mode) selected = null; drawAll(); };   /* a proposal: confirm with the button at the left */
+    ctlBtn[m] = b; ctlBox.appendChild(b);
   });
-  ctlBox.append(ctlTxt, row);
-  $('deps').parentNode.insertBefore(ctlBox, thrustBox || $('deps'));
 }
 function drawControls() {
   if (!ctlBox) return;
   ctlBox.hidden = !isFlying();
   if (!isFlying()) return;
-  const sh = flyingShip();
-  const spd = deps.speed_kms != null ? Math.round(deps.speed_kms).toLocaleString() + ' km/s' : '?';
-  let t = sh && sh.state === 'drifting'
-    ? 'Drifting at ' + spd + ' (no destination). Pick a destination below.'
-    : (sh && sh.state === 'hopping' ? 'Hopping to ' : 'Flying to ') + (deps.dest ? locName(deps.dest) : '?') + ' at ' + spd + '.';
-  t += ' Pick a place, change the thrust, or use a button; nothing happens until you confirm.';
-  ctlTxt.textContent = t;
   ctlBtn.hold.disabled = !deps.dest;                          /* nothing to hold toward while drifting */
   Object.entries(ctlBtn).forEach(([m, b]) => b.className = mode === m ? 'on' : 'alt');
 }
@@ -108,16 +102,12 @@ function selectedBody() {
   const d = deps && deps.departures && deps.departures.find(x => x.id === id);
   return d ? d.anchor_body : null;
 }
-function modeLabel() {
-  if (mode === 'hold') return 'Confirm: hold the bar (free thrust to ' + locName(deps.dest) + ')';
-  if (mode === 'stop') return 'Confirm: stop the ship (brakes at ' + Number(deps.free_g) + ' g, free)';
-  return 'Confirm: cut the engine and coast';
-}
 function drawDeps() {
   const box = $('deps'), go = $('go');
   box.replaceChildren();
   const live = !!(deps && (deps.docked || deps.flying));
   if (thrustBox) thrustBox.hidden = !live;
+  sizeThrust();
   if (!live) {
     box.textContent = 'Destinations appear when your ship is docked or in flight.';
     go.disabled = true; go.textContent = 'Launch'; map.need(); return;
@@ -148,14 +138,20 @@ function drawDeps() {
     });
   const pick = list.find(d => d.id === selected);
   const fresh = deps.g === thrustG;                           /* list matches the slider */
-  if (fl && mode) { go.disabled = false; go.textContent = modeLabel(); map.need(); return; }
+  if (fl && mode) { go.disabled = false; go.textContent = 'Confirm ' + mode; map.need(); return; }   /* hold / stop / coast */
   go.disabled = !pick || !fresh;
-  go.textContent = !pick ? 'Pick a destination'
-    : !fresh ? 'Updating times...'
-    : (fl ? 'Confirm course to ' : 'Launch to ') + pick.name + ' at ' + thrustG.toFixed(1) + ' g' + (pick.pulsed ? ' (avg ' + pick.g_avg.toFixed(1) + ' g)' : '') + ' (' + fmt(pick.eta_real_minutes * 60) + ')';
+  go.textContent = (fl ? 'Confirm' : 'Launch') + (!pick ? '' : !fresh ? ' ...' : ' ' + fmt(pick.eta_real_minutes * 60));
   map.need();
 }
 
+/* the ship's speed in km/s for the map: from its stored plan (in a hop: relative to the body); null while docked */
+const AU_DAY_KMS = 149597870.7 / 86400;
+function shipSpeedKms() {
+  const ship = S.last && (S.last.ships || [])[0];
+  if (!ship || ship.state === 'docked' || !ship.plan) return null;
+  const s = stateAt(ship.plan, curGd());
+  return Math.hypot(s.vx, s.vy) * AU_DAY_KMS;
+}
 /* where is the ship right now? (from its stored plan, or from the body it sits at) */
 function shipPoint() {
   const ship = S.last && (S.last.ships || [])[0]; if (!ship) return null;
@@ -254,6 +250,7 @@ function previewPlan() {
 
 const map = createMap($('map'), {
   ship: shipPoint,
+  speed: shipSpeedKms,
   preview: previewPlan,
   selectedBody,
   /* places a little away from their planet (offset > 0): the map draws them once zoomed in far enough, and they can be tapped */
@@ -274,7 +271,7 @@ $('zSys').onclick = () => map.preset('sys');
 $('zShip').onclick = () => map.preset('ship');
 
 addScreen('travel', 'Fly', $('scr-travel'), {
-  onShow: () => { map.resize(); map.need(); },
+  onShow: () => { map.resize(); map.need(); sizeThrust(); },
   update: ship => {
     if (!ship) { map.need(); return; }
     const fl = ship.state !== 'docked';
