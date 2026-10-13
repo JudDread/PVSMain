@@ -11,7 +11,7 @@ import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse, stopPlan, segm
 import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow } from 'core';
 import { createMap } from 'map';
 
-let deps = null, depsAt = 0, selected = null, depsLoading = false;
+let deps = null, depsAt = 0, selected = null, depsLoading = false, depsOpen = false;   /* depsOpen: the destination list is folded until its label is tapped */
 let mode = null;                       /* in flight only: null (a picked destination) | 'hold' | 'stop' | 'coast' */
 let thrustG = 3;                       /* the slider value (game g); the server decides if it is allowed */
 let thrustBox = null, thrustIn = null, thrustTxt = null, thrustArea = null, loadTimer = null;
@@ -269,6 +269,8 @@ $('zInner').onclick = () => map.preset('inner');
 $('zSys').onclick = () => map.preset('sys');
 $('zShip').onclick = () => map.preset('ship');
 
+function showDeps() { $('deps').hidden = !depsOpen; $('depscaret').textContent = depsOpen ? '-' : '+'; }
+$('depshead').onclick = () => { depsOpen = !depsOpen; showDeps(); };
 addScreen('travel', 'Fly', $('scr-travel'), {
   onShow: () => { map.resize(); map.need(); sizeThrust(); },
   update: ship => {
