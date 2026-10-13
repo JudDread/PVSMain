@@ -112,20 +112,20 @@ function untilFull(i) {
   if (i.rate > 0) return clock((i.mx - i.v) / i.rate * 3600 / S.last.scale) + ' until full';
   return '--:-- until full';
 }
+const CR = 'Cr ';   // the credits sign shown in front of the credits number
 // The top bars: credits, XP (with level), endurance, and the profile circle. Display only; called from setShipLine every second.
 function setBars() {
   const ch = S.last && S.last.character, p = S.last && S.last.pilot;
-  $('money').textContent = ch ? money(ch.credits) : '';
+  $('money').textContent = ch ? CR + whole(ch.credits) : '';
   $('pic').textContent = ch && ch.name ? String(ch.name).trim().charAt(0).toUpperCase() : '?';
   if (!p) return;
   const xp = Number(p.xp), start = Number(p.xp_level_start), next = p.xp_next == null ? null : Number(p.xp_next);
-  $('lvl').textContent = 'Lv ' + p.level;
-  $('xpnum').textContent = next == null ? whole(xp) + ' (top level)' : whole(xp) + ' / ' + whole(next);
+  $('lvl').textContent = String(p.level);
+  $('xpnum').textContent = next == null ? 'XP ' + whole(xp) + ' (top)' : 'XP ' + whole(xp) + ' / ' + whole(next);
   $('xpfill').style.width = (next == null ? 100 : Math.max(0, Math.min(100, (xp - start) / (next - start) * 100))) + '%';
   const i = enduranceInfo(); if (!i) return;
-  $('ennum').textContent = Math.round(i.v) + ' / ' + Math.round(i.mx);
+  $('ennum').textContent = S.enTimer ? untilFull(i) : 'END ' + Math.round(i.v) + ' / ' + Math.round(i.mx);   /* tap the endurance bar: the time until full replaces the numbers */
   $('enfill').style.width = Math.max(0, Math.min(100, i.v / i.mx * 100)) + '%';
-  $('entext').textContent = S.enTimer ? untilFull(i) : '';
 }
 // The ship line (hull, place or thrust). Credits and endurance now live in the bars.
 export function setShipLine() {
