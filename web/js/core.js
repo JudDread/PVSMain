@@ -23,6 +23,12 @@ export function curGd() { return S.last ? S.last.game_days + (nowMs() - S.last.r
 /* ---------- screen registry: add a screen = a div + addScreen(...) ---------- */
 export const screens = {};
 export function addScreen(name, title, el, hooks) { screens[name] = { title, el, ...(hooks || {}) }; }
+/* tab icons: small line drawings (no picture files needed), keyed by screen name; they take the colour of the button text */
+const ICONS = {
+  travel: '<svg viewBox="0 0 24 24"><path d="M12 2c3 3 4 7 4 11l3 4-4 .5L12 21l-3-3.5-4-.5 3-4c0-4 1-8 4-11z"/><circle cx="12" cy="9.5" r="1.6"/></svg>',
+  market: '<svg viewBox="0 0 24 24"><path d="M3 21h18M6 21v-7M11 21V8M16 21v-9M21 21V5"/><path d="M3 11l5-4 4 2 8-6"/></svg>',
+  assets: '<svg viewBox="0 0 24 24"><path d="M3 7.5l9-5 9 5v9l-9 5-9-5z"/><path d="M3 7.5l9 5 9-5M12 12.5v9"/></svg>',
+};
 export function openScreen(name) {
   S.current = name;
   Object.entries(screens).forEach(([n, s]) => s.el.hidden = n !== name);
@@ -30,7 +36,9 @@ export function openScreen(name) {
   const tabs = Object.entries(screens).filter(([n, s]) => !s.noTab);   /* noTab: a screen reached another way (the profile circle) */
   nav.hidden = tabs.length < 2;
   tabs.forEach(([n, s]) => {
-    const b = document.createElement('button'); b.textContent = s.title;
+    const b = document.createElement('button');
+    if (ICONS[n]) { b.innerHTML = ICONS[n]; b.appendChild(el('span', '', s.title)); } else b.textContent = s.title;
+    b.title = s.title; b.setAttribute('aria-label', s.title);
     b.className = n === name ? 'on' : 'alt'; b.onclick = () => openScreen(n); nav.appendChild(b);
   });
   if (screens[name].onShow) screens[name].onShow();
