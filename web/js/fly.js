@@ -57,8 +57,7 @@ function sizeThrust() {
 }
 function drawThrust() {
   if (!thrustBox) return;
-  const free = thrustG <= (deps && deps.free_g != null ? deps.free_g : 3);
-  thrustTxt.innerHTML = thrustG.toFixed(1) + ' g<br>' + (free ? 'free' : 'pulses');
+  thrustTxt.textContent = String(+thrustG.toFixed(1)) + ' g';          /* 6 g, 4.5 g */
   thrustIn.value = String(thrustG);
 }
 
