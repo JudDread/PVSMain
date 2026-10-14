@@ -323,7 +323,30 @@ export async function tradeAt(db, user, body) {
   await resolveFor(db, ch.id);
   const { data, error } = await db.rpc('trade_market', { p_character: ch.id, p_location: loc, p_kind: kind, p_good: good, p_quantity: qty, p_stack: stack });
   if (error) throw error;
+  if (data && data.ok) await tradeEvent(db, ch.id, loc, good, kind, stack, data);
   return json(data, data && data.ok ? 200 : 400);
+}
+
+// One short line in event_log for a finished trade (shows in the event line). Never stops the trade:
+// any problem here is swallowed, the trade is already done.
+async function tradeEvent(db, characterId, loc, good, kind, stack, data) {
+  try {
+    const [{ data: g }, { data: l }] = await Promise.all([
+      db.from('goods').select('name').eq('id', good).maybeSingle(),
+      db.from('locations').select('name').eq('id', loc).maybeSingle(),
+    ]);
+    const qty = Number(data.quantity);
+    const total = Math.round(Number(data.total)).toLocaleString('en-US');
+    const what = qty.toLocaleString('en-US') + ' ' + ((g && g.name) || good);
+    const where = (l && l.name) || loc;
+    const message = kind === 'buy'
+      ? 'Bought ' + what + ' at ' + where + ' for ' + total + ' Cr (to ' + (stack === 'cargo' ? 'hold' : 'storage') + ')'
+      : 'Sold ' + what + ' at ' + where + ' for ' + total + ' Cr';
+    await db.from('event_log').insert({
+      character_id: characterId, kind: 'trade', message,
+      data: { good, location: loc, kind, stack, quantity: qty, total: Number(data.total) },
+    });
+  } catch (_) { /* ignore */ }
 }
 
 // "quote": body = { location, kind: 'buy'|'sell', good, quantity (0 = just the maximum), stack: 'storage'|'cargo' }.
