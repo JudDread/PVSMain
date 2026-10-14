@@ -3,7 +3,7 @@
 // A moon shows its planet large and dim with the moon in front; a place at a small body (Vesta, Ceres) shows a small rocky disc;
 // 'All locations' shows a few small bodies.
 // If the place has its own picture (web/img/places/<place id>_label.webp, e.g. earth_label.webp, luna_label.webp) that is shown
-// instead; until that file exists the drawn picture shows. Display only.
+// instead; until that file exists the drawn picture shows. 'All locations' uses web/img/places/all_label.webp. Display only.
 import { BODIES } from 'physics';
 import { S } from 'core';
 
@@ -63,8 +63,9 @@ export function placeBackdrop(id) {
   const drawn = `url("data:image/svg+xml,${encodeURIComponent(svg)}") center / cover no-repeat #0b1020`;
   /* layers, top to bottom: a soft dark fade on the left (so the name stays readable), the place's own picture, the drawn picture.
      A picture file that does not exist paints nothing, so the drawn one shows through. */
-  const css = loc && /^[a-z0-9_]+$/.test(key)
-    ? `linear-gradient(90deg, rgba(7,10,18,.55), rgba(7,10,18,0) 65%), url("${IMG_DIR}${key}_label.webp") center / cover no-repeat, ${drawn}`
+  const own = loc && /^[a-z0-9_]+$/.test(key) ? key : (!loc && (key === '' || key.toUpperCase() === 'ALL') ? 'all' : null);
+  const css = own
+    ? `linear-gradient(90deg, rgba(7,10,18,.55), rgba(7,10,18,0) 65%), url("${IMG_DIR}${own}_label.webp") center / cover no-repeat, ${drawn}`
     : drawn;
   cache.set(ck, css);
   return css;
