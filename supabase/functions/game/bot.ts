@@ -18,6 +18,9 @@
 //      with the most profit per game day of flight, BUY (trade_market), write the bot_trips row,
 //      launch the flight (a scheduled_actions row + the ship's plan, the same as queue_travel).
 // Arrival (docking) is done by the existing resolver (pg_cron, every minute).
+// Turn guard (042): SQL bot_claim_tick will not start a turn while the last one runs (busy mark, released in
+// botTick's finally). Every change to a bot_trips row also says status = 'flying', so a late turn can never
+// overwrite a trip another turn has already closed.
 // Bots fly at the default 3 g (no endurance used): they measure a player who never pushes the thrust.
 // Money rule: this file never changes credits itself; only trade_market does (and it logs them).
 // Imports only physics_bundle.ts and common.ts (no circular imports).
@@ -43,7 +46,16 @@ export async function botTick(db) {
   const { data: cfg, error: ce } = await db.rpc('bot_claim_tick', { p_now_ms: t0 });
   if (ce) throw ce;
   if (!cfg) return null;
+  try {
+    return await botTurn(db, cfg, t0);
+  } finally {
+    // lets the next turn start (SQL also frees the mark by itself after busy_max_s seconds)
+    const rel = await db.rpc('bot_release_tick', {});
+    if (rel.error) console.error('bot release failed', rel.error);
+  }
+}
 
+async function botTurn(db, cfg, t0) {
   const nowT = gameDaysAt(t0);
   const maxN = Math.max(1, Math.floor(Number(cfg.max_per_tick) || 10));
   const g = Number(cfg.g) || 3;
@@ -128,20 +140,20 @@ async function runBot(db, bot, ship, trip, locById, memo, nowT, g, sum) {
         const r = await trade(db, bot.id, here.id, 'sell', trip.good_id, c.quantity);
         if (r && r.ok) {
           const revenue = Number(r.total);
-          const { error } = await db.from('bot_trips').update({ revenue, profit: Math.round((revenue - Number(trip.cost)) * 100) / 100, finished_t: nowT, status: 'sold' }).eq('id', trip.id);
+          const { error } = await db.from('bot_trips').update({ revenue, profit: Math.round((revenue - Number(trip.cost)) * 100) / 100, finished_t: nowT, status: 'sold' }).eq('id', trip.id).eq('status', 'flying');
           if (error) throw error;
           sum.sold++;
         } else {
-          await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { ...(trip.note ?? {}), sell_failed: r && r.error } }).eq('id', trip.id);
+          await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { ...(trip.note ?? {}), sell_failed: r && r.error } }).eq('id', trip.id).eq('status', 'flying');
           sum.failed_trips++;
         }
       } else {
-        await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { ...(trip.note ?? {}), problem: 'no_cargo' } }).eq('id', trip.id);
+        await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { ...(trip.note ?? {}), problem: 'no_cargo' } }).eq('id', trip.id).eq('status', 'flying');
         sum.failed_trips++;
       }
     } else {
       // docked somewhere else than planned (should not happen): close the trip, the goods are dumped below
-      await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { ...(trip.note ?? {}), problem: 'docked_elsewhere' } }).eq('id', trip.id);
+      await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { ...(trip.note ?? {}), problem: 'docked_elsewhere' } }).eq('id', trip.id).eq('status', 'flying');
       sum.failed_trips++;
     }
   }
@@ -187,7 +199,7 @@ async function runBot(db, bot, ship, trip, locById, memo, nowT, g, sum) {
     resolve_at: new Date(realMsAt(r.arriveT)).toISOString(),
   }).select('id').single();
   if (ae) {
-    await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { problem: 'launch_failed' } }).eq('id', row.id);
+    await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { problem: 'launch_failed' } }).eq('id', row.id).eq('status', 'flying');
     throw ae;
   }
   const { error: se } = await db.from('ships')
@@ -195,7 +207,7 @@ async function runBot(db, bot, ship, trip, locById, memo, nowT, g, sum) {
     .eq('id', ship.id).eq('state', 'docked');
   if (se) {
     await db.from('scheduled_actions').update({ status: 'failed' }).eq('id', action.id);
-    await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { problem: 'launch_failed' } }).eq('id', row.id);
+    await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { problem: 'launch_failed' } }).eq('id', row.id).eq('status', 'flying');
     throw se;
   }
 }
