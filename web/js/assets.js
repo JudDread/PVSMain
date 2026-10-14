@@ -3,6 +3,7 @@
 // Display only: the server decides everything. Data: 'storage', 'freight_mine', 'freight_hauling'.
 // Creates its own screen block (#scr-assets) and the "Hire hauler" pop-up (#ahire), so index.html needs only the import-map line.
 import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc, hullName } from 'core';
+import { applyBackdrop } from 'backdrop';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
 
@@ -16,20 +17,20 @@ let abusy = false, aEdited = false, aRedraw = false, aconfirm = false;
 
 /* ---------- screen block + styles (written here so index.html does not change) ---------- */
 const scr = document.createElement('div'); scr.id = 'scr-assets'; scr.hidden = true;
-const aselect = document.createElement('select'); aselect.id = 'aloc'; aselect.setAttribute('aria-label', 'Choose a place');
-const ainfo = el('div', 'muted'); ainfo.id = 'ainfo';
+const aselect = document.createElement('select'); aselect.id = 'aloc'; aselect.className = 'locsel'; aselect.setAttribute('aria-label', 'Choose a place');   // same look as the Market selector (.locsel in index.html)
 const abody = el('div', 'muted', 'Loading...'); abody.id = 'abody';
-scr.append(el('h2', '', 'Assets'), aselect, ainfo, el('div', 'muted hint', 'Tap a row for its buttons.'), abody);
+scr.append(aselect, abody);
 $('scr-market').after(scr);
 
 (() => {
   const st = document.createElement('style');
   st.textContent = [
-    '#aloc { width: 100%; font-size: 16px; padding: 10px; margin: 4px 0; }',
     '#abody .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; }',
     '#abody .sub { line-height: 1.15 !important; }',
     '#abody .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; }',
     '#abody .sech button { padding: 2px 10px !important; min-height: 0 !important; }',
+    '#abody .sech button.ub { background: #e8b64a !important; color: #14100a !important; border: 0 !important; border-radius: 6px !important; font-weight: 700 !important; padding: 5px 14px !important; }',
+    '#abody .sech button.ub:disabled { opacity: .45; }',
     '#abody .msec + .msec { margin-top: 14px !important; }',
     '#ahire { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }',
     '#ahire .abox { background: #131a2a; border: 2px solid #e8b64a; border-radius: 10px; padding: 12px; width: 100%; max-width: 420px; max-height: 92%; overflow-y: auto; box-sizing: border-box; }',
@@ -201,6 +202,7 @@ function drawLocBox() {
     aselect.dataset.sig = sig;
   }
   if (aselect.value !== aloc && document.activeElement !== aselect) aselect.value = aloc;
+  applyBackdrop(aselect, aloc);          /* the picture behind the selector follows the chosen place */
 }
 function section(parent, key, title, count, btn, drawBody) {
   const k = aloc + ':' + key, open = secOpen[k] !== false;
@@ -229,7 +231,6 @@ function drawAssets() {
   if (!aloc) return;
   const body = abody; body.replaceChildren();
   drawLocBox();
-  ainfo.textContent = 'Credits ' + money((S.last && S.last.character) ? S.last.character.credits : 0) + (stAll ? '   |   Hold ' + r2(stAll.hold_used) + ' / ' + r2(stAll.hold_size) : '');
   if (!stAll || !fm || !fh) { body.appendChild(el('div', 'muted pad', 'Loading...')); return; }
   if (asel && (asel.loc !== aloc || !curRow())) { asel = null; aEdited = false; aconfirm = false; }
 
@@ -258,7 +259,7 @@ function drawAssets() {
   if ((here || moving) && (cargo.length || hf.length)) {
     shown++;
     let ub = null;
-    if (here && cargo.length) { ub = el('button', 'alt', 'Unload all'); ub.disabled = abusy; ub.onclick = doUnloadAll; }
+    if (here && cargo.length) { ub = el('button', 'ub', 'Unload all'); ub.disabled = abusy; ub.onclick = doUnloadAll; }
     section(body, 'hold', 'Hold ' + r2(stAll.hold_used) + ' / ' + r2(stAll.hold_size) + (moving ? ', travelling' : ''), cargo.length + hf.length, ub, box => {
       cargo.forEach(x => stackRow(box, 'cargo', x, here));
       hf.forEach(b => {
