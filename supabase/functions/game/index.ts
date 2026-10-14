@@ -11,6 +11,7 @@ import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tra
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard } from './ships.ts';
 import { courseOptions, courseChange } from './course.ts';
+import { kickBots } from './bot.ts';
 
 // ---------- server ----------
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
@@ -226,7 +227,7 @@ Deno.serve(async (req) => {
   try {
     await loadClock(db);
     switch (body.action) {
-      case 'me': return await me(db, user);
+      case 'me': kickBots(db); return await me(db, user); // bots take a turn in the background (bot.ts)
       case 'create_character': return await createCharacter(db, user, body);
       case 'queue_travel': return await queueTravel(db, user, body);
       case 'departures': return await departures(db, user, body);
