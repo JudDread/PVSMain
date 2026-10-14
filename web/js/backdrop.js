@@ -1,12 +1,15 @@
 // backdrop.js - the picture behind a place selector (Market, Assets). Drawn in code as a small SVG: no picture files, free.
 // A starfield (always the same stars for the same place) plus the body the place belongs to, in its own colour.
 // A moon shows its planet large and dim with the moon in front; a place at a small body (Vesta, Ceres) shows a small rocky disc;
-// 'All locations' shows a few small bodies. Display only.
+// 'All locations' shows a few small bodies.
+// If the place has its own picture (web/img/places/<place id>_label.webp, e.g. earth_label.webp, luna_label.webp) that is shown
+// instead; until that file exists the drawn picture shows. Display only.
 import { BODIES } from 'physics';
 import { S } from 'core';
 
 const GAS = ['Jupiter', 'Saturn', 'Uranus', 'Neptune'];
 const SMALL = ['Vesta', 'Ceres'];
+const IMG_DIR = './img/places/';   /* the place pictures, next to index.html */
 const cache = new Map();
 
 function rng(seed) {                       /* tiny seeded random numbers: the same place always gets the same stars */
@@ -57,7 +60,12 @@ export function placeBackdrop(id) {
     svg += disc(1, 395, 72, 74, color, { bands: gas, ring });
   }
   svg += '<rect width="500" height="100" fill="url(#fade)"/></svg>';
-  const css = `url("data:image/svg+xml,${encodeURIComponent(svg)}") center / cover no-repeat #0b1020`;
+  const drawn = `url("data:image/svg+xml,${encodeURIComponent(svg)}") center / cover no-repeat #0b1020`;
+  /* layers, top to bottom: a soft dark fade on the left (so the name stays readable), the place's own picture, the drawn picture.
+     A picture file that does not exist paints nothing, so the drawn one shows through. */
+  const css = loc && /^[a-z0-9_]+$/.test(key)
+    ? `linear-gradient(90deg, rgba(7,10,18,.55), rgba(7,10,18,0) 65%), url("${IMG_DIR}${key}_label.webp") center / cover no-repeat, ${drawn}`
+    : drawn;
   cache.set(ck, css);
   return css;
 }
