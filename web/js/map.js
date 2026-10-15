@@ -77,7 +77,7 @@ export function createMap(cv, hooks) {
     const X = x => w / 2 + (x - view.cx) * view.s, Y = y => h / 2 - (y - view.cy) * view.s;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);   /* transparent: the star-scape picture is the CSS background of #map (index.html); dark if the file is missing */
-    ctx.lineWidth = 1; ctx.strokeStyle = '#1d2740';
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(179,157,219,0.6)';   /* orbit circles: light purple (the .6 is how strong; 1 = full) */
     BODIES.forEach(b => {
       if (!b.a) return; const r = b.a * view.s; if (r > 2e5) return;
       ctx.beginPath(); ctx.arc(X(0), Y(0), r, 0, 7); ctx.stroke();
