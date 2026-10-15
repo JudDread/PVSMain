@@ -2,7 +2,7 @@
 // Sections (each hides when empty): Hold -> Stored here -> Freight (contracts I posted, at their pickup).
 // Display only: the server decides everything. Data: 'storage', 'freight_mine', 'freight_hauling'.
 // Creates its own screen block (#scr-assets) and the "Hire hauler" pop-up (#ahire), so index.html needs only the import-map line.
-import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc, hullName } from 'core';
+import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc, hullName, createPicker } from 'core';
 import { applyBackdrop } from 'backdrop';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
@@ -17,9 +17,9 @@ let abusy = false, aEdited = false, aRedraw = false, aconfirm = false;
 
 /* ---------- screen block + styles (written here so index.html does not change) ---------- */
 const scr = document.createElement('div'); scr.id = 'scr-assets'; scr.hidden = true;
-const aselect = document.createElement('select'); aselect.id = 'aloc'; aselect.className = 'locsel'; aselect.setAttribute('aria-label', 'Choose a place');   // same look as the Market selector (.locsel in index.html)
+const apick = createPicker(v => { aloc = v; asel = null; aEdited = false; aconfirm = false; drawAssets(); });   // the place picker (same look as Market, .lp* in index.html)
 const abody = el('div', 'muted', 'Loading...'); abody.id = 'abody';
-scr.append(aselect, abody);
+scr.append(apick.root, abody);
 $('scr-market').after(scr);
 
 (() => {
@@ -196,13 +196,8 @@ function drawLocBox() {
   if (dockedAt()) ids.add(dockedAt());
   if (aloc) ids.add(aloc);
   const list = [...ids].sort((a, b) => locName(a).localeCompare(locName(b))), dl = dockedAt();
-  const sig = list.map(i => i + (dl === i ? '*' : '')).join(';');
-  if (aselect.dataset.sig !== sig) {
-    aselect.replaceChildren(...list.map(id => { const o = document.createElement('option'); o.value = id; o.textContent = locName(id) + (dl === id ? ' (ship here)' : ''); return o; }));
-    aselect.dataset.sig = sig;
-  }
-  if (aselect.value !== aloc && document.activeElement !== aselect) aselect.value = aloc;
-  applyBackdrop(aselect, aloc);          /* the picture behind the selector follows the chosen place */
+  apick.set(list.map(id => [id, locName(id), dl === id ? 'ship here' : '']), aloc);
+  applyBackdrop(apick.btn, aloc);        /* the picture behind the box follows the chosen place */
 }
 function section(parent, key, title, count, btn, drawBody) {
   const k = aloc + ':' + key, open = secOpen[k] !== false;
@@ -480,7 +475,6 @@ hire.bp.onclick = async () => {
 };
 
 /* ---------- wiring ---------- */
-aselect.onchange = () => { aloc = aselect.value; asel = null; aEdited = false; aconfirm = false; drawAssets(); };
 addScreen('assets', 'Assets', scr, {
   onShow: () => { adock = dockedAt(); if (!aloc) aloc = defaultLoc(); refreshAssets(); drawAssets(); },
   update: ship => {
