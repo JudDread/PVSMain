@@ -27,7 +27,7 @@ button:disabled{opacity:.45}
 /* travel screen: portrait = stacked, landscape = map beside list */
 .travel{display:flex;flex-direction:column;gap:8px}
 .mapwrap{position:relative;height:55vh;min-height:260px}
-#map{width:100%;height:100%;display:block;touch-action:none;background:#070a12;border:1px solid #222b40;border-radius:8px}
+#map{width:100%;height:100%;display:block;touch-action:none;background:linear-gradient(rgba(7,10,18,.3),rgba(7,10,18,.3)),#070a12 url(img/starscape.webp) center/cover no-repeat;border:1px solid #222b40;border-radius:8px}   /* star-scape picture; the .3 is how much it is dimmed (0 = full picture, 1 = none) */
 .zb{position:absolute;top:6px;left:6px}
 .zb button{padding:4px 9px;font-size:13px;margin:0 4px 0 0;background:#2a3350cc;color:#e3e9f7;border:1px solid #444f70}
 .side{display:flex;flex-direction:column;min-width:0}
@@ -90,7 +90,18 @@ button:disabled{opacity:.45}
 .srow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px;padding:8px;border-top:1px solid #1c2438}
 .srow .chips{display:flex;align-items:center;gap:4px}
 .srow .chips button{margin:2px 0}
+/* place picker (Market, Assets): the big picture box above (.locsel) opens a list of plain rows (no pictures); built by createPicker in core.js */
+.lp{margin:0 0 8px}
 .locsel{width:100%;height:138px;box-sizing:border-box;font-size:28px;font-weight:800;padding:10px 18px;margin:0 0 8px;text-align:left;color:#f3d28a;text-shadow:0 2px 6px #000,0 0 3px #000;background:linear-gradient(135deg,#1a2338,#0f1523);border:1px solid #333d57;border-radius:10px}   /* the place selector (Market, Assets); backdrop.js draws the picture */
+.lp .locsel{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0}   /* the big box is now a button: title left, tag + arrow right */
+.lpname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lpside{display:flex;align-items:center;gap:10px;flex:none}
+.lpcaret{color:#e3e9f7;font-size:22px}
+.lptag{color:#6be08f;font-size:12px;font-weight:600;white-space:nowrap}
+.lplist{margin:4px 0 0;background:#0f1523;border:1px solid #222b40;border-radius:8px;max-height:min(50vh,360px);overflow-y:auto}
+.lprow{width:100%;margin:0;padding:12px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;font-size:16px;font-weight:600;color:#e3e9f7;background:transparent;border:0;border-bottom:1px solid #1c2438;border-radius:0}
+.lprow:last-child{border-bottom:0}
+.lprow.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
 .msec{border:1px solid #222b40;border-radius:6px;margin:6px 0;overflow:hidden}
 .sech,.locg{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#0f1523;color:#e8b64a;padding:8px;min-height:40px;cursor:pointer}
 .locg{background:#1a2338;border:1px solid #222b40;border-radius:6px;margin:6px 0}
@@ -196,7 +207,7 @@ button:disabled{opacity:.45}
 
     <!-- SCREEN: market (goods in markets, in storage and in the hold; trade from anywhere) -->
     <div id="scr-market" hidden>
-      <select id="mloc" class="locsel" aria-label="Choose a place"></select>
+      <div id="mloc"></div>
       <div id="mbody" class="muted">Loading...</div>
     </div>
 
