@@ -1,5 +1,5 @@
 // market.js - the Market screen (goods in markets, in storage and in the hold). Display only: the server decides every trade.
-import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine } from 'core';
+import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine, createPicker } from 'core';
 import { applyBackdrop } from 'backdrop';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
@@ -334,15 +334,9 @@ function placePop(d, kind, it) {
 
 /* ---- drawing ---- */
 function drawLocBox() {
-  const s = $('mloc'), ids = placeIds(), dl = dockedAt();
-  const opts = [['ALL', 'All locations'], ...ids.map(id => [id, locName(id) + (dl === id ? ' (ship here)' : '')])];
-  const sig = opts.map(o => o.join('|')).join(';');
-  if (s.dataset.sig !== sig) {
-    s.replaceChildren(...opts.map(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; return o; }));
-    s.dataset.sig = sig;
-  }
-  if (s.value !== mloc && document.activeElement !== s) s.value = mloc;
-  applyBackdrop(s, mloc);               /* the picture behind the selector follows the chosen place */
+  const ids = placeIds(), dl = dockedAt();
+  mpick.set([['ALL', 'All locations'], ...ids.map(id => [id, locName(id), dl === id ? 'ship here' : ''])], mloc);
+  applyBackdrop(mpick.btn, mloc);       /* the picture behind the box follows the chosen place */
 }
 function section(parent, loc, key, title, count, btn, drawBody, defOpen) {
   const k = loc + ':' + key, open = secOpen[k] !== undefined ? secOpen[k] : defOpen !== false;   /* defOpen: how it starts until you tap it */
@@ -580,11 +574,12 @@ async function doUnloadAll() {
   finally { mbusy = false; refreshMarket(); }
 }
 
-$('mloc').onchange = () => {
-  mloc = $('mloc').value; applyBackdrop($('mloc'), mloc); msel = null; dd = null; mEdited = false; frSel = null;
+const mpick = createPicker(v => {   /* the place picker (button list) goes into the #mloc box in index.html */
+  mloc = v; msel = null; dd = null; mEdited = false; frSel = null;
   if (mloc === 'ALL') refreshMarket(); else { mAt = Date.now(); loadLoc(mloc); }
   drawMarket();
-};
+});
+$('mloc').appendChild(mpick.root);
 addScreen('market', 'Market', $('scr-market'), {
   onShow: () => { mdock = dockedAt(); if (!mloc) mloc = defaultLoc(); refreshMarket(); drawMarket(); },
   update: ship => {
