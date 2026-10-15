@@ -156,3 +156,45 @@ export function defaultLoc() {
   const a = ((S.last && S.last.actions) || []).find(x => x.status === 'pending');
   return (a && a.payload && a.payload.from) || 'luna';
 }
+
+/* ---------- place picker: replaces the plain drop-down on Market and Assets ----------
+   The big box (btn, class 'locsel') keeps its title and label picture: the caller draws the picture on btn with applyBackdrop(btn, place).
+   Tapping it opens a list of plain button rows (no pictures).
+   createPicker(onPick, label) -> { root, btn, set(options, current) }
+   options = [[value, text, tag], ...] (tag is optional, e.g. 'ship here'); onPick(value) runs when a row is tapped.
+   The list opens under the big button and closes again when a row is tapped or you tap anywhere else.
+   Redraws while the list is open do not close it. Display only. */
+export function createPicker(onPick, label) {
+  const root = el('div', 'lp'), btn = el('button', 'locsel'), name = el('span', 'lpname'), side = el('span', 'lpside'), list = el('div', 'lplist');
+  btn.type = 'button'; btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false'); btn.setAttribute('aria-label', label || 'Choose a place');
+  list.hidden = true; list.setAttribute('role', 'listbox');
+  btn.append(name, side); root.append(btn, list);
+  let opts = [], value = null, sig = null;
+  const paint = () => {
+    const cur = opts.find(o => o[0] === value);
+    name.textContent = cur ? cur[1] : 'Choose a place';
+    side.replaceChildren();
+    if (cur && cur[2]) side.appendChild(el('span', 'lptag', cur[2]));
+    side.appendChild(el('span', 'lpcaret', list.hidden ? '\u25BE' : '\u25B4'));
+    [...list.children].forEach(b => { const on = b.dataset.v === value; b.classList.toggle('sel', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
+  };
+  const shut = () => { list.hidden = true; btn.setAttribute('aria-expanded', 'false'); paint(); };
+  btn.onclick = () => { list.hidden = !list.hidden; btn.setAttribute('aria-expanded', list.hidden ? 'false' : 'true'); paint(); };
+  document.addEventListener('pointerdown', e => { if (!list.hidden && !root.contains(e.target)) shut(); });
+  return {
+    root, btn,
+    set(newOpts, cur) {
+      const s = newOpts.map(o => o.join('|')).join(';');
+      if (s !== sig) {   /* rebuild the rows only when the places (or their tags) changed */
+        sig = s; opts = newOpts;
+        list.replaceChildren(...opts.map(o => {
+          const b = el('button', 'lprow'); b.type = 'button'; b.dataset.v = o[0]; b.setAttribute('role', 'option');
+          b.appendChild(el('span', '', o[1])); if (o[2]) b.appendChild(el('span', 'lptag', o[2]));
+          b.onclick = () => { value = o[0]; shut(); onPick(o[0]); };
+          return b;
+        }));
+      }
+      value = cur; paint();
+    },
+  };
+}
