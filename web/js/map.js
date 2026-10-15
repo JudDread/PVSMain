@@ -76,7 +76,7 @@ export function createMap(cv, hooks) {
     if (view.follow && sp) { view.cx = sp.x; view.cy = sp.y; }
     const X = x => w / 2 + (x - view.cx) * view.s, Y = y => h / 2 - (y - view.cy) * view.s;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = '#070a12'; ctx.fillRect(0, 0, w, h);
+    ctx.clearRect(0, 0, w, h);   /* transparent: the star-scape picture is the CSS background of #map (index.html); dark if the file is missing */
     ctx.lineWidth = 1; ctx.strokeStyle = '#1d2740';
     BODIES.forEach(b => {
       if (!b.a) return; const r = b.a * view.s; if (r > 2e5) return;
