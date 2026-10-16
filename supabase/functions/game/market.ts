@@ -6,6 +6,14 @@
 import { CLOCK, gameDaysAt } from './physics_bundle.ts';
 import { json, getCharacter, getLocation, resolveFor, getShip, loadCargo, storageAt, estimateTrip, LOC_RE, r2s } from './common.ts';
 
+// Node facts of ONE good at every place: { location_id: { role, base_supply } } (markets table, read-only).
+async function nodesOfGood(db, good) {
+  const { data, error } = await db.from('markets').select('location_id,role,base_supply').eq('good_id', good);
+  if (error) throw error;
+  const o = {}; for (const m of data ?? []) o[m.location_id] = { role: m.role, base_supply: Number(m.base_supply) };
+  return o;
+}
+
 // "routes": body = { good: 'water_ice', location?: 'luna' }. If I bought this good at the ORIGIN and flew to each other
 // place that trades it, what would I make? The origin is `location` when given (the market I am looking at), otherwise
 // the place my ship is docked at. Trips are measured from the ORIGIN (where the goods are). When my ship is not docked at
@@ -51,6 +59,7 @@ export async function routes(db, user, body) {
   // What the WHOLE load would sell for at every other place (price falls as you sell; no remote fee at destinations).
   const { data: lots, error: le2 } = await db.rpc('market_sell_lots', { p_character: ch.id, p_good: good, p_quantity: qty, p_origin: originId });
   if (le2) throw le2;
+  const nodes = await nodesOfGood(db, good);
   const departT = gameDaysAt(Date.now()), g = Number(ship.thrust_g), cache = {};
   const rows = [];
   for (const p of lots ?? []) {
@@ -65,6 +74,7 @@ export async function routes(db, user, body) {
     rows.push({
       location_id: p.location_id, name: p.location_name, anchor_body: to.anchor_body,
       sell_price: Number(p.avg_price), stock: r2(Number(p.stock)), target_stock: r2(Number(p.target_stock)),
+      role: nodes[p.location_id] ? nodes[p.location_id].role : null, base_supply: nodes[p.location_id] ? nodes[p.location_id].base_supply : null,
       eta_real_minutes: etaMin, sun_danger: est.sun_danger,
       profit_each: unit, profit_load: total, ppm: etaMin > 0 ? r2(total / etaMin) : 0,
     });
@@ -81,7 +91,7 @@ export async function routes(db, user, body) {
 // Cost = what I paid (avg_cost) when known, so profit is real. If the cost is unknown (bought before
 // migration 009) cost_known is false and the figures are INCOME (sell price x quantity), not profit.
 // The place I am docked at is included (is_here, no travel time, ppm null). Uses today's prices and ETA.
-async function cargoOptions(db, ch, ship, from, locs, c, cache, departT) {
+async function cargoOptions(db, ch, ship, from, locs, c, cache, departT, nodes) {
   const qty = Math.floor(Number(c.quantity));
   if (!(qty >= 1)) return [];
   // price of the WHOLE stack at every place that trades it (the place where the goods are carries the remote fee if the ship is not docked there)
@@ -105,6 +115,7 @@ async function cargoOptions(db, ch, ship, from, locs, c, cache, departT) {
     rows.push({
       location_id: p.location_id, name: p.location_name, anchor_body: to.anchor_body, is_here: here,
       sell_price: sell, stock: r2s(Number(p.stock)), target_stock: r2s(Number(p.target_stock)),
+      role: nodes && nodes[p.location_id] ? nodes[p.location_id].role : null, base_supply: nodes && nodes[p.location_id] ? nodes[p.location_id].base_supply : null,
       eta_real_minutes: etaMin, sun_danger: sun, profit_each: each, profit_total: total,
       ppm: here ? null : (etaMin > 0 ? r2s(total / etaMin) : 0),
     });
@@ -173,7 +184,7 @@ export async function cargoDest(db, user, body) {
   if (x.resp) return x.resp;
   const c = x.cargo.find(k => k.good_id === good);
   if (!c) return json({ error: x.source === 'storage' ? 'not_in_storage' : 'not_in_cargo' }, 400);
-  const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT);
+  const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT, await nodesOfGood(db, good));
   rows.sort((p, q) => (p.is_here ? -1 : q.is_here ? 1 : q.ppm - p.ppm));
   return json({ ok: true, docked: x.docked, source: x.source, location_id: x.from.id, remote: x.remote, good_id: good, name: c.name, unit: c.unit,
     quantity: c.quantity, avg_cost: c.avg_cost, cost_known: c.avg_cost != null, rows });
@@ -270,6 +281,14 @@ export async function marketAt(db, user, body) {
       const b = bestOf[g.good_id];
       if (b) { g.role = b.role; g.best_id = b.best_id; g.best_name = b.best_name; g.best_price = b.best_price == null ? null : Number(b.best_price); }
     }
+  }
+
+  // node size (markets.base_supply) of every good at this place, for the '(size)' under the stock number
+  {
+    const { data: nd, error: ndErr } = await db.from('markets').select('good_id,base_supply').eq('location_id', locId);
+    if (ndErr) console.error('node sizes failed', ndErr);
+    const sizeOf = {}; for (const m of nd ?? []) sizeOf[m.good_id] = Number(m.base_supply);
+    for (const g of goods) g.base_supply = sizeOf[g.good_id] == null ? null : sizeOf[g.good_id];
   }
 
   // my storage at this location
