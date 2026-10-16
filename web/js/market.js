@@ -158,10 +158,10 @@ async function loadDD() {
   } catch (e) { if (dd === me) me.data = { error: e.message }; }
   finally { ddBusy = false; drawMarket(); if (dd && dd !== me) loadDD(); }
 }
-// stock number, then the node size in brackets with P: (this place produces) or C: (this place consumes) in front
+// stock number, then stock as a percent of the node size in brackets, with P: (this place produces) or C: (this place consumes) in front
 function stockTag(x) {
-  if (x.base_supply == null) return whole(x.stock);
-  return whole(x.stock) + ' (' + (x.role === 'producer' ? 'P:' : x.role === 'consumer' ? 'C:' : '') + whole(x.base_supply) + ')';
+  if (!(x.base_supply > 0)) return whole(x.stock);
+  return whole(x.stock) + ' (' + (x.role === 'producer' ? 'P:' : x.role === 'consumer' ? 'C:' : '') + Math.round(100 * x.stock / x.base_supply) + '%)';
 }
 function ddBox() {
   const box = el('div', 'routes'), d = dd.data, md = mc[dd.loc] && mc[dd.loc].d;
