@@ -158,10 +158,15 @@ async function loadDD() {
   } catch (e) { if (dd === me) me.data = { error: e.message }; }
   finally { ddBusy = false; drawMarket(); if (dd && dd !== me) loadDD(); }
 }
+// stock number, then the node size in brackets with P: (this place produces) or C: (this place consumes) in front
+function stockTag(x) {
+  if (x.base_supply == null) return whole(x.stock);
+  return whole(x.stock) + ' (' + (x.role === 'producer' ? 'P:' : x.role === 'consumer' ? 'C:' : '') + whole(x.base_supply) + ')';
+}
 function ddBox() {
   const box = el('div', 'routes'), d = dd.data, md = mc[dd.loc] && mc[dd.loc].d;
   const close = () => box;   // no Close button: tap the row again to close (same as the buy/sell window)
-  const GRID = 'display:grid;grid-template-columns:minmax(0,1.3fr) repeat(4,minmax(0,1fr));column-gap:10px;align-items:start';
+  const GRID = 'display:grid;grid-template-columns:minmax(0,1.3fr) repeat(3,minmax(0,1fr));column-gap:10px;align-items:start';
   if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return close(); }
   if (d.error) { box.appendChild(el('div', 'err', d.error === 'no_market' ? 'This place does not trade that.' : 'Could not load: ' + d.error)); return close(); }
   if (d.docked === false && dd.kind === 'cargo') { box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.')); return close(); }
@@ -169,18 +174,16 @@ function ddBox() {
   if (dd.kind === 'goods') {
     const g = md && (md.goods || []).find(x => x.good_id === dd.good);
     const why = d.hypothetical && md ? buyBlockReason(md, g) : null;
-    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the load columns show N/A.'));
+    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the per-minute column shows N/A.'));
     if (!d.rows.length) { box.appendChild(el('div', 'muted', 'No other place trades this good.')); return close(); }
-    hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'),
-      el('span', 'num', d.hypothetical ? why : (md && md.hold_used > 0 ? 'For ' + whole(d.max_load) : 'Max load')), el('span', 'num', 'Per min'));
+    hd.append(el('span', '', 'Destination'), el('span', 'num', g && g.role === 'consumer' ? 'Buy from' : 'Sells to'), el('span', 'num', 'Each'), el('span', 'num', 'Per min'));
     box.appendChild(hd);
     d.rows.forEach(x => {
       const r = el('div', 'rrow'); r.style.cssText = GRID;
       r.append(
         cell('', x.name, 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
-        cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
+        cell('num', money(x.sell_price), stockTag(x)),
         cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-        d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.profit_load), sgn(x.profit_load)),
         d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
       box.appendChild(r);
     });
@@ -188,15 +191,14 @@ function ddBox() {
     return close();
   }
   if (!d.rows.length) { box.appendChild(el('div', 'muted', 'No place trades this good.')); return close(); }
-  hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells'), el('span', 'num', 'Each'), el('span', 'num', 'For ' + whole(d.quantity)), el('span', 'num', 'Per min'));
+  hd.append(el('span', '', 'Destination'), el('span', 'num', 'Sells to'), el('span', 'num', 'Each'), el('span', 'num', 'Per min'));
   box.appendChild(hd);
   d.rows.forEach(x => {
     const r = el('div', 'rrow'); r.style.cssText = GRID;
     r.append(
       cell('', x.is_here ? x.name + ' (here)' : x.name, x.is_here ? 'no travel' : 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
-      cell('num', money(x.sell_price), 'stock ' + whole(x.stock)),
+      cell('num', money(x.sell_price), stockTag(x)),
       cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-      cell('num ' + tone(x.profit_total), sgn(x.profit_total)),
       x.is_here ? cell('num muted', 'now') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
     box.appendChild(r);
   });
@@ -466,7 +468,7 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
       const r = el('div', 'mrow' + (sel ? ' sel' : '')); if (grid) r.style.gridTemplateColumns = grid;
       const cells = [cell('', g.name)];
       if (showBest) cells.push(g.best_name ? cell('num', g.best_name, money(g.best_price)) : cell('num muted', '-'));
-      cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock)));
+      cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), g.base_supply == null ? '' : '(' + whole(g.base_supply) + ')'));
       r.append(...cells);
       wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
       box.appendChild(r);
