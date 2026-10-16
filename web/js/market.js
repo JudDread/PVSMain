@@ -468,7 +468,7 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
       const r = el('div', 'mrow' + (sel ? ' sel' : '')); if (grid) r.style.gridTemplateColumns = grid;
       const cells = [cell('', g.name)];
       if (showBest) cells.push(g.best_name ? cell('num', g.best_name, money(g.best_price)) : cell('num muted', '-'));
-      cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), g.base_supply == null ? '' : '(' + whole(g.base_supply) + ')'));
+      cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), g.base_supply > 0 ? '(' + Math.round(100 * g.stock / g.base_supply) + '%)' : ''));
       r.append(...cells);
       wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
       box.appendChild(r);
