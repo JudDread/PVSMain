@@ -11,6 +11,7 @@ import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse, stopPlan, segm
 import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow } from 'core';
 import { createMap } from 'map';
 
+let reveal = false;                    /* true right after a line is tapped: scroll so the Launch button under it is in view */
 let deps = null, depsAt = 0, selected = null, depsLoading = false, depsOpen = false;   /* depsOpen: the destination list is folded until its label is tapped */
 let mode = null;                       /* in flight only: null (a picked destination) | 'hold' | 'stop' | 'coast' */
 let thrustG = 3;                       /* the slider value (game g); the server decides if it is allowed */
@@ -113,6 +114,7 @@ function selectedBody() {
 }
 function drawDeps() {
   const box = $('deps'), go = $('go');
+  const st = box.scrollTop;                                   /* keep the list where the finger left it */
   box.replaceChildren();
   const live = !!(deps && (deps.docked || deps.flying));
   if (thrustBox) thrustBox.hidden = !live;
@@ -126,6 +128,10 @@ function drawDeps() {
   if (!list.some(d => d.id === selected)) selected = null;
   const groups = {};
   list.forEach(d => (groups[d.anchor_body] = groups[d.anchor_body] || []).push(d));
+  const pick = list.find(d => d.id === selected);
+  const fresh = deps.g === thrustG;                           /* list matches the slider */
+  const label = (fl ? 'Confirm' : 'Launch') + (!pick ? '' : !fresh ? ' ...' : ' ' + fmt(pick.eta_real_minutes * 60));
+  let revealEl = null;
   Object.entries(groups)
     .sort((x, y) => x[1][0].eta_real_minutes - y[1][0].eta_real_minutes)
     .forEach(([, rows]) => {
@@ -140,15 +146,22 @@ function drawDeps() {
         if (d.pulsed) t += '  |  avg ' + d.g_avg.toFixed(1) + ' g';
         e.textContent = t;
         r.append(n, e);
-        r.onclick = () => { selected = d.id; mode = null; drawAll(); };
+        r.onclick = () => { selected = d.id; mode = null; reveal = true; drawAll(); };
         box.appendChild(r);
+        if (d.id === selected && !mode) {                      /* the selected line gets its own Launch button right under it */
+          const lb = document.createElement('button'); lb.className = 'lbtn';
+          lb.textContent = label; lb.disabled = !fresh;
+          lb.onclick = ev => { ev.stopPropagation(); $('go').click(); };   /* the same button and the same checks as the one under the map */
+          box.appendChild(lb); revealEl = lb;
+        }
       });
     });
-  const pick = list.find(d => d.id === selected);
-  const fresh = deps.g === thrustG;                           /* list matches the slider */
+  box.scrollTop = st;
+  if (revealEl && reveal) revealEl.scrollIntoView({ block: 'nearest' });
+  reveal = false;
   if (fl && mode) { go.disabled = false; go.textContent = 'Confirm ' + mode; map.need(); return; }   /* hold / stop / coast */
   go.disabled = !pick || !fresh;
-  go.textContent = (fl ? 'Confirm' : 'Launch') + (!pick ? '' : !fresh ? ' ...' : ' ' + fmt(pick.eta_real_minutes * 60));
+  go.textContent = label;
   map.need();
 }
 
@@ -278,7 +291,13 @@ $('zInner').onclick = () => map.preset('inner');
 $('zSys').onclick = () => map.preset('sys');
 $('zShip').onclick = () => map.preset('ship');
 
-function showDeps() { $('deps').hidden = !depsOpen; $('depscaret').textContent = depsOpen ? '-' : '+'; }
+/* the list pops up over the map: it is as tall as the map area (map + the button row under it) */
+function sizeDeps() {
+  const mc = document.querySelector('#scr-travel .mapcol');
+  if (mc) $('deps').style.setProperty('--depsh', (mc.offsetHeight + 8) + 'px');
+}
+function showDeps() { if (depsOpen) sizeDeps(); $('deps').hidden = !depsOpen; $('depscaret').textContent = depsOpen ? '-' : '+'; }
+window.addEventListener('resize', () => { if (depsOpen) sizeDeps(); });
 $('depshead').onclick = () => { depsOpen = !depsOpen; showDeps(); };
 addScreen('travel', 'Fly', $('scr-travel'), {
   onShow: () => { map.resize(); map.need(); sizeThrust(); },
@@ -314,7 +333,7 @@ $('go').onclick = async () => {
         '. Trip takes ' + r.duration_real_minutes.toFixed(1) + ' real minutes.' +
         (r.sun_danger ? ' WARNING: passes close to the Sun.' : ''), 'ok');
     }
-    deps = null; selected = null; mode = null; drawAll();
+    deps = null; selected = null; mode = null; depsOpen = false; showDeps(); drawAll();   /* a launched trip closes the list */
     await S.refresh();
   } catch (e) {
     say('Error: ' + (e.message === 'arrived' ? 'the ship has just arrived; look again.' : e.message), 'err');
