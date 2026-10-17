@@ -4,7 +4,7 @@
 // body.name = a pilot's name; empty = my own profile. The server decides what other pilots may see:
 // everything except the activity log (that comes back only for your own profile).
 // ======================================================================
-import { json, getCharacter } from './common.ts';
+import { json, getCharacter, getShip, getMaxG } from './common.ts';
 import { gameDaysAt } from './physics_bundle.ts';
 
 export async function profileView(db, user, body) {
@@ -27,5 +27,10 @@ export async function profileView(db, user, body) {
   const { data, error } = await db.rpc('profile_data', { p_character: target.id, p_self: self });
   if (error) throw error;
   if (!data.ok) return json({ error: data.error }, 404);
-  return json({ ...data, self, level: pilot.level });
+  // Top thrust of the active ship INCLUDING skills (own profile only).
+  let maxG = null;
+  if (self) {
+    try { const ship = await getShip(db, target.id); if (ship) maxG = await getMaxG(db, ship); } catch (e) { console.error(e); }
+  }
+  return json({ ...data, self, level: pilot.level, max_g: maxG });
 }
