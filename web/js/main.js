@@ -7,6 +7,7 @@ import { resetMarket } from 'market';
 import { resetAssets } from 'assets';
 import { resetProfile } from 'profile';
 import 'home';
+import { resetMissions } from './missions.js';
 
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
 let timer = null, lastNudge = 0;
@@ -94,7 +95,7 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-const logout = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetProfile(); S.current = null; show('auth'); };
+const logout = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetProfile(); resetMissions(); S.current = null; show('auth'); };
 $('out').onclick = logout; $('out2').onclick = logout;
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
