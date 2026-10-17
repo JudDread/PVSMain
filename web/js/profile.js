@@ -33,7 +33,7 @@ function draw() {
     pilot.appendChild(row('Level', String(p.level)));
     pilot.appendChild(row('XP', p.xp_next == null ? whole(p.xp) + ' (top level)' : whole(p.xp) + ' / ' + whole(p.xp_next)));
     pilot.appendChild(xpBar(p));
-    pilot.appendChild(row('Cal (skill points)', p.skill_points == null ? '0' : whole(p.skill_points)));
+    pilot.appendChild(row('Calibrations (Cal)', p.skill_points == null ? '0' : whole(p.skill_points)));
   }
   const sk = el('button', 'alt', 'Skills'); sk.onclick = () => openScreen('skills');
   pilot.appendChild(sk);
