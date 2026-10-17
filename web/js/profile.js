@@ -12,13 +12,16 @@ let loadedAt = 0, loading = false, failed = null;
 // ---- small styles for this screen only ----
 const st = document.createElement('style');
 st.textContent = '.pftop{display:flex;gap:12px;align-items:flex-start;margin-bottom:10px}'
-  + '.pfpic{width:84px;height:84px;flex:none;border:2px solid #444f70;border-radius:10px;background:#2a3350;color:#e3e9f7;font-size:38px;font-weight:700;display:flex;align-items:center;justify-content:center}'
-  + '.pfinfo{flex:1;min-width:0}.pfinfo div{padding:2px 0}.pfsmall{font-size:12px}'
+  + '.pfpic{flex:0 0 calc(66.6% - 6px);aspect-ratio:1/1;box-sizing:border-box;border:2px solid #444f70;border-radius:10px;background:#2a3350;color:#e3e9f7;font-size:clamp(60px,24vw,200px);font-weight:700;display:flex;align-items:center;justify-content:center}'
+  + '.pfinfo{flex:1;min-width:0}.pfinfo>div{padding:4px 0 6px;overflow-wrap:anywhere;line-height:1.25}.pfinfo .lbl{display:block;font-size:12px;color:#8d98b2}.pfsmall{font-size:12px}'
+  + '.pfgrid{display:grid;grid-template-columns:1fr 1fr;column-gap:8px}.pfgrid>div{min-width:0;overflow-wrap:anywhere}'
   + '.pflist{max-height:260px;overflow-y:auto;border-top:1px solid #1c2438}.pfitem{padding:6px 8px;border-bottom:1px solid #1c2438;font-size:14px}'
   + '.pfsplit{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;border-bottom:1px solid #1c2438}';
 document.head.appendChild(st);
 
 function row(label, value) { const r = el('div', 'pad'); r.appendChild(el('span', 'muted', label + ': ')); r.appendChild(el('span', '', value)); return r; }
+// one line of the narrow info column: small label above, value below
+function irow(label, value) { const r = el('div', ''); r.appendChild(el('span', 'lbl', label)); r.appendChild(el('span', '', value)); return r; }
 function block(title) { const b = el('section', ''); b.appendChild(el('h2', '', title)); return b; }
 function split(label, value, cls) { const r = el('div', 'pfsplit'); r.appendChild(el('span', '', label)); r.appendChild(el('span', cls || 'muted', value)); return r; }
 
@@ -91,43 +94,17 @@ function draw() {
   const top = el('div', 'pftop');
   top.appendChild(el('div', 'pfpic', String(data.name || '?').charAt(0).toUpperCase()));
   const info = el('div', 'pfinfo');
-  info.appendChild(row('Level', String(level)));
+  info.appendChild(irow('Level', String(level)));
   const created = new Date(data.created_at).getTime(), now = nowMs();
-  const pf = el('div', ''); pf.appendChild(el('span', 'muted', 'Pilot for: ')); pf.appendChild(el('span', '', Math.floor((now - created) / 864e5) + ' days'));
-  pf.appendChild(el('div', 'muted pfsmall', ymd(created, now)));
+  const pf = el('div', ''); pf.appendChild(el('span', 'lbl', 'Pilot for')); pf.appendChild(el('span', '', Math.floor((now - created) / 864e5) + ' days'));
+  pf.appendChild(el('span', 'lbl', ymd(created, now)));
   info.appendChild(pf);
-  info.appendChild(row('Last active', ago(data.last_action_at)));
-  info.appendChild(row('Net worth', 'Cr ' + money(data.net_worth)));
+  info.appendChild(irow('Last active', ago(data.last_action_at)));
+  info.appendChild(irow('Net worth', 'Cr ' + money(data.net_worth)));
   top.appendChild(info);
   box.appendChild(top);
 
-  // ship (public: hull, place, destination)
-  const sh = block('Ship'), s = data.ship || {};
-  if (!s.hull_id) sh.appendChild(el('div', 'muted pad', 'No ship.'));
-  else {
-    sh.appendChild(row('Hull', hullName(s.hull_id)));
-    if (s.state === 'docked') sh.appendChild(row('Status', 'Docked at ' + locName(s.location_id)));
-    else sh.appendChild(row('Status', 'Flying' + (s.destination ? ' to ' + locName(s.destination) : '')));
-    const ship = data.self && S.last && (S.last.ships || [])[0];
-    if (ship && ship.hold_size != null) sh.appendChild(row('Hold size', whole(ship.hold_size)));
-    if (ship && ship.thrust_g != null) sh.appendChild(row('Thrust', Number(ship.thrust_g) + ' g'));
-  }
-  box.appendChild(sh);
-
-  // career numbers
-  const c = data.career || {}, cr = block('Career');
-  cr.appendChild(row('Distance flown', (Math.round(Number(c.distance_au || 0) * 100) / 100) + ' AU'));
-  cr.appendChild(row('Trips made', whole(c.trips || 0)));
-  cr.appendChild(row('Trades made', whole(c.trades || 0)));
-  cr.appendChild(row('Freight deliveries', whole(c.freight_deliveries || 0)));
-  box.appendChild(cr);
-
-  // reputations (none active yet)
-  const rp = block('Reputation');
-  (data.reputations || []).forEach(r => rp.appendChild(split(r.name, r.active ? whole(r.value) : 'Not active yet')));
-  box.appendChild(rp);
-
-  // pilot-only block: credits, Cal, Skills (never shown on another pilot's profile)
+  // pilot-only block: XP, Cal, Skills, credits (never shown on another pilot's profile)
   if (data.self && me) {
     const pb = block('Pilot');
     if (p) {
@@ -140,6 +117,34 @@ function draw() {
     pb.appendChild(row('Credits', money(me.credits)));
     box.appendChild(pb);
   }
+
+  // career numbers, two across (the second one starts at the middle)
+  const c = data.career || {}, cr = block('Career'), cg = el('div', 'pfgrid');
+  cg.appendChild(row('Distance flown', (Math.round(Number(c.distance_au || 0) * 100) / 100) + ' AU'));
+  cg.appendChild(row('Trips made', whole(c.trips || 0)));
+  cg.appendChild(row('Trades made', whole(c.trades || 0)));
+  cg.appendChild(row('Freight deliveries', whole(c.freight_deliveries || 0)));
+  cr.appendChild(cg); box.appendChild(cr);
+
+  // ship (public: hull, place, destination), two across
+  const sh = block('Ship'), s = data.ship || {};
+  if (!s.hull_id) sh.appendChild(el('div', 'muted pad', 'No ship.'));
+  else {
+    const sg = el('div', 'pfgrid');
+    sg.appendChild(row('Hull', hullName(s.hull_id)));
+    if (s.state === 'docked') sg.appendChild(row('Status', 'Docked at ' + locName(s.location_id)));
+    else sg.appendChild(row('Status', 'Flying' + (s.destination ? ' to ' + locName(s.destination) : '')));
+    const ship = data.self && S.last && (S.last.ships || [])[0];
+    if (ship && ship.hold_size != null) sg.appendChild(row('Hold size', whole(ship.hold_size)));
+    if (data.self && data.max_g != null) sg.appendChild(row('Max thrust', (Math.round(Number(data.max_g) * 100) / 100) + ' g'));
+    sh.appendChild(sg);
+  }
+  box.appendChild(sh);
+
+  // reputations (none active yet)
+  const rp = block('Reputation');
+  (data.reputations || []).forEach(r => rp.appendChild(split(r.name, r.active ? whole(r.value) : 'Not active yet')));
+  box.appendChild(rp);
 
   // events (public) and, for me only, the full activity log
   box.appendChild(fold('Events', (data.events || []).map(e => eventItem(e, false)), 'Nothing yet.'));
