@@ -22,16 +22,26 @@ const flyingShip = () => { const s = S.last && (S.last.ships || [])[0]; return s
 const isFlying = () => !!(deps && deps.flying);
 
 /* ---------- thrust slider: vertical, on the right side of the map (made here, put inside the map box) ---------- */
+/* The slider moves along a list of STOPS: every half g from 1 g up, plus the ship's exact top thrust when that falls between
+   two half steps (skills such as Heavy Burn make it e.g. 6.18 g). The range input counts stops (0, 1, 2...), not g. */
+let thrustStops = [1];
+function stopsFor(maxG) {
+  const m = Math.max(1, Number(maxG) || 1), half = Math.max(1, Math.floor(m * 2) / 2), out = [];
+  for (let g = 1; g <= half + 1e-9; g += 0.5) out.push(g);
+  if (m - half > 0.001) out.push(m);
+  return out;
+}
+const stopIndex = g => { let k = 0; thrustStops.forEach((v, i) => { if (v <= g + 1e-9) k = i; }); return k; };   /* the highest stop at or below g */
 function ensureThrust(maxG) {
-  const top = Math.max(1, Math.floor(maxG * 2) / 2);          /* half-g steps */
+  thrustStops = stopsFor(maxG);
   if (!thrustBox) {
     thrustBox = document.createElement('div'); thrustBox.className = 'thr';
     thrustTxt = document.createElement('div'); thrustTxt.className = 'thrl';
     thrustArea = document.createElement('div'); thrustArea.className = 'thra';
     thrustIn = document.createElement('input');
-    thrustIn.type = 'range'; thrustIn.min = '1'; thrustIn.step = '0.5';
+    thrustIn.type = 'range'; thrustIn.min = '0'; thrustIn.step = '1';
     thrustIn.oninput = () => {
-      thrustG = Number(thrustIn.value);
+      thrustG = thrustStops[Number(thrustIn.value)] ?? thrustG;
       /* in flight, moving the slider with nothing picked proposes the SAME destination at the new thrust */
       if (isFlying() && !selected && !mode && deps.dest) selected = deps.dest;
       if (isFlying() && mode && mode !== 'go') mode = null;
@@ -44,9 +54,9 @@ function ensureThrust(maxG) {
     $('map').parentNode.appendChild(thrustBox);
     window.addEventListener('resize', sizeThrust);
   }
-  thrustIn.max = String(top);
-  if (thrustG > top) thrustG = top;
-  thrustIn.value = String(thrustG);
+  thrustIn.max = String(thrustStops.length - 1);
+  thrustG = thrustStops[stopIndex(thrustG)];                  /* if the top came down, move to the highest stop that still fits */
+  thrustIn.value = String(stopIndex(thrustG));
 }
 /* the slider is a normal range input turned 90 degrees: its length = the height of its area (max at the top) */
 function sizeThrust() {
@@ -57,8 +67,8 @@ function sizeThrust() {
 }
 function drawThrust() {
   if (!thrustBox) return;
-  thrustTxt.textContent = String(+thrustG.toFixed(1)) + ' g';          /* 6 g, 4.5 g */
-  thrustIn.value = String(thrustG);
+  thrustTxt.textContent = String(+thrustG.toFixed(2)) + ' g';          /* 6 g, 4.5 g, 6.18 g */
+  thrustIn.value = String(stopIndex(thrustG));
 }
 
 /* ---------- in-flight controls: Hold the bar / Stop / Coast (buttons under the map, right side: #actr in index.html) ---------- */
@@ -91,7 +101,7 @@ async function loadDeps() {
     ensureThrust(deps.max_g || 3); ensureControls(); drawAll();
   }
   catch (e) {
-    if (e.message === 'bad_thrust' && e.data && e.data.max_g) { thrustG = Math.max(1, Math.floor(e.data.max_g * 2) / 2); ensureThrust(e.data.max_g); }
+    if (e.message === 'bad_thrust' && e.data && e.data.max_g) { ensureThrust(e.data.max_g); }   /* snaps the slider down to the highest allowed stop */
     else say('Error: ' + e.message, 'err');
   }
   finally { depsLoading = false; if (thrustG !== asked) loadDeps(); }
@@ -314,4 +324,4 @@ $('go').onclick = async () => {
 
 /* called by main.js */
 export function invalidateDeps() { deps = null; }                      /* ETAs changed (game speed): fetch them again */
-export function resetFly() { deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = '3'; } if (ctlBox) ctlBox.hidden = true; }   /* log out */
+export function resetFly() { deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; }   /* log out */
