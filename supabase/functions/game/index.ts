@@ -12,10 +12,14 @@ import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept
 import { shipLeave, shipBoard } from './ships.ts';
 import { skillsView, skillBuy } from './skills.ts';
 import { missionsView, missionStep, missionClaim } from './missions.ts';
+import { profileView } from './profile.ts';
 import { courseOptions, courseChange } from './course.ts';
 import { kickBots } from './bot.ts';
 
 // ---------- server ----------
+// Actions that count as the pilot DOING something: they set characters.last_action_at (the 'Last active' time on a profile).
+const ACTIVE_ACTIONS = new Set(['queue_travel', 'course_change', 'trade_at', 'load', 'unload', 'unload_all', 'freight_post', 'freight_cancel',
+  'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'skill_buy', 'mission_claim']);
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
 
 
@@ -236,6 +240,7 @@ Deno.serve(async (req) => {
 
   try {
     await loadClock(db);
+    if (ACTIVE_ACTIONS.has(body.action)) await db.from('characters').update({ last_action_at: new Date().toISOString() }).eq('account_id', user.id);
     switch (body.action) {
       case 'me': kickBots(db); return await me(db, user); // bots take a turn in the background (bot.ts)
       case 'create_character': return await createCharacter(db, user, body);
@@ -268,6 +273,7 @@ Deno.serve(async (req) => {
       case 'missions': return await missionsView(db, user);
       case 'mission_step': return await missionStep(db, user, body);
       case 'mission_claim': return await missionClaim(db, user, body);
+      case 'profile': return await profileView(db, user, body);
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
