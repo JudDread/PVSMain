@@ -1,7 +1,8 @@
 // profile.js - the Profile screen, opened by the circle at the top right (no tab).
 // Name, level + XP bar, skill points, credits, and the ship status. Display only; numbers come from the latest `me` answer (S.last).
 // Not shown yet (the server does not count them): distance flown, trades made. The picture comes later.
-import { S, $, addScreen, el, money, whole, hullName, locName } from 'core';
+import { S, $, addScreen, openScreen, el, money, whole, hullName, locName } from 'core';
+import { resetSkills } from './skills.js';   // the Skills screen makes its own div and registers itself
 
 const box = $('scr-profile');
 function row(label, value) { const r = el('div', 'pad'); r.appendChild(el('span', 'muted', label + ': ')); r.appendChild(el('span', '', value)); return r; }
@@ -32,9 +33,9 @@ function draw() {
     pilot.appendChild(row('Level', String(p.level)));
     pilot.appendChild(row('XP', p.xp_next == null ? whole(p.xp) + ' (top level)' : whole(p.xp) + ' / ' + whole(p.xp_next)));
     pilot.appendChild(xpBar(p));
-    pilot.appendChild(row('Skill points', p.skill_points == null ? '0' : whole(p.skill_points)));
+    pilot.appendChild(row('Cal (skill points)', p.skill_points == null ? '0' : whole(p.skill_points)));
   }
-  const sk = el('button', 'alt', 'Skills (coming soon)'); sk.disabled = true;
+  const sk = el('button', 'alt', 'Skills'); sk.onclick = () => openScreen('skills');
   pilot.appendChild(sk);
   pilot.appendChild(row('Credits', money(ch.credits)));
   box.appendChild(pilot);
@@ -52,4 +53,4 @@ function draw() {
   box.appendChild(el('div', 'muted pad', 'Your picture and lifetime numbers (distance flown, trades made) will come here later.'));
 }
 addScreen('profile', 'Profile', box, { noTab: true, onShow: draw, update: draw });
-export function resetProfile() { box.replaceChildren(); }
+export function resetProfile() { box.replaceChildren(); resetSkills(); }
