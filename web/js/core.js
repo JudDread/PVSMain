@@ -23,10 +23,23 @@ export function curGd() { return S.last ? S.last.game_days + (nowMs() - S.last.r
 /* ---------- screen registry: add a screen = a div + addScreen(...) ---------- */
 export const screens = {};
 export function addScreen(name, title, el, hooks) { screens[name] = { title, el, ...(hooks || {}) }; }
+/* functions that want to know when a screen opens (missions.js adds one); each gets the screen name */
+export const screenWatchers = [];
+/* tab dot: a screen may have a hook dot() that returns true when something new is waiting; its tab then shows a red dot */
+const dotStyle = document.createElement('style');
+dotStyle.textContent = '#nav button{position:relative}.tabdot{position:absolute;top:5px;right:12px;width:11px;height:11px;border-radius:50%;background:#ff5a4a;border:2px solid #0b0f19}';
+document.head.appendChild(dotStyle);
+export function updateDots() {
+  document.querySelectorAll('#nav button[data-screen]').forEach(b => {
+    const s = screens[b.dataset.screen], d = b.querySelector('.tabdot');
+    if (d) d.hidden = !(s && s.dot && s.dot());
+  });
+}
 /* tab icons: small line drawings (no picture files needed), keyed by screen name; they take the colour of the button text */
 const ICONS = {
   travel: '<svg viewBox="0 0 24 24"><path d="M12 2c3 3 4 7 4 11l3 4-4 .5L12 21l-3-3.5-4-.5 3-4c0-4 1-8 4-11z"/><circle cx="12" cy="9.5" r="1.6"/></svg>',
   market: '<svg viewBox="0 0 24 24"><path d="M3 21h18M6 21v-7M11 21V8M16 21v-9M21 21V5"/><path d="M3 11l5-4 4 2 8-6"/></svg>',
+  missions: '<svg viewBox="0 0 24 24"><path d="M5 21V3"/><path d="M5 4h13l-3 4.5 3 4.5H5"/></svg>',
   assets: '<svg viewBox="0 0 24 24"><path d="M3 7.5l9-5 9 5v9l-9 5-9-5z"/><path d="M3 7.5l9 5 9-5M12 12.5v9"/></svg>',
 };
 export function openScreen(name) {
@@ -38,10 +51,13 @@ export function openScreen(name) {
   tabs.forEach(([n, s]) => {
     const b = document.createElement('button');
     if (ICONS[n]) { b.innerHTML = ICONS[n]; b.appendChild(el('span', '', s.title)); } else b.textContent = s.title;
-    b.title = s.title; b.setAttribute('aria-label', s.title);
+    b.title = s.title; b.setAttribute('aria-label', s.title); b.dataset.screen = n;
+    if (s.dot) { const d = document.createElement('i'); d.className = 'tabdot'; d.hidden = true; b.appendChild(d); }
     b.className = n === name ? 'on' : 'alt'; b.onclick = () => openScreen(n); nav.appendChild(b);
   });
   if (screens[name].onShow) screens[name].onShow();
+  updateDots();
+  screenWatchers.forEach(f => { try { f(name); } catch (e) {} });
 }
 
 /* ---------- small display helpers ---------- */
@@ -144,6 +160,7 @@ export function setShipLine() {
     ship.state === 'drifting' ? hullName(ship.hull_id) + ' drifting (no destination)' :
     hullName(ship.hull_id) + ' traveling at ' + (Math.round(g * 10) / 10) + ' g';
   setBars();
+  updateDots();
 }
 
 /* ---------- shared by the Market and Assets screens ---------- */
