@@ -10,6 +10,7 @@ import { cors, json, getCharacter, getLocation, resolveFor, getShip, planTrip, p
 import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll } from './market.ts';
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard } from './ships.ts';
+import { skillsView, skillBuy } from './skills.ts';
 import { courseOptions, courseChange } from './course.ts';
 import { kickBots } from './bot.ts';
 
@@ -156,7 +157,10 @@ async function me(db, user) {
     // Level, XP (including XP earned so far on a trip in flight) and the endurance bar, worked out by SQL.
     const { data: pilot, error: pe } = await db.rpc('pilot_status', { p_character: ch.id, p_now_t: out.game_days });
     if (pe) throw pe;
-    out.pilot = pilot;
+    // Cal (skill points) available to spend, worked out by SQL (cal_status). Profile shows pilot.skill_points.
+    const { data: cal, error: ce } = await db.rpc('cal_status', { p_character: ch.id });
+    if (ce) throw ce;
+    out.pilot = { ...pilot, skill_points: cal ? Number(cal.available) : 0 };
   }
   out.sent_ms = Date.now(); // server time when this answer leaves: the page uses it to measure how far its own clock is off
   return json(out);
@@ -253,6 +257,8 @@ Deno.serve(async (req) => {
       case 'freight_hauling': return await freightList(db, user, 'hauling');
       case 'ship_leave': return await shipLeave(db, user);
       case 'ship_board': return await shipBoard(db, user, body);
+      case 'skills': return await skillsView(db, user);
+      case 'skill_buy': return await skillBuy(db, user, body);
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
