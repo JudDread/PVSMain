@@ -1,247 +1,347 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vacuum State - Test Page</title>
-<style>
-[hidden]{display:none!important}
-body{font:16px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:12px 12px 92px}
-#cfg,#auth{max-width:640px}
-h1{font-size:18px;margin:0 0 10px}h2{font-size:15px;margin:0 0 8px;color:#e8b64a}
-section{background:#131a2a;border:1px solid #222b40;border-radius:8px;padding:10px;margin-bottom:10px}
-input,select,button{font:inherit;padding:8px;margin:3px 0;border-radius:6px;border:1px solid #333d57;background:#192033;color:#e3e9f7;max-width:100%;box-sizing:border-box}
-input{width:100%}
-button{background:#e8b64a;color:#14100a;border:0;font-weight:600;margin-right:6px}
-button.alt{background:#2a3350;color:#e3e9f7}
-.muted{color:#8d98b2}.err{color:#ff7b6b}.ok{color:#6be08f}
-ul{margin:4px 0;padding-left:18px}
-#msg{min-height:1.4em;margin-bottom:8px}
-button:disabled{opacity:.45}
-/* screens + nav */
-/* tab bar pinned to the bottom of the screen: square boxes with an icon and a small label */
-#nav{position:fixed;left:0;right:0;bottom:0;z-index:20;display:flex;justify-content:center;gap:12px;margin:0;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));background:#0b0f19;border-top:1px solid #222b40}
-#nav button{width:64px;height:64px;padding:4px 0 2px;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:8px;font-size:12px;font-weight:600;line-height:1.1}
-#nav button svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-#nav button.on{background:#e8b64a;color:#14100a}
-/* travel screen: portrait = stacked, landscape = map beside list */
-.travel{display:flex;flex-direction:column;gap:8px}
-.mapwrap{position:relative;height:55vh;min-height:260px}
-#map{width:100%;height:100%;display:block;touch-action:none;background:linear-gradient(rgba(7,10,18,.3),rgba(7,10,18,.3)),#070a12 url(img/starscape.webp) center/cover no-repeat;border:1px solid #222b40;border-radius:8px}   /* star-scape picture; the .3 is how much it is dimmed (0 = full picture, 1 = none) */
-.zb{position:absolute;top:6px;left:6px}
-.zb button{padding:4px 9px;font-size:13px;margin:0 4px 0 0;background:#2a3350cc;color:#e3e9f7;border:1px solid #444f70}
-.side{display:flex;flex-direction:column;min-width:0;position:relative}
-/* destinations: a label that opens the list; flat rows with a line under each (no tiles) */
-.dephead{display:flex;justify-content:space-between;align-items:center;padding:12px 8px;color:#e8b64a;font-weight:600;border-bottom:1px solid #1c2438;cursor:pointer}
-.dephead span+span{color:#8d98b2}
-/* portrait: the list pops UP from its label and covers the map (fly.js sets --depsh = the map area's height) */
-#deps{position:absolute;left:0;right:0;bottom:100%;height:var(--depsh,380px);overflow-y:auto;margin:0;background:#0f1523;border:1px solid #444f70;border-radius:8px;z-index:6;box-sizing:border-box}
-.lbtn{width:calc(100% - 16px);margin:6px 8px 8px}   /* the Launch button under the selected line */
-.grp{color:#e8b64a;font-size:13px;padding:10px 8px 2px}
-.row{display:flex;justify-content:space-between;gap:8px;padding:10px 8px;border-bottom:1px solid #1c2438;cursor:pointer}
-.row.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
-.eta{white-space:nowrap;color:#6be08f}
-@media (orientation:landscape){
-  .travel{flex-direction:row;height:calc(100vh - 270px);min-height:240px}
-  .mapcol{flex:1;min-width:0;display:flex;flex-direction:column}
-  .mapwrap{flex:1;height:auto;min-width:0}
-  .side{width:330px;flex:none}
-  #deps{position:static;height:auto;max-height:none;flex:1;background:none;border:0;border-radius:0}   /* landscape: the list stays beside the map */
+// fly.js - the Fly screen: vertical thrust slider on the map, destination list, ship position, blue preview course, Launch / Confirm button
+// under the map (left) and the in-flight buttons under the map (right).
+// Step 4a: moving the thrust slider only makes a POSSIBLE course (blue line + new ETAs). Nothing changes until the
+//   confirm button is pressed.
+// Step 4b: the same works IN FLIGHT. While the ship flies or drifts you can pick a new destination (or the place you
+//   left = cancel the trip), change the thrust, or use Hold the bar / Stop / Coast. Each is only a proposal (blue line)
+//   until you press the confirm button. The server plans the real course from the ship's position and speed right now.
+// Any thrust may launch. Above the free thrust (3 g) the flight PULSES: burn half the bar, refill at 3 g until full,
+// burn again, for the whole trip. The rows show the average thrust that gives.
+import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse, stopPlan, segmentEnd } from 'physics';
+import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow } from 'core';
+import { createMap } from 'map';
+
+const SHOW_FLIGHT_BUTTONS = false;     /* Hold the bar / Stop / Coast: not in the MVP. Set to true to bring the three buttons back. */
+let reveal = false;                    /* true right after a line is tapped: scroll so the Launch button under it is in view */
+let deps = null, depsAt = 0, selected = null, depsLoading = false, depsOpen = false;   /* depsOpen: the destination list is folded until its label is tapped */
+let mode = null;                       /* in flight only: null (a picked destination) | 'hold' | 'stop' | 'coast' */
+let thrustG = 3;                       /* the slider value (game g); the server decides if it is allowed */
+let thrustBox = null, thrustIn = null, thrustTxt = null, thrustArea = null, loadTimer = null;
+let ctlBox = null; const ctlBtn = {};
+
+/* the ship, if it is NOT docked (traveling, hopping or drifting) */
+const flyingShip = () => { const s = S.last && (S.last.ships || [])[0]; return s && s.state !== 'docked' ? s : null; };
+const isFlying = () => !!(deps && deps.flying);
+
+/* ---------- thrust slider: vertical, on the right side of the map (made here, put inside the map box) ---------- */
+/* The slider moves along a list of STOPS: every half g from 1 g up, plus the ship's exact top thrust when that falls between
+   two half steps (skills such as Heavy Burn make it e.g. 6.18 g). The range input counts stops (0, 1, 2...), not g. */
+let thrustStops = [1];
+function stopsFor(maxG) {
+  const m = Math.max(1, Number(maxG) || 1), half = Math.max(1, Math.floor(m * 2) / 2), out = [];
+  for (let g = 1; g <= half + 1e-9; g += 0.5) out.push(g);
+  if (m - half > 0.001) out.push(m);
+  return out;
 }
-/* under the map: Launch / Confirm at the left (a third of the width), in-flight buttons at the right */
-.actrow{display:flex;gap:8px;align-items:flex-start;margin-top:6px}
-.actl{flex:0 0 33%;min-width:0}
-#go{width:100%;margin:0;padding:8px 4px}
-.actr{flex:1;min-width:0;display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap}
-.actr button{margin:0;padding:8px 10px}
-/* vertical thrust slider on the right side of the map, under the speed button */
-.thr{position:absolute;right:6px;top:44px;bottom:12px;width:40px;display:flex;flex-direction:column;align-items:center;background:#0f1523cc;border:1px solid #444f70;border-radius:8px;padding:4px 0;box-sizing:border-box}
-.thrl{font-size:13px;line-height:1.2;text-align:center;color:#e3e9f7;white-space:nowrap}
-.thra{position:relative;flex:1;width:100%;min-height:80px}
-.thra input{position:absolute;left:0;max-width:none;transform-origin:0 0;transform:rotate(-90deg);margin:0;padding:0;border:0;background:transparent;touch-action:none}
-/* trade screen */
-.trade{display:flex;flex-wrap:wrap;gap:10px}
-.tcol{flex:1 1 320px;min-width:0}
-.mhead,.mrow{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1.3fr) repeat(3,minmax(0,1fr));gap:6px;padding:8px}
-.mhead{font-size:12px;color:#8d98b2;border-bottom:1px solid #222b40}
-.mrow{border-top:1px solid #1c2438;cursor:pointer}
-.mrow.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
-.num{text-align:right;white-space:nowrap}
-.sub{display:block;font-size:12px;color:#8d98b2}
-.pay{color:#e8b64a}.get{color:#6be08f}
-#qty{width:110px}
-.chips{display:flex;gap:4px}
-.chips button{padding:2px 8px;font-size:13px;line-height:1.3;margin:0}
-.pop{background:#0f1523;border-top:1px solid #1c2438;border-left:3px solid #e8b64a;padding:4px 8px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:flex-start}
-.popl{flex:1 1 150px;min-width:0}
-.popr{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
-.pop.sell{border-left-color:#6be08f}
-.poptitle{font-weight:600;line-height:1.25}
-.poprow{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-wrap:wrap}
-.poprow input{width:76px;margin:0;padding:2px 6px;font-size:14px;line-height:1.3}
-.popinfo{font-size:13px;line-height:1.25}
-#tlist,#mlist,#clist{border:1px solid #222b40;border-radius:6px;margin:4px 0}
-.sub.win,.win{color:#6be08f}.sub.lose,.lose{color:#ff7b6b}
-.hint{font-size:12px;margin:2px 0}
-.routes{background:#0f1523;border-top:1px solid #1c2438;padding:6px 8px;overflow-x:auto}
-.rhead,.rrow{display:grid;grid-template-columns:minmax(64px,1fr) 56px 56px 76px 62px;gap:4px;padding:6px 0;font-size:13px}
-.rrow .sub,.rhead{font-size:11px}
-.rhead{color:#8d98b2;border-bottom:1px solid #222b40}
-.rrow{border-top:1px solid #1c2438}
-.routes button{padding:4px 12px;font-size:13px;margin:6px 0 2px}
-.srow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px;padding:8px;border-top:1px solid #1c2438}
-.srow .chips{display:flex;align-items:center;gap:4px}
-.srow .chips button{margin:2px 0}
-/* place picker (Market, Assets): the big picture box above (.locsel) opens a list of plain rows (no pictures); built by createPicker in core.js */
-.lp{margin:0 0 8px}
-.locsel{width:100%;height:138px;box-sizing:border-box;font-size:28px;font-weight:800;padding:10px 18px;margin:0 0 8px;text-align:left;color:#f3d28a;text-shadow:0 2px 6px #000,0 0 3px #000;background:linear-gradient(135deg,#1a2338,#0f1523);border:1px solid #333d57;border-radius:10px}   /* the place selector (Market, Assets); backdrop.js draws the picture */
-.lp .locsel{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0}   /* the big box is now a button: title left, tag + arrow right */
-.lpname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lpside{display:flex;align-items:center;gap:10px;flex:none}
-.lpcaret{color:#e3e9f7;font-size:22px}
-.lptag{color:#6be08f;font-size:12px;font-weight:600;white-space:nowrap}
-.lplist{margin:4px 0 0;background:#0f1523;border:1px solid #222b40;border-radius:8px;max-height:min(50vh,360px);overflow-y:auto}
-.lprow{width:100%;margin:0;padding:12px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;font-size:16px;font-weight:600;color:#e3e9f7;background:transparent;border:0;border-bottom:1px solid #3a4566;border-radius:0}
-.lprow:last-child{border-bottom:0}
-.lprow.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
-.msec{border:1px solid #222b40;border-radius:6px;margin:6px 0;overflow:hidden}
-.sech,.locg{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#0f1523;color:#e8b64a;padding:8px;min-height:40px;cursor:pointer}
-.locg{background:#1a2338;border:1px solid #222b40;border-radius:6px;margin:6px 0}
-.sech button{margin:0;padding:4px 10px;font-size:13px}
-.locbody{margin:0 0 8px 6px;padding-left:6px;border-left:2px solid #222b40}
-.pad{padding:8px}
-.pop .poprow button{margin:0;padding:2px 10px;font-size:14px;line-height:1.3}
-/* frame: top bars (thin, like Torn: VS box | XP bar, endurance bar, credits | profile circle) */
-#topbar{margin:0 0 10px}
-.tbrow{display:flex;align-items:center;gap:10px}
-.vs{width:46px;height:46px;padding:0;margin:0;background:#192033;color:#e8b64a;border:2px solid #e8b64a;border-radius:8px;font-weight:800;letter-spacing:1px;flex:none}
-.pic{width:46px;height:46px;padding:0;margin:0;background:#2a3350;color:#e3e9f7;border:2px solid #444f70;border-radius:50%;font-size:20px;flex:none;overflow:hidden}
-.bars{flex:1;min-width:0;display:flex;align-items:center;gap:10px}
-.bitem{flex:1 1 0;min-width:0}
-.blabrow{position:relative}
-.lvl{position:absolute;left:0;top:0;font-weight:700;font-size:14px;line-height:1.15;color:#6aa9f0}
-.blab{font-size:14px;line-height:1.15;color:#c6cfe4;text-align:center;white-space:nowrap;overflow:hidden}
-.bar{height:8px;background:#0c1220;border:1px solid #222b40;border-radius:3px;overflow:hidden;margin-top:2px}
-.bar .fill{height:100%;width:0}
-.bar.xp .fill{background:#3b82d6}
-.bar.en .fill{background:#d9483b;transition:width .8s linear}
-#enitem{cursor:pointer;padding:4px 0}
-.money{flex:1 1 0;min-width:0;text-align:center;background:#0f2a1a;border:1px solid #2f7a4a;color:#6be08f;border-radius:8px;padding:6px 4px;font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* event line under the bars (tap: the list) */
-.evline{display:flex;gap:8px;align-items:center;margin:8px 0 0;padding:6px 8px;background:#0f1523;border:1px solid #222b40;border-radius:6px;cursor:pointer;font-size:14px}
-.evlast{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#c6cfe4}
-.evcaret{color:#8d98b2;flex:none}
-.evlist{margin:4px 0 0;padding:6px 8px 6px 24px;background:#0f1523;border:1px solid #222b40;border-radius:6px;font-size:14px;max-height:240px;overflow-y:auto}
-/* game speed button: top right corner of the map (developer only) */
-.sp{position:absolute;top:6px;right:6px;margin:0;padding:4px 12px;font-size:13px;background:#2a3350cc;color:#e3e9f7;border:1px solid #444f70}
-</style>
-</head>
-<body>
-<h1 id="title">Vacuum State: Test Page</h1>
-<div id="msg"></div>
+const stopIndex = g => { let k = 0; thrustStops.forEach((v, i) => { if (v <= g + 1e-9) k = i; }); return k; };   /* the highest stop at or below g */
+function ensureThrust(maxG) {
+  thrustStops = stopsFor(maxG);
+  if (!thrustBox) {
+    thrustBox = document.createElement('div'); thrustBox.className = 'thr';
+    thrustTxt = document.createElement('div'); thrustTxt.className = 'thrl';
+    thrustArea = document.createElement('div'); thrustArea.className = 'thra';
+    thrustIn = document.createElement('input');
+    thrustIn.type = 'range'; thrustIn.min = '0'; thrustIn.step = '1';
+    thrustIn.oninput = () => {
+      thrustG = thrustStops[Number(thrustIn.value)] ?? thrustG;
+      /* in flight, moving the slider with nothing picked proposes the SAME destination at the new thrust */
+      if (isFlying() && !selected && !mode && deps.dest) selected = deps.dest;
+      if (isFlying() && mode && mode !== 'go') mode = null;
+      drawAll();                                              /* possible course only: nothing is sent */
+      clearTimeout(loadTimer);
+      loadTimer = setTimeout(loadDeps, 400);                  /* fresh ETAs and costs once the finger rests */
+    };
+    thrustArea.appendChild(thrustIn);
+    thrustBox.append(thrustTxt, thrustArea);
+    $('map').parentNode.appendChild(thrustBox);
+    window.addEventListener('resize', sizeThrust);
+  }
+  thrustIn.max = String(thrustStops.length - 1);
+  thrustG = thrustStops[stopIndex(thrustG)];                  /* if the top came down, move to the highest stop that still fits */
+  thrustIn.value = String(stopIndex(thrustG));
+}
+/* the slider is a normal range input turned 90 degrees: its length = the height of its area (max at the top) */
+function sizeThrust() {
+  if (!thrustArea) return;
+  const H = thrustArea.clientHeight, W = thrustArea.clientWidth;
+  if (!H || !W) return;
+  thrustIn.style.width = H + 'px'; thrustIn.style.height = W + 'px'; thrustIn.style.top = H + 'px';
+}
+function drawThrust() {
+  if (!thrustBox) return;
+  thrustTxt.textContent = String(+thrustG.toFixed(2)) + ' g';          /* 6 g, 4.5 g, 6.18 g */
+  thrustIn.value = String(stopIndex(thrustG));
+}
 
-<section id="cfg" hidden>
-  <h2>One-time setup</h2>
-  <div class="muted">Paste your Supabase publishable (anon) key. Never use the secret / service_role key.</div>
-  <input id="key" placeholder="paste key here" autocomplete="off">
-  <button id="savekey">Save key</button>
-</section>
+/* ---------- in-flight controls: Hold the bar / Stop / Coast (buttons under the map, right side: #actr in index.html) ---------- */
+function ensureControls() {
+  if (!SHOW_FLIGHT_BUTTONS || ctlBox) return;                 /* off: the buttons are never made, so ctlBox stays null and everything below skips them */
+  ctlBox = $('actr');
+  [['hold', 'Hold the bar'], ['stop', 'Stop'], ['coast', 'Coast']].forEach(([m, label]) => {
+    const b = document.createElement('button'); b.textContent = label; b.className = 'alt';
+    b.onclick = () => { mode = mode === m ? null : m; if (mode) selected = null; drawAll(); };   /* a proposal: confirm with the button at the left */
+    ctlBtn[m] = b; ctlBox.appendChild(b);
+  });
+}
+function drawControls() {
+  if (!ctlBox) return;
+  ctlBox.hidden = !isFlying();
+  if (!isFlying()) return;
+  ctlBtn.hold.disabled = !deps.dest;                          /* nothing to hold toward while drifting */
+  Object.entries(ctlBtn).forEach(([m, b]) => b.className = mode === m ? 'on' : 'alt');
+}
+function drawAll() { drawThrust(); drawControls(); drawDeps(); map.need(); }
 
-<section id="auth" hidden>
-  <h2>Account</h2>
-  <input id="email" type="email" placeholder="email" autocomplete="username">
-  <input id="pw" type="password" placeholder="password (8+ characters)" autocomplete="current-password">
-  <button id="login">Log in</button><button id="signup" class="alt">Register</button>
-</section>
+/* ---------- destination list (docked: departures; in flight: course options from where the ship is now) ---------- */
+async function loadDeps() {
+  if (depsLoading) return;
+  depsLoading = true;
+  const asked = thrustG;
+  const fl = !!flyingShip();
+  try {
+    deps = await call(fl ? 'course_options' : 'departures', { g: asked }); depsAt = Date.now();
+    ensureThrust(deps.max_g || 3); ensureControls(); drawAll();
+  }
+  catch (e) {
+    if (e.message === 'bad_thrust' && e.data && e.data.max_g) { ensureThrust(e.data.max_g); }   /* snaps the slider down to the highest allowed stop */
+    else say('Error: ' + e.message, 'err');
+  }
+  finally { depsLoading = false; if (thrustG !== asked) loadDeps(); }
+}
+function selectedBody() {
+  const id = mode === 'hold' && deps ? deps.dest : selected;
+  const d = deps && deps.departures && deps.departures.find(x => x.id === id);
+  return d ? d.anchor_body : null;
+}
+function drawDeps() {
+  const box = $('deps'), go = $('go');
+  const st = box.scrollTop;                                   /* keep the list where the finger left it */
+  box.replaceChildren();
+  const live = !!(deps && (deps.docked || deps.flying));
+  if (thrustBox) thrustBox.hidden = !live;
+  sizeThrust();
+  if (!live) {
+    box.textContent = 'Destinations appear when your ship is docked or in flight.';
+    go.disabled = true; go.textContent = 'Launch'; map.need(); return;
+  }
+  const fl = isFlying();
+  const list = deps.departures || [];
+  if (!list.some(d => d.id === selected)) selected = null;
+  const groups = {};
+  list.forEach(d => (groups[d.anchor_body] = groups[d.anchor_body] || []).push(d));
+  const pick = list.find(d => d.id === selected);
+  const fresh = deps.g === thrustG;                           /* list matches the slider */
+  const label = (fl ? 'Confirm' : 'Launch') + (!pick ? '' : !fresh ? ' ...' : ' ' + fmt(pick.eta_real_minutes * 60));
+  let revealEl = null;
+  Object.entries(groups)
+    .sort((x, y) => x[1][0].eta_real_minutes - y[1][0].eta_real_minutes)
+    .forEach(([, rows]) => {
+      rows.forEach(d => {
+        const r = document.createElement('div');
+        r.className = 'row' + (d.id === selected && !mode ? ' sel' : '');
+        const n = document.createElement('span');
+        n.textContent = d.name + (d.sun_danger ? ' (near Sun!)' : '') +
+          (fl && d.id === deps.dest ? ' (current destination)' : '') + (fl && d.id === deps.origin ? ' (where you left: cancels the trip)' : '');
+        const e = document.createElement('span'); e.className = 'eta';
+        let t = fmt(d.eta_real_minutes * 60);
+        if (d.pulsed) t += '  |  avg ' + d.g_avg.toFixed(1) + ' g';
+        e.textContent = t;
+        r.append(n, e);
+        r.onclick = () => { selected = d.id; mode = null; reveal = true; drawAll(); };
+        box.appendChild(r);
+        if (d.id === selected && !mode) {                      /* the selected line gets its own Launch button right under it */
+          const lb = document.createElement('button'); lb.className = 'lbtn';
+          lb.textContent = label; lb.disabled = !fresh;
+          lb.onclick = ev => { ev.stopPropagation(); $('go').click(); };   /* the same button and the same checks as the one under the map */
+          box.appendChild(lb); revealEl = lb;
+        }
+      });
+    });
+  box.scrollTop = st;
+  if (revealEl && reveal) revealEl.scrollIntoView({ block: 'nearest' });
+  reveal = false;
+  if (fl && mode) { go.disabled = false; go.textContent = 'Confirm ' + mode; map.need(); return; }   /* hold / stop / coast */
+  go.disabled = !pick || !fresh;
+  go.textContent = label;
+  map.need();
+}
 
-<section id="game" hidden>
-  <div id="topbar" hidden>
-    <div class="tbrow">
-      <button id="vs" class="vs" title="Home" aria-label="Home">VS</button>
-      <div class="bars">
-        <div class="bitem">
-          <div class="blabrow"><span id="lvl" class="lvl">1</span><div class="blab" id="xpnum"></div></div>
-          <div class="bar xp"><div id="xpfill" class="fill"></div></div>
-        </div>
-        <div class="bitem" id="enitem" title="Tap: time until full">
-          <div class="blab" id="ennum"></div>
-          <div class="bar en"><div id="enfill" class="fill"></div></div>
-        </div>
-        <div id="money" class="money" title="Credits"></div>
-      </div>
-      <button id="pic" class="pic" title="Profile" aria-label="Profile">?</button>
-    </div>
-    <div id="evline" class="evline" title="Tap: all events"><span id="evlast" class="evlast">No events yet</span><span id="evcaret" class="evcaret">+</span></div>
-    <ul id="evs" class="evlist" hidden></ul>
-  </div>
-  <div id="nochar" hidden>
-    <h2>Create character</h2>
-    <input id="cname" placeholder="character name (3-24 chars)">
-    <button id="mk">Create</button>
-    <button id="out2" class="alt">Log out</button>
-  </div>
+/* the ship's speed in km/s for the map: from its stored plan (in a hop: relative to the body); null while docked */
+const AU_DAY_KMS = 149597870.7 / 86400;
+function shipSpeedKms() {
+  const ship = S.last && (S.last.ships || [])[0];
+  if (!ship || ship.state === 'docked' || !ship.plan) return null;
+  const s = stateAt(ship.plan, curGd());
+  return Math.hypot(s.vx, s.vy) * AU_DAY_KMS;
+}
+/* where is the ship right now? (from its stored plan, or from the body it sits at) */
+function shipPoint() {
+  const ship = S.last && (S.last.ships || [])[0]; if (!ship) return null;
+  const gd = curGd();
+  if (ship.state === 'traveling' && ship.plan) { const s = stateAt(ship.plan, gd); return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: ship.plan }; }
+  /* a hop (or a drift that began in a hop): its plan is stored relative to the body (plan.frame); shipStateAbs adds the body.
+     A drift in space has no frame: shipStateAbs gives the plain state. */
+  if ((ship.state === 'hopping' || ship.state === 'drifting') && ship.plan) {
+    const s = shipStateAbs(ship.plan, gd);
+    let course = null;
+    if (ship.state === 'hopping') course = ship.plan;                                 /* the hop itself (the map adds the body to a plan in its frame) */
+    else if (ship.plan.segs.length) course = ship.plan;                               /* after Stop: the braking path to the stopping point (nothing once at rest) */
+    else if (Math.hypot(s.vx, s.vy) > 1e-9) course = coastPreview({ x: s.x, y: s.y, vx: s.vx, vy: s.vy }, gd);   /* after Coast: a line ahead along the heading */
+    return { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: s.ax, ay: s.ay, a: s.a, plan: course };
+  }
+  let body = null, off = { x: 0, y: 0 };
+  if (ship.state === 'docked') { const l = (S.last.locations || []).find(x => x.id === ship.location_id); body = l && l.anchor_body; off = l ? placeXY(l) : off; }
+  else if (ship.state === 'hopping') { const a = (S.last.actions || []).find(x => x.status === 'pending'); body = a && a.payload && a.payload.to; }
+  const i = BODIES.findIndex(b => b.n === body); if (i < 1) return null;
+  const p = bodyPos(BODIES[i], gd); return { x: p[0] + off.x, y: p[1] + off.y, plan: null };
+}
 
-  <div id="haschar" hidden>
-    <nav id="nav" hidden></nav>
+/* Blue preview course. Display only: same shared physics as the server, recomputed every 3 s because the planets move
+   (and at once when the slider, the pick or the button changes). The real course is planned by the server at confirm. */
+let pv = { key: '', plan: null };
+const bodyIdx = name => BODIES.findIndex(b => b.n === name);
+function coastPreview(st, t) {                                 /* 2 game days of straight flight, so there is a line to see */
+  const s = { t0: t, dur: 2, x: st.x, y: st.y, vx: st.vx, vy: st.vy, ax: 0, ay: 0 };
+  return { segs: [s], t0: t, T: 2, tEnd: t + 2, tgt: null, dock: -1, end: segmentEnd(s) };
+}
+/* where a place sits relative to its planet (AU): its distance at its fixed angle (same rule as placeXY on the server) */
+const placeXY = l => { const r = Number(l.offset_au) || 0, a = (Number(l.angle_deg) || 0) * Math.PI / 180; return { x: r * Math.cos(a), y: r * Math.sin(a) }; };
+const locById = id => (S.last && S.last.locations || []).find(x => x.id === id);
+/* a hop is planned in the body's own frame: positions are the places' offsets from the body (AU) along one fixed axis */
+function hopPreview(fromState, toLoc, t, g, frame, regen0) {
+  const r = planTravelPulse({ from: { state: fromState }, to: placeXY(toLoc), departT: t, g,
+    bar: Number(deps.endurance), mx: Number(deps.endurance_max), freeG: Number(deps.free_g), refill: Number(deps.refill),
+    perG: Number(deps.per_g), share: Number(deps.share), regen0: !!regen0 });
+  if (!r.ok) return null;
+  r.plan.frame = frame; return r.plan;
+}
+function previewPlan() {
+  const ship = S.last && (S.last.ships || [])[0];
+  if (!ship || !deps) return null;
+  if (ship.state === 'docked') {
+    if (!deps.docked) return null;
+    const d = (deps.departures || []).find(x => x.id === selected); if (!d) return null;
+    const l = locById(ship.location_id), dl = locById(d.id);
+    if (!l || !dl) return null;
+    const key = 'D|' + selected + '|' + thrustG + '|' + Math.floor(Date.now() / 3000);
+    if (pv.key !== key) {
+      if (l.anchor_body === d.anchor_body) {                    /* same body: a hop */
+        pv = { key, plan: hopPreview({ ...placeXY(l), vx: 0, vy: 0 }, dl, curGd(), thrustG, bodyIdx(l.anchor_body), false) };
+      } else {
+        const r = planTravelPulse({ from: { body: bodyIdx(l.anchor_body) },
+          to: { body: bodyIdx(d.anchor_body) }, departT: curGd(), g: thrustG,
+          bar: Number(deps.endurance), mx: Number(deps.endurance_max), freeG: Number(deps.free_g), refill: Number(deps.refill),
+          perG: Number(deps.per_g), share: Number(deps.share) });
+        pv = { key, plan: r.ok ? r.plan : null };
+      }
+    }
+    return pv.plan;
+  }
+  if (!deps.flying) return null;
+  const sp = shipPoint(); if (!sp || sp.vx == null) return null;
+  const frame = ship.plan && ship.plan.frame != null ? ship.plan.frame : null;
+  const key = 'F|' + ship.state + '|' + mode + '|' + selected + '|' + thrustG + '|' + Math.floor(Date.now() / 3000);
+  if (pv.key !== key) {
+    pv = { key, plan: null };
+    const st = { x: sp.x, y: sp.y, vx: sp.vx, vy: sp.vy }, t = curGd();
+    const rel = frame != null ? stateAt(ship.plan, t) : null;   /* state in the body's frame, when the ship is inside one */
+    const relSt = rel ? { x: rel.x, y: rel.y, vx: rel.vx, vy: rel.vy } : null;
+    if (mode === 'stop') {
+      if (frame == null) pv.plan = stopPlan(st, t, Number(deps.free_g));
+      else { const p = stopPlan(relSt, t, Number(deps.free_g)); if (p) { p.frame = frame; pv.plan = p; } }
+    }
+    else if (mode === 'coast') pv.plan = coastPreview(st, t);
+    else {
+      const d = (deps.departures || []).find(x => x.id === (mode === 'hold' ? deps.dest : selected));
+      if (d) {
+        const g = mode === 'hold' ? Number(deps.free_g) : thrustG;
+        if (frame != null && BODIES[frame].n === d.anchor_body) {
+          const dl = locById(d.id); if (dl) pv.plan = hopPreview(relSt, dl, t, g, frame, deps.regen0);
+        } else {
+          const bar = enduranceNow();
+          const r = planTravelPulse({ from: { state: st }, to: { body: bodyIdx(d.anchor_body) }, departT: t, g,
+            bar: bar == null ? Number(deps.endurance) : bar, mx: Number(deps.endurance_max), freeG: Number(deps.free_g),
+            refill: Number(deps.refill), perG: Number(deps.per_g), share: Number(deps.share), regen0: !!deps.regen0 });
+          pv.plan = r.ok ? r.plan : null;
+        }
+      }
+    }
+  }
+  return pv.plan;
+}
 
-    <!-- SCREEN: travel (map + departure list). Other screens get their own div like this one. -->
-    <div id="scr-travel" class="travel">
-      <div class="mapcol">
-        <div class="mapwrap">
-          <canvas id="map"></canvas>
-          <div class="zb">
-            <button id="zInner" title="Inner planets">Inner</button>
-            <button id="zSys" title="Whole system">System</button>
-            <button id="zShip" title="Centre on my ship, very close">Ship</button>
-          </div>
-          <button id="speed" class="alt sp" hidden title="Developer: game speed 1x / 2x / 10x (tap to change)">1</button>
-        </div>
-        <div class="actrow">
-          <div class="actl"><button id="go" disabled>Launch</button></div>
-          <div class="actr" id="actr" hidden></div>
-        </div>
-      </div>
-      <div class="side">
-        <div id="depshead" class="dephead"><span>Destinations</span><span id="depscaret">+</span></div>
-        <div id="deps" class="muted" hidden>Loading destinations...</div>
-      </div>
-    </div>
+const map = createMap($('map'), {
+  ship: shipPoint,
+  speed: shipSpeedKms,
+  preview: previewPlan,
+  selectedBody,
+  /* places a little away from their planet (offset > 0): the map draws them once zoomed in far enough, and they can be tapped */
+  places: () => (S.last && S.last.locations || []).filter(l => Number(l.offset_au) > 0 && bodyIdx(l.anchor_body) > 0)
+    .map(l => ({ id: l.id, name: l.name, body: bodyIdx(l.anchor_body), off: Number(l.offset_au), ang: (Number(l.angle_deg) || 0) * Math.PI / 180 })),
+  selectedPlace: () => (mode === 'hold' && deps ? deps.dest : selected),
+  pickPlace: id => {
+    const d = deps && deps.departures && deps.departures.find(x => x.id === id);
+    if (d) { selected = d.id; mode = null; drawAll(); } else say('That place is not a destination from here.', 'muted');
+  },
+  pick: name => {
+    const d = deps && deps.departures && deps.departures.find(x => x.anchor_body === name && x.is_default);
+    if (d) { selected = d.id; mode = null; drawAll(); } else say(name + ' is not a destination from here.', 'muted');
+  },
+});
+$('zInner').onclick = () => map.preset('inner');
+$('zSys').onclick = () => map.preset('sys');
+$('zShip').onclick = () => map.preset('ship');
 
-    <!-- SCREEN: market (goods in markets, in storage and in the hold; trade from anywhere) -->
-    <div id="scr-market" hidden>
-      <div id="mloc"></div>
-      <div id="mbody" class="muted">Loading...</div>
-    </div>
+/* the list pops up over the map: it is as tall as the map area (map + the button row under it) */
+function sizeDeps() {
+  const mc = document.querySelector('#scr-travel .mapcol');
+  if (mc) $('deps').style.setProperty('--depsh', (mc.offsetHeight + 8) + 'px');
+}
+function showDeps() { if (depsOpen) sizeDeps(); $('deps').hidden = !depsOpen; $('depscaret').textContent = depsOpen ? '-' : '+'; }
+window.addEventListener('resize', () => { if (depsOpen) sizeDeps(); });
+$('depshead').onclick = () => { depsOpen = !depsOpen; showDeps(); };
+addScreen('travel', 'Fly', $('scr-travel'), {
+  onShow: () => { map.resize(); map.need(); sizeThrust(); },
+  update: ship => {
+    if (!ship) { map.need(); return; }
+    const fl = ship.state !== 'docked';
+    /* the list on screen must match the ship's state: docked list for a docked ship, course options for a flying one */
+    const fits = deps && (fl ? deps.flying : (deps.docked && deps.from === ship.location_id));
+    if (deps && !fits) { deps = null; mode = null; drawAll(); }
+    if (!deps || Date.now() - depsAt > 30000) loadDeps();
+    map.need();
+  },
+});
 
-    <!-- SCREEN: profile (opened by the circle at the top right; no tab) -->
-    <div id="scr-profile" hidden></div>
+/* The confirm button: Launch (docked) or Confirm course (in flight). It is the only thing that changes the ship. */
+function courseMessage(r) {
+  if (r.kind === 'drift') return r.mode === 'stop'
+    ? 'Braking to a stop (about ' + r.brake_real_minutes.toFixed(1) + ' real minutes). Then the ship drifts: pick a destination.'
+    : 'Engine cut. The ship keeps its speed and direction.';
+  return (r.mode === 'hold' ? 'Holding the bar: ' : 'New course: ') + r.to + ' at ' + r.g + ' g' +
+    (r.pulsed ? ' (pulsing, average ' + r.g_avg.toFixed(1) + ' g)' : '') + '. Trip takes ' + r.duration_real_minutes.toFixed(1) + ' real minutes.' +
+    (r.sun_danger ? ' WARNING: passes close to the Sun.' : '');
+}
+$('go').onclick = async () => {
+  const go = $('go'); go.disabled = true;
+  try {
+    if (isFlying()) {
+      const r = await call('course_change', mode ? { mode } : { mode: 'go', to: selected, g: thrustG });
+      say(courseMessage(r), 'ok');
+    } else {
+      const r = await call('queue_travel', { to: selected, g: thrustG });
+      say('Launched to ' + r.to + ' at ' + r.g + ' g' + (r.pulsed ? ' (pulsing, average ' + r.g_avg.toFixed(1) + ' g)' : '') +
+        '. Trip takes ' + r.duration_real_minutes.toFixed(1) + ' real minutes.' +
+        (r.sun_danger ? ' WARNING: passes close to the Sun.' : ''), 'ok');
+    }
+    deps = null; selected = null; mode = null; depsOpen = false; showDeps(); drawAll();   /* a launched trip closes the list */
+    await S.refresh();
+  } catch (e) {
+    say('Error: ' + (e.message === 'arrived' ? 'the ship has just arrived; look again.' : e.message), 'err');
+    deps = null; mode = null; await S.refresh(); loadDeps();
+  }
+};
 
-    <!-- SCREEN: home (opened by the VS box at the top left; no tab) -->
-    <div id="scr-home" hidden>
-      <h2>Home</h2>
-      <div class="muted" id="who"></div>
-      <h2>Game time</h2><div id="gtime"></div>
-      <h2>Ship</h2><div id="ship"></div>
-      <div class="muted pad">Information, in-game purchases and more will come here later.</div>
-      <button id="out" class="alt">Log out</button>
-    </div>
-  </div>
-</section>
-
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script type="importmap">
-{ "imports": {
-  "physics": "../shared/physics.js",
-  "core":    "./js/core.js",
-  "map":     "./js/map.js",
-  "fly":     "./js/fly.js",
-  "market":  "./js/market.js",
-  "profile": "./js/profile.js",
-  "backdrop": "./js/backdrop.js",
-  "home":    "./js/home.js",
-  "assets":  "./js/assets.js"
-} }
-</script>
-<script type="module" src="./js/main.js"></script>
-</body>
-</html>
+/* called by main.js */
+export function invalidateDeps() { deps = null; }                      /* ETAs changed (game speed): fetch them again */
+export function resetFly() { deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; }   /* log out */
