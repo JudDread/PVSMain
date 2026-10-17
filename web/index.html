@@ -30,11 +30,13 @@ button:disabled{opacity:.45}
 #map{width:100%;height:100%;display:block;touch-action:none;background:linear-gradient(rgba(7,10,18,.3),rgba(7,10,18,.3)),#070a12 url(img/starscape.webp) center/cover no-repeat;border:1px solid #222b40;border-radius:8px}   /* star-scape picture; the .3 is how much it is dimmed (0 = full picture, 1 = none) */
 .zb{position:absolute;top:6px;left:6px}
 .zb button{padding:4px 9px;font-size:13px;margin:0 4px 0 0;background:#2a3350cc;color:#e3e9f7;border:1px solid #444f70}
-.side{display:flex;flex-direction:column;min-width:0}
+.side{display:flex;flex-direction:column;min-width:0;position:relative}
 /* destinations: a label that opens the list; flat rows with a line under each (no tiles) */
 .dephead{display:flex;justify-content:space-between;align-items:center;padding:12px 8px;color:#e8b64a;font-weight:600;border-bottom:1px solid #1c2438;cursor:pointer}
 .dephead span+span{color:#8d98b2}
-#deps{max-height:300px;overflow-y:auto;margin:0}
+/* portrait: the list pops UP from its label and covers the map (fly.js sets --depsh = the map area's height) */
+#deps{position:absolute;left:0;right:0;bottom:100%;height:var(--depsh,380px);overflow-y:auto;margin:0;background:#0f1523;border:1px solid #444f70;border-radius:8px;z-index:6;box-sizing:border-box}
+.lbtn{width:calc(100% - 16px);margin:6px 8px 8px}   /* the Launch button under the selected line */
 .grp{color:#e8b64a;font-size:13px;padding:10px 8px 2px}
 .row{display:flex;justify-content:space-between;gap:8px;padding:10px 8px;border-bottom:1px solid #1c2438;cursor:pointer}
 .row.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
@@ -44,7 +46,7 @@ button:disabled{opacity:.45}
   .mapcol{flex:1;min-width:0;display:flex;flex-direction:column}
   .mapwrap{flex:1;height:auto;min-width:0}
   .side{width:330px;flex:none}
-  #deps{max-height:none;flex:1}
+  #deps{position:static;height:auto;max-height:none;flex:1;background:none;border:0;border-radius:0}   /* landscape: the list stays beside the map */
 }
 /* under the map: Launch / Confirm at the left (a third of the width), in-flight buttons at the right */
 .actrow{display:flex;gap:8px;align-items:flex-start;margin-top:6px}
