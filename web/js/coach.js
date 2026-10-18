@@ -1,0 +1,86 @@
+// coach.js - the pointer (a gold ring + a speech box) and the message box used by the guided tours. Display only.
+// FREE MODE: the ring never blocks a tap (pointer-events none), so the player can use the whole page while a pointer is up.
+import { el } from 'core';
+
+const css = document.createElement('style');
+css.textContent = [
+  '#coachring{position:fixed;z-index:90;pointer-events:none;border:3px solid #e8b64a;border-radius:10px;box-sizing:border-box;box-shadow:0 0 0 9999px rgba(5,8,15,.5),0 0 12px 2px rgba(232,182,74,.7)}',
+  '#coachtip{position:fixed;z-index:95;background:#131a2a;border:2px solid #e8b64a;border-radius:10px;padding:10px 12px;box-sizing:border-box;font-size:15px;line-height:1.35;box-shadow:0 4px 18px rgba(0,0,0,.6)}',
+  '#coachtip .cbtns{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:8px}',
+  '#coachtip button{margin:0;padding:6px 14px;font-size:14px}',
+  '#coachmodal{position:fixed;top:0;left:0;right:0;bottom:0;z-index:100;background:rgba(5,8,15,.85);display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box}',
+  '#coachmodal .card{background:#131a2a;border:2px solid #e8b64a;border-radius:12px;padding:14px;max-width:440px;width:100%;max-height:100%;overflow-y:auto;box-sizing:border-box}',
+  '#coachmodal .kick{font-size:12px;font-weight:700;letter-spacing:1px;color:#6be08f;margin-bottom:4px}',
+  '#coachmodal h2{font-size:19px;margin:0 0 8px}',
+  '#coachmodal p{margin:0 0 10px;color:#d3dbee;font-size:15px;line-height:1.4}',
+  '#coachmodal .cmb{display:flex;flex-direction:column;gap:6px;margin-top:6px}',
+  '#coachmodal .cmb button{width:100%;margin:0;padding:10px}',
+].join('');
+document.head.appendChild(css);
+
+let ring = null, tip = null, cfg = null, timer = null, modalEl = null;
+
+function ensure() {
+  if (ring) return;
+  ring = el('div'); ring.id = 'coachring'; tip = el('div'); tip.id = 'coachtip';
+  ring.hidden = tip.hidden = true;
+  document.body.append(ring, tip);
+  window.addEventListener('resize', () => place());
+  window.addEventListener('scroll', () => place(), true);
+}
+
+// Where do the ring and the speech box go? Worked out from the real position of the target on screen, so it fits any tablet or phone.
+function place(first) {
+  if (!cfg) return;
+  const t = cfg.target ? document.querySelector(cfg.target) : null;
+  let r = t ? t.getBoundingClientRect() : null;
+  if (r && (r.width < 2 || r.height < 2)) r = null;                      /* hidden or missing target */
+  const vw = window.innerWidth, vh = window.innerHeight, low = vh - 90;    /* 90 = room for the bottom tab bar */
+  if (r && first === true && r.height < vh * 0.6 && (r.top < 0 || r.bottom > vh)) { t.scrollIntoView({ block: 'nearest' }); r = t.getBoundingClientRect(); }
+  const w = Math.min(320, vw - 24);
+  tip.style.width = w + 'px';
+  const th = tip.offsetHeight, big = r && r.height > vh * 0.45;           /* a big target (a whole screen) gets no ring */
+  ring.hidden = !r || big;
+  let top = null, left = (vw - w) / 2;
+  if (r && !big) {
+    ring.style.left = (r.left - 4) + 'px'; ring.style.top = (r.top - 4) + 'px';
+    ring.style.width = (r.width + 8) + 'px'; ring.style.height = (r.height + 8) + 'px';
+    left = Math.max(12, Math.min(vw - w - 12, r.left + r.width / 2 - w / 2));
+    if (r.bottom + 14 + th <= low) top = r.bottom + 14;
+    else if (r.top - 14 - th >= 8) top = r.top - 14 - th;
+  }
+  tip.style.left = left + 'px';
+  if (top == null) { tip.style.top = 'auto'; tip.style.bottom = '90px'; }  /* docked above the tab bar */
+  else { tip.style.bottom = 'auto'; tip.style.top = top + 'px'; }
+}
+
+// pointAt({target: css selector, text, next: label, onNext, skipLabel, onSkip}) - Next and Skip buttons only appear when their function is given.
+export function pointAt(c) {
+  ensure(); cfg = c;
+  tip.replaceChildren(el('div', '', c.text));
+  const row = el('div', 'cbtns');
+  if (c.onSkip) { const s = el('button', 'alt', c.skipLabel || 'Skip tour'); s.onclick = c.onSkip; row.appendChild(s); }
+  if (c.onNext) { const n = el('button', '', c.next || 'Next'); n.onclick = c.onNext; row.appendChild(n); }
+  if (row.children.length) tip.appendChild(row);
+  tip.hidden = false;
+  place(true);
+  clearInterval(timer); timer = setInterval(() => place(), 500);          /* the layout can move (a list opens, a screen redraws) */
+}
+export function clearPointer() {
+  cfg = null; clearInterval(timer); timer = null;
+  if (ring) ring.hidden = tip.hidden = true;
+}
+
+// modal({kicker, title, paras: [text, ...], buttons: [{label, alt, onClick}, ...]}) - a full-screen message the player must answer.
+export function modal(m) {
+  closeModal();
+  modalEl = el('div'); modalEl.id = 'coachmodal';
+  const c = el('div', 'card');
+  if (m.kicker) c.appendChild(el('div', 'kick', m.kicker));
+  c.appendChild(el('h2', '', m.title));
+  (m.paras || []).forEach(p => c.appendChild(el('p', '', p)));
+  const row = el('div', 'cmb');
+  (m.buttons || []).forEach(b => { const x = el('button', b.alt ? 'alt' : '', b.label); x.onclick = b.onClick; row.appendChild(x); });
+  c.appendChild(row); modalEl.appendChild(c); document.body.appendChild(modalEl);
+}
+export function closeModal() { if (modalEl) { modalEl.remove(); modalEl = null; } }
