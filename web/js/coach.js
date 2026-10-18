@@ -1,5 +1,7 @@
 // coach.js - the pointer (a gold ring + a speech box) and the message box used by the guided tours. Display only.
 // FREE MODE: the ring never blocks a tap (pointer-events none), so the player can use the whole page while a pointer is up.
+// A target is a css selector, or {sel, text} (the first VISIBLE match whose text contains `text`), or a list of those (the first one that is visible wins).
+// onTarget (optional): called once, shortly after the player taps the target.
 import { el } from 'core';
 
 const css = document.createElement('style');
@@ -20,6 +22,19 @@ document.head.appendChild(css);
 
 let ring = null, tip = null, cfg = null, timer = null, modalEl = null;
 
+function findTarget(t) {
+  for (const x of (Array.isArray(t) ? t : [t])) {
+    if (!x) continue;
+    const sel = typeof x === 'string' ? x : x.sel;
+    for (const e of document.querySelectorAll(sel)) {
+      if (x.text && !e.textContent.includes(x.text)) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width >= 2 && r.height >= 2) return e;          /* hidden elements have no size */
+    }
+  }
+  return null;
+}
+
 function ensure() {
   if (ring) return;
   ring = el('div'); ring.id = 'coachring'; tip = el('div'); tip.id = 'coachtip';
@@ -27,14 +42,18 @@ function ensure() {
   document.body.append(ring, tip);
   window.addEventListener('resize', () => place());
   window.addEventListener('scroll', () => place(), true);
+  document.addEventListener('click', ev => {                /* capture phase: runs before the page's own tap handler */
+    if (!cfg || !cfg.onTarget) return;
+    const t = findTarget(cfg.target);
+    if (t && t.contains(ev.target)) { const f = cfg.onTarget; cfg.onTarget = null; setTimeout(f, 80); }   /* after the page has reacted */
+  }, true);
 }
 
 // Where do the ring and the speech box go? Worked out from the real position of the target on screen, so it fits any tablet or phone.
 function place(first) {
   if (!cfg) return;
-  const t = cfg.target ? document.querySelector(cfg.target) : null;
-  let r = t ? t.getBoundingClientRect() : null;
-  if (r && (r.width < 2 || r.height < 2)) r = null;                      /* hidden or missing target */
+  const t = cfg.target ? findTarget(cfg.target) : null;
+  let r = t ? t.getBoundingClientRect() : null;                           /* no visible target: the speech box is shown docked, without a ring */
   const vw = window.innerWidth, vh = window.innerHeight, low = vh - 90;    /* 90 = room for the bottom tab bar */
   if (r && first === true && r.height < vh * 0.6 && (r.top < 0 || r.bottom > vh)) { t.scrollIntoView({ block: 'nearest' }); r = t.getBoundingClientRect(); }
   const w = Math.min(320, vw - 24);
@@ -54,7 +73,7 @@ function place(first) {
   else { tip.style.bottom = 'auto'; tip.style.top = top + 'px'; }
 }
 
-// pointAt({target: css selector, text, next: label, onNext, skipLabel, onSkip}) - Next and Skip buttons only appear when their function is given.
+// pointAt({target, text, next: label, onNext, onTarget, skipLabel, onSkip}) - Next and Skip buttons only appear when their function is given.
 export function pointAt(c) {
   ensure(); cfg = c;
   tip.replaceChildren(el('div', '', c.text));
