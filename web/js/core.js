@@ -76,7 +76,7 @@ export const LS = {
 export function say(t, cls) { const m = $('msg'); m.textContent = t || ''; m.className = cls || ''; }
 export const li = t => { const e = document.createElement('li'); e.textContent = t; return e; };
 
-/* functions told the name of every server action that succeeded (missions.js uses this to finish steps named like an action) */
+/* functions told the name and the arguments of every server action that succeeded (missions.js uses this to finish steps named like an action) */
 export const actionWatchers = [];
 export async function call(action, extra) {
   const { data, error } = await S.sb.functions.invoke('game', { body: { action, ...(extra || {}) } });
@@ -87,7 +87,7 @@ export async function call(action, extra) {
     err.data = d;
     throw err;
   }
-  actionWatchers.forEach(f => { try { f(action); } catch (e) {} });
+  actionWatchers.forEach(f => { try { f(action, extra); } catch (e) {} });
   return data;
 }
 export function fmt(sec) {
