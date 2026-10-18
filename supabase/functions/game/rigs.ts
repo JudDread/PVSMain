@@ -7,7 +7,7 @@
 //   rig_fit         body.rig, body.ship (optional)  fit one rig from storage here (first) or the hold
 //   rig_unfit       body.fit                        take one fitted rig off; it goes to storage
 //   rig_unfit_all   body.ship (optional)            take EVERY rig off one ship
-//   facilities      body.location                   what a place offers (today: a shipyard or nothing)
+//   facilities      body.location (optional)        what a place offers; with no place: which places have a facility
 //   shipyard        body.location                   the rig store of a place: what it sells, what I have there to sell
 //   rig_buy         body.location, body.rig, body.qty    buy; the rigs go to storage AT that place (you need not be there)
 //   rig_sell        body.location, body.rig, body.qty    sell from storage at that place
@@ -78,11 +78,18 @@ export async function rigUnfitAll(db, user, body) {
   return await ask(db, 'rig_unfit_all', { p_character: ch.id, p_ship: sa.ship });
 }
 
+// No body.location: which places have a facility at all (for the place list), e.g. { places: [{ location_id, kinds: ['shipyard'] }] }.
+// With body.location: what that one place offers (SQL facilities_view).
 export async function facilitiesView(db, user, body) {
-  const loc = String(body.location ?? '');
-  if (!LOC_RE.test(loc)) return json({ error: 'bad_request' }, 400);
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
+  const loc = String(body.location ?? '');
+  if (loc === '') {
+    const { data, error } = await db.from('shipyards').select('location_id');
+    if (error) throw error;
+    return json({ ok: true, places: (data ?? []).map(r => ({ location_id: r.location_id, kinds: ['shipyard'] })) });
+  }
+  if (!LOC_RE.test(loc)) return json({ error: 'bad_request' }, 400);
   return await ask(db, 'facilities_view', { p_character: ch.id, p_location: loc });
 }
 
