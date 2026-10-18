@@ -41,6 +41,7 @@ const ICONS = {
   market: '<svg viewBox="0 0 24 24"><path d="M3 21h18M6 21v-7M11 21V8M16 21v-9M21 21V5"/><path d="M3 11l5-4 4 2 8-6"/></svg>',
   missions: '<svg viewBox="0 0 24 24"><path d="M5 21V3"/><path d="M5 4h13l-3 4.5 3 4.5H5"/></svg>',
   assets: '<svg viewBox="0 0 24 24"><path d="M3 7.5l9-5 9 5v9l-9 5-9-5z"/><path d="M3 7.5l9 5 9-5M12 12.5v9"/></svg>',
+  facilities: '<svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V9l7-5 7 5v12"/><path d="M9 21v-6h6v6"/></svg>',
 };
 export function openScreen(name) {
   S.current = name;
