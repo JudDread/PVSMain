@@ -5,7 +5,7 @@
 import { S, $, addScreen, el } from 'core';
 
 const DISCORD = 'https://discord.gg/4G8rWeF7AV';
-const WELCOME = 'Welcome to Vacuum State, an early test of a hard sci-fi trading game. Things will change, break and be reset while we test. Thank you for helping.';   // the welcome text: edit here
+const WELCOME = 'Thank you for playtesting Vacuum State, a hard sci-fi trading game. The NPC economy, buying and selling goods from NPC locations, needs to be tested. Please try to break it. The next additions will be Combat, Faction Reputation and full Mission Chains with global events. ';   // the welcome text: edit here
 
 const home = $('scr-home');
 
@@ -30,7 +30,7 @@ welcome.append(welcomeName, el('div', 'muted pad', WELCOME));
 
 /* support + Discord (Discord is the support channel for now) */
 const help = block('Help and feedback');
-help.appendChild(el('div', 'muted pad', 'Questions, bugs, ideas or account trouble: message us on our Discord server. It is also where testers talk to each other.'));
+help.appendChild(el('div', 'muted pad', 'Questions, bugs, ideas or account trouble: message us on our Discord server. We are using Discord for chat at this time. '));
 const dc = el('button', '', 'Join our Discord');
 dc.addEventListener('click', () => window.open(DISCORD, '_blank', 'noopener'));
 help.appendChild(dc);
