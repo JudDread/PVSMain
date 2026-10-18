@@ -11,7 +11,7 @@ import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tra
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard } from './ships.ts';
 import { skillsView, skillBuy } from './skills.ts';
-import { missionsView, missionStep, missionClaim } from './missions.ts';
+import { missionsView, missionStep, missionAccept, missionClaim, missionsSeen } from './missions.ts';
 import { profileView } from './profile.ts';
 import { courseOptions, courseChange } from './course.ts';
 import { kickBots } from './bot.ts';
@@ -19,7 +19,7 @@ import { kickBots } from './bot.ts';
 // ---------- server ----------
 // Actions that count as the pilot DOING something: they set characters.last_action_at (the 'Last active' time on a profile).
 const ACTIVE_ACTIONS = new Set(['queue_travel', 'course_change', 'trade_at', 'load', 'unload', 'unload_all', 'freight_post', 'freight_cancel',
-  'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'skill_buy', 'mission_claim']);
+  'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'skill_buy', 'mission_accept', 'mission_claim']);
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
 
 
@@ -166,11 +166,12 @@ async function me(db, user) {
     const { data: cal, error: ce } = await db.rpc('cal_status', { p_character: ch.id });
     if (ce) throw ce;
     out.pilot = { ...pilot, skill_points: cal ? Number(cal.available) : 0 };
-    // Missions: this also starts any mission that is due (tutorial 1 for a new pilot). missions_ready = rewards waiting (the dot on the tab).
+    // Missions: this also starts any mission that is due (tutorial 1 for a new pilot). missions_ready = rewards waiting, missions_new = missions not looked at yet (the dot on the tab shows for either).
     // A failure here must never break the game, so it only logs.
     const { data: ql, error: qe } = await db.rpc('quest_list', { p_character: ch.id });
     if (qe) console.error(qe);
     out.missions_ready = ql ? Number(ql.ready) : 0;
+    out.missions_new = ql ? Number(ql.new) : 0;
   }
   out.sent_ms = Date.now(); // server time when this answer leaves: the page uses it to measure how far its own clock is off
   return json(out);
@@ -272,7 +273,9 @@ Deno.serve(async (req) => {
       case 'skill_buy': return await skillBuy(db, user, body);
       case 'missions': return await missionsView(db, user);
       case 'mission_step': return await missionStep(db, user, body);
+      case 'mission_accept': return await missionAccept(db, user, body);
       case 'mission_claim': return await missionClaim(db, user, body);
+      case 'missions_seen': return await missionsSeen(db, user);
       case 'profile': return await profileView(db, user, body);
       default: return json({ error: 'unknown_action' }, 400);
     }
