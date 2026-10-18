@@ -3,7 +3,8 @@
 // Server actions: 'missions' (list), 'mission_step' {quest, step}, 'mission_accept' {quest}, 'mission_claim' {quest}, 'missions_seen'.
 // Display only: the server decides everything (what is available, timers, rewards).
 // STEP RULE (for now): a step is finished by itself when its id equals the NAME of a screen the player opens (tutorial_1: 'profile' = the Profile screen)
-// or the name of a server action that succeeded (tutorial_2: 'queue_travel' = a trip was launched).
+// or the name of a server action that succeeded (tutorial_2: 'queue_travel' = a trip was launched);
+// a trade also finishes 'buy', 'sell', 'buy:<place id>' and 'sell:<place id>' (tutorial_3).
 // TAB DOT: shows while a reward waits (me.missions_ready) or a mission has not been looked at yet (me.missions_new).
 import { S, $, el, call, say, money, whole, nowMs, addScreen, screenWatchers, actionWatchers } from 'core';
 
@@ -162,14 +163,21 @@ setInterval(() => {                                   /* countdowns of timed mis
   div.querySelectorAll('.mdue[data-due]').forEach(d => { d.textContent = leftText({ due_at: d.dataset.due }); });
 }, 1000);
 
-/* A screen was opened or a server action succeeded: if an open mission has an undone step named like it, report it. */
-async function noteStep(name) {
+/* A screen was opened or a server action succeeded: if an open mission has an undone step named like it, report it.
+   A trade ('trade_at') also finishes steps named after what was done and where: 'buy', 'sell', 'buy:earth', 'sell:luna'. */
+async function noteStep(name, extra) {
   if (/^missions?(_|$)/.test(name) || !S.last || !S.last.character) return;
+  const names = [name];
+  if (name === 'trade_at' && extra && extra.kind) names.push(extra.kind, extra.kind + ':' + extra.location);
   if (!data) await load();
-  const q = list().find(x => x.status === 'active' && (x.steps || []).some(s => s.id === name && !s.done));
-  if (!q) return;
-  try { await call('mission_step', { quest: q.id, step: name }); await load(); if (S.refresh) S.refresh(); }
-  catch (e) { /* a refused step is not worth a message */ }
+  let sent = false;
+  for (const q of list().filter(x => x.status === 'active')) {
+    for (const nm of names) {
+      if (!(q.steps || []).some(s => s.id === nm && !s.done)) continue;
+      try { await call('mission_step', { quest: q.id, step: nm }); sent = true; } catch (e) { /* a refused step is not worth a message */ }
+    }
+  }
+  if (sent) { await load(); if (S.refresh) S.refresh(); }
 }
 screenWatchers.push(noteStep);
 actionWatchers.push(noteStep);
