@@ -22,12 +22,12 @@ const TOUR = {
   // A beat points at one thing. until = the mission step that finishes it (no Next button); next = shows a Next button;
   // screen = only shown while that screen is open (a pointer for a screen the player has left moves on).
   beats: [
-    { target: '.bars > .bitem:first-child', next: true, text: 'Your LEVEL and XP. You earn XP by flying distance. Every level-up gives you Calibrations (Cal) to spend on skills.' },
-    { target: '#enitem', next: true, text: 'Your ENDURANCE. The G-Drive is hard on the body: burning above your free thrust (3 g at the start) drains this bar, and it refills when you coast or dock. Tap the bar for a countdown.' },
+    { target: '.bars > .bitem:first-child', next: true, text: 'Your LEVEL and XP. You earn XP by flying distance amd completing missions. Every level-up gives you Calibrations (Cal) to spend on skills.' },
+    { target: '#enitem', next: true, text: 'Your ENDURANCE. The G-Drive is hard on the body: burning above your free thrust (3 g at the start) drains this bar, and it refills when you pull under 3 g or dock. Tap the bar for a countdown.' },
     { target: '#money', next: true, text: 'Your CREDITS. Everything in the system is bought and sold with them.' },
     { target: '#pic', until: 'profile', text: 'Tap your portrait circle to open your pilot profile.' },
-    { target: '#scr-profile', screen: 'profile', next: true, text: 'Your pilot file: level, Calibrations, credits, net worth, career, ship and reputation. Most of it is public, other pilots can read it. Tap Next when you are done looking.' },
-    { target: '#vs', until: 'home', text: 'Tap VS to open Home: help, the Discord link and Log out.' },
+    { target: '#scr-profile', screen: 'profile', next: true, text: 'Your pilot file: level, Cals, credits, net worth, career, ship and reputation. Most of it is public, other pilots can read it. Tap Next when you are done looking.' },
+    { target: '#vs', until: 'home', text: 'Tap VS to open the Home Screen: help, the Discord link, membership and Log out.' },
   ],
   final: { target: '#nav button[data-screen="missions"]', text: 'Mission complete! Open the Missions tab and claim your reward.' },
 };
