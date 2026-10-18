@@ -13,14 +13,15 @@ import { shipLeave, shipBoard } from './ships.ts';
 import { skillsView, skillBuy } from './skills.ts';
 import { missionsView, missionStep, missionAccept, missionClaim, missionsSeen } from './missions.ts';
 import { profileView } from './profile.ts';
-import { rigsView, rigFit, rigUnfit } from './rigs.ts';
+import { rigsView, rigFit, rigUnfit, rigUnfitAll, facilitiesView, shipyardView, rigTrade } from './rigs.ts';
 import { courseOptions, courseChange } from './course.ts';
 import { kickBots } from './bot.ts';
 
 // ---------- server ----------
 // Actions that count as the pilot DOING something: they set characters.last_action_at (the 'Last active' time on a profile).
 const ACTIVE_ACTIONS = new Set(['queue_travel', 'course_change', 'trade_at', 'load', 'unload', 'unload_all', 'freight_post', 'freight_cancel',
-  'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'skill_buy', 'mission_accept', 'mission_claim', 'rig_fit', 'rig_unfit']);
+  'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'skill_buy', 'mission_accept', 'mission_claim',
+  'rig_fit', 'rig_unfit', 'rig_unfit_all', 'rig_buy', 'rig_sell']);
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
 
 
@@ -278,9 +279,14 @@ Deno.serve(async (req) => {
       case 'mission_claim': return await missionClaim(db, user, body);
       case 'missions_seen': return await missionsSeen(db, user);
       case 'profile': return await profileView(db, user, body);
-      case 'rigs': return await rigsView(db, user);
+      case 'rigs': return await rigsView(db, user, body);
       case 'rig_fit': return await rigFit(db, user, body);
       case 'rig_unfit': return await rigUnfit(db, user, body);
+      case 'rig_unfit_all': return await rigUnfitAll(db, user, body);
+      case 'facilities': return await facilitiesView(db, user, body);
+      case 'shipyard': return await shipyardView(db, user, body);
+      case 'rig_buy': return await rigTrade(db, user, body, 'buy');
+      case 'rig_sell': return await rigTrade(db, user, body, 'sell');
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
