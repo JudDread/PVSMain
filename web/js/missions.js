@@ -2,9 +2,10 @@
 // One CARD per mission chain (a chain is a group of missions: Pilot Training, Earth Space Command, ...). Only open chains are sent.
 // Server actions: 'missions' (list), 'mission_step' {quest, step}, 'mission_accept' {quest}, 'mission_claim' {quest}, 'missions_seen'.
 // Display only: the server decides everything (what is available, timers, rewards).
-// STEP RULE (for now): opening a screen reports a step whose id is the screen's name (tutorial_1's step 'profile' = the Profile screen opened).
+// STEP RULE (for now): a step is finished by itself when its id equals the NAME of a screen the player opens (tutorial_1: 'profile' = the Profile screen)
+// or the name of a server action that succeeded (tutorial_2: 'queue_travel' = a trip was launched).
 // TAB DOT: shows while a reward waits (me.missions_ready) or a mission has not been looked at yet (me.missions_new).
-import { S, $, el, call, say, money, whole, nowMs, addScreen, screenWatchers } from 'core';
+import { S, $, el, call, say, money, whole, nowMs, addScreen, screenWatchers, actionWatchers } from 'core';
 
 const st = document.createElement('style');
 st.textContent = [
@@ -161,16 +162,17 @@ setInterval(() => {                                   /* countdowns of timed mis
   div.querySelectorAll('.mdue[data-due]').forEach(d => { d.textContent = leftText({ due_at: d.dataset.due }); });
 }, 1000);
 
-/* A screen was opened: if an open mission has an undone step named like that screen, report it. */
-async function noteScreen(name) {
-  if (name === 'missions' || !S.last || !S.last.character) return;
+/* A screen was opened or a server action succeeded: if an open mission has an undone step named like it, report it. */
+async function noteStep(name) {
+  if (/^missions?(_|$)/.test(name) || !S.last || !S.last.character) return;
   if (!data) await load();
   const q = list().find(x => x.status === 'active' && (x.steps || []).some(s => s.id === name && !s.done));
   if (!q) return;
   try { await call('mission_step', { quest: q.id, step: name }); await load(); if (S.refresh) S.refresh(); }
   catch (e) { /* a refused step is not worth a message */ }
 }
-screenWatchers.push(noteScreen);
+screenWatchers.push(noteStep);
+actionWatchers.push(noteStep);
 
 export function resetMissions() { data = null; failed = ''; loading = false; busy = false; for (const k in openMap) delete openMap[k]; for (const k in doneMap) delete doneMap[k]; div.replaceChildren(); }
 
