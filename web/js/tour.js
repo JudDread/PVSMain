@@ -13,7 +13,7 @@ const TOUR = {
     title: 'Luna Sovereignty - Pilot Registry',
     paras: [
       'Welcome to Luna, ' + name + '. Your papers are stamped and your slot in the register is open.',
-      'You are Homo sapiens astroalis, a pilot bred for the G-Drive. It burns no fuel: it bends gravity around your hull, and it asks your body to pay for it. Earthers call your kind Black-Eyes. Out here you are simply the people who can fly.',
+      'You are Homo Sapiens Astroalis, a pilot bred for the darkness of deep space amd the punishing demamds of the G-Drive. It burns no fuel: it creates a gravity well in front of your hull, amd lets the ship fall into it. Your bodynhas been engineered to survive this extreme acceleration, but not without cost. Earthers call your kind Black-Eyes. Out here you are simply the people who can fly.',
       'Luna is neutral ground: shipyards, banks and brokers, where Earth Space Command, the Jovian Compact and the Martian Core all trade and mostly keep their guns quiet. Out in the Belt, Ceres and Pallas fight over every tonne of ice. On the dark side of Luna, the Black Tryst takes a cut of everything else.',
       'Everything in the sky is moving, and nobody waits for you. Your first assignment is short: learn your cockpit.',
     ],
