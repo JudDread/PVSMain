@@ -29,6 +29,8 @@ let data = null;        // latest answer of the server action 'missions'
 let loading = false, busy = false, failed = '', doneOpen = false;
 
 const list = () => ((data && data.quests) || []);
+export const missionList = list;                 // for tour.js
+export const missionWatchers = [];               // functions run after every load of the list (tour.js adds one)
 const rewardText = r => {
   r = r || {}; const p = [];
   if (Number(r.credits)) p.push('Cr ' + money(r.credits));
@@ -44,6 +46,15 @@ async function load() {
   catch (e) { failed = e.message; }
   finally { loading = false; }
   if (S.current === 'missions') paint();
+  missionWatchers.forEach(f => { try { f(); } catch (e) {} });
+}
+
+// Report a step by name (throws when the server refuses). Used by tour.js; the screen-name rule below uses the same action.
+export async function reportStep(quest, step) {
+  const r = await call('mission_step', { quest, step });
+  if (r && r.ok === false) throw new Error(r.error || 'refused');
+  await load();
+  if (S.refresh) S.refresh();
 }
 
 async function claim(q, btn) {
