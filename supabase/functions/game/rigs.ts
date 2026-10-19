@@ -11,6 +11,8 @@
 //   shipyard        body.location                   the rig store of a place: what it sells, what I have there to sell
 //   rig_buy         body.location, body.rig, body.qty    buy; the rigs go to storage AT that place (you need not be there)
 //   rig_sell        body.location, body.rig, body.qty    sell from storage at that place
+//   hull_buy        body.location, body.hull        buy a hull; it is PARKED (docked) at that place, you need not be there (migration 055)
+//   hull_sell       body.location, body.ship        sell a PARKED hull docked at that place (no rigs, empty hold, not the flown ship)
 // ======================================================================
 import { json, getCharacter, resolveFor, UUID_RE, LOC_RE } from './common.ts';
 
@@ -108,4 +110,20 @@ export async function rigTrade(db, user, body, kind) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
   return await ask(db, kind === 'buy' ? 'rig_buy' : 'rig_sell', { p_character: ch.id, p_location: loc, p_rig: rig, p_qty: qty });
+}
+
+export async function hullBuy(db, user, body) {
+  const loc = String(body.location ?? ''), hull = String(body.hull ?? '');
+  if (!LOC_RE.test(loc) || !RIG_RE.test(hull)) return json({ error: 'bad_request' }, 400);
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  return await ask(db, 'hull_buy', { p_character: ch.id, p_location: loc, p_hull: hull });
+}
+
+export async function hullSell(db, user, body) {
+  const loc = String(body.location ?? ''), ship = String(body.ship ?? '');
+  if (!LOC_RE.test(loc) || !UUID_RE.test(ship)) return json({ error: 'bad_request' }, 400);
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  return await ask(db, 'hull_sell', { p_character: ch.id, p_location: loc, p_ship: ship });
 }
