@@ -187,7 +187,7 @@ export function defaultLoc() {
    Redraws while the list is open do not close it. Display only. */
 /* A tag in a picker row is text. If it starts with '@ship ' the small ship icon is drawn before the rest ('@ship shipyard' = icon + 'shipyard'). */
 const pickStyle = document.createElement('style');
-pickStyle.textContent = '.lptag{display:inline-flex;align-items:center;gap:4px}.lpship{display:inline-flex}.lpship svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}';
+pickStyle.textContent = '.lptag{display:inline-flex;align-items:center;gap:4px}.lpship{display:inline-flex}.lpship svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}';
 document.head.appendChild(pickStyle);
 const SHIP_SVG = '<svg viewBox="0 0 24 24"><path d="M12 2c3 3 4 7 4 11l3 4-4 .5L12 21l-3-3.5-4-.5 3-4c0-4 1-8 4-11z"/><circle cx="12" cy="9.5" r="1.6"/></svg>';
 function tagNode(text) {
@@ -196,6 +196,24 @@ function tagNode(text) {
   if (t.startsWith('@ship')) { const i = el('span', 'lpship'); i.innerHTML = SHIP_SVG; n.appendChild(i); t = t.slice(5).trim(); }
   if (t) n.appendChild(document.createTextNode(t));
   return n;
+}
+/* A quantity box with buttons: (0)(-big)(-small)[ box ](+small)(+big)(max). steps = the two step sizes, e.g. [1, 10] or [1, 5]: the buttons
+   show whatever you give (-5 and +5 for [1, 5]). getMax() = the largest allowed number (the max button and every + stop there).
+   onChange() runs after any button press or any typing. inputClass lets the caller recognise its box (to hold redraws while typing).
+   Returns { root, input, get(), set(v) }; set() only fills the box, it does not call onChange. */
+const qtyStyle = document.createElement('style');
+qtyStyle.textContent = '.qty{display:flex;align-items:center;justify-content:center;gap:4px}.qty button{margin:0;padding:7px 0;min-width:34px;font-size:13px}.qty button.qmax{min-width:42px}.qty input{width:58px;box-sizing:border-box;text-align:center;margin:0;padding:7px 4px}';
+document.head.appendChild(qtyStyle);
+export function qtyControl({ steps = [1, 10], getMax = () => 100, onChange = () => {}, inputClass = '' } = {}) {
+  const root = el('div', 'qty'), inp = document.createElement('input');
+  inp.type = 'number'; inp.inputMode = 'numeric'; inp.step = '1'; inp.min = '0'; inp.className = inputClass; inp.setAttribute('aria-label', 'Quantity'); inp.value = 0;
+  const cur = () => { const v = Number(inp.value); return Number.isFinite(v) ? v : 0; };
+  const put = v => { inp.value = Math.max(0, Math.min(getMax(), Math.floor(v))); };
+  const mk = (label, fn, cls) => { const b = el('button', 'alt' + (cls ? ' ' + cls : ''), label); b.type = 'button'; b.onclick = () => { fn(); onChange(); }; return b; };
+  const big = steps.slice().sort((a, b) => b - a), small = steps.slice().sort((a, b) => a - b);
+  root.append(mk('0', () => put(0)), ...big.map(n => mk('-' + n, () => put(cur() - n))), inp, ...small.map(n => mk('+' + n, () => put(cur() + n))), mk('max', () => put(getMax()), 'qmax'));
+  inp.addEventListener('input', () => onChange());
+  return { root, input: inp, get: () => inp.value, set: v => { inp.value = v; } };
 }
 export function createPicker(onPick, label) {
   const root = el('div', 'lp'), btn = el('button', 'locsel'), name = el('span', 'lpname'), side = el('span', 'lpside'), list = el('div', 'lplist');
