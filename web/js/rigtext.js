@@ -2,6 +2,8 @@
 import { money, whole, r2 } from 'core';
 
 export const KIND_LABEL = { weapon: 'Weapon', engineering: 'Engineering', utility: 'Utility' };
+/* The picture of a hull: Elite hulls use the picture of the base hull (web/img/hulls/<hull id>.webp). */
+export const hullPicUrl = id => 'img/hulls/' + String(id).replace(/^elite_/, '') + '.webp';
 export const KIND_PLURAL = { weapon: 'Weapons', engineering: 'Engineering rigs', utility: 'Utility rigs' };
 
 // The sentence for a refused or failed rig / shipyard action (the server answers with an error name and its numbers in e.data).
@@ -9,7 +11,14 @@ export function rigError(e) {
   const d = e.data || {}, m = e.message;
   const kind = KIND_LABEL[d.kind] ? KIND_LABEL[d.kind].toLowerCase() : 'matching';
   if (m === 'no_shipyard') return 'There is no shipyard at that place.';
-  if (m === 'not_for_sale') return 'The shipyard does not sell that rig.';
+  if (m === 'not_for_sale') return 'The shipyard does not sell that.';
+  if (m === 'unknown_hull') return 'That hull is not known.';
+  if (m === 'level_too_low') return 'You need level ' + (d.need || '?') + ' for this hull (you are level ' + (d.have || '?') + ').';
+  if (m === 'ship_limit') return 'You already own the most ships allowed (' + (d.max || '?') + '). Sell one first.';
+  if (m === 'is_flown') return 'You are flying that ship. Board another ship first.';
+  if (m === 'has_rigs') return 'Take all rigs and weapons off first (' + (d.count || '?') + ' fitted).';
+  if (m === 'has_cargo') return 'Empty its hold first.';
+  if (m === 'not_here') return 'That ship is not docked at this place.';
   if (m === 'not_enough_credits') return 'Not enough credits (it costs ' + money(d.cost || 0) + ', you have ' + money(d.credits || 0) + ').';
   if (m === 'not_enough_stored') return 'You only have ' + (d.have || 0) + ' stored there.';
   if (m === 'bad_request') return 'That request was not valid. Quantities are whole numbers from 1 to 100.';
