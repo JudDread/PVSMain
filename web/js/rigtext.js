@@ -1,5 +1,5 @@
 // rigtext.js - plain-words text shared by the rig screens (Facilities shipyard, Rigging). Display only: no server calls.
-import { money, whole, r2 } from 'core';
+import { money, whole, r2, el } from 'core';
 
 export const KIND_LABEL = { weapon: 'Weapon', engineering: 'Engineering', utility: 'Utility' };
 /* The picture of a hull: Elite hulls use the picture of the base hull (web/img/hulls/<hull id>.webp). */
@@ -40,4 +40,26 @@ export function rigError(e) {
   if (m === 'needs_qualification') return 'You have not earned the right to fit this rig yet.';
   if (m === 'server_error') return 'Server error. Check the function logs.';
   return 'Error: ' + m;
+}
+
+/* ---------- the hull picture (Assets thumbnails, the Rigging banner) ---------- */
+const picStyle = document.createElement('style');
+picStyle.textContent = [
+  '.hpic{position:relative;display:inline-block;flex:0 0 auto;overflow:hidden;border-radius:6px;background:#0b0f19}',
+  '.hpic img{display:block;width:100%;height:100%;object-fit:cover}',
+  '.hpic.thumb{width:84px;height:46px}',
+  '.hpic.small{width:64px;height:35px}',
+  '.hpic.banner{display:block;width:100%;aspect-ratio:1024/559;border-radius:10px}',
+  '.ebadge{position:absolute;top:2px;right:2px;font-size:9px;font-weight:800;letter-spacing:.06em;color:#14100a;background:#e8b64a;padding:1px 4px;border-radius:3px}',
+  '.hpic.banner .ebadge{top:6px;right:6px;font-size:11px;padding:2px 7px}',
+].join('\n');
+document.head.appendChild(picStyle);
+// cls = 'thumb' | 'small' | 'banner'. No picture file for that hull = nothing is shown (the box hides itself). Elite hulls get an ELITE badge.
+export function hullPic(hullId, cls) {
+  const w = el('span', 'hpic ' + (cls || '')), img = document.createElement('img');
+  img.alt = ''; img.loading = 'lazy'; img.src = hullPicUrl(hullId);
+  img.onerror = () => { w.style.display = 'none'; };
+  w.appendChild(img);
+  if (String(hullId).startsWith('elite_')) w.appendChild(el('span', 'ebadge', 'ELITE'));
+  return w;
 }
