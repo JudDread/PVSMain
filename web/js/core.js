@@ -185,6 +185,18 @@ export function defaultLoc() {
    options = [[value, text, tag], ...] (tag is optional, e.g. 'ship here'); onPick(value) runs when a row is tapped.
    The list opens under the big button and closes again when a row is tapped or you tap anywhere else.
    Redraws while the list is open do not close it. Display only. */
+/* A tag in a picker row is text. If it starts with '@ship ' the small ship icon is drawn before the rest ('@ship shipyard' = icon + 'shipyard'). */
+const pickStyle = document.createElement('style');
+pickStyle.textContent = '.lptag{display:inline-flex;align-items:center;gap:4px}.lpship{display:inline-flex}.lpship svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}';
+document.head.appendChild(pickStyle);
+const SHIP_SVG = '<svg viewBox="0 0 24 24"><path d="M12 2c3 3 4 7 4 11l3 4-4 .5L12 21l-3-3.5-4-.5 3-4c0-4 1-8 4-11z"/><circle cx="12" cy="9.5" r="1.6"/></svg>';
+function tagNode(text) {
+  const n = el('span', 'lptag');
+  let t = String(text || '');
+  if (t.startsWith('@ship')) { const i = el('span', 'lpship'); i.innerHTML = SHIP_SVG; n.appendChild(i); t = t.slice(5).trim(); }
+  if (t) n.appendChild(document.createTextNode(t));
+  return n;
+}
 export function createPicker(onPick, label) {
   const root = el('div', 'lp'), btn = el('button', 'locsel'), name = el('span', 'lpname'), side = el('span', 'lpside'), list = el('div', 'lplist');
   btn.type = 'button'; btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false'); btn.setAttribute('aria-label', label || 'Choose a place');
@@ -195,7 +207,7 @@ export function createPicker(onPick, label) {
     const cur = opts.find(o => o[0] === value);
     name.textContent = cur ? cur[1] : 'Choose a place';
     side.replaceChildren();
-    if (cur && cur[2]) side.appendChild(el('span', 'lptag', cur[2]));
+    if (cur && cur[2]) side.appendChild(tagNode(cur[2]));
     side.appendChild(el('span', 'lpcaret', list.hidden ? '\u25BE' : '\u25B4'));
     [...list.children].forEach(b => { const on = b.dataset.v === value; b.classList.toggle('sel', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
   };
@@ -210,7 +222,7 @@ export function createPicker(onPick, label) {
         sig = s; opts = newOpts;
         list.replaceChildren(...opts.map(o => {
           const b = el('button', 'lprow'); b.type = 'button'; b.dataset.v = o[0]; b.setAttribute('role', 'option');
-          b.appendChild(el('span', '', o[1])); if (o[2]) b.appendChild(el('span', 'lptag', o[2]));
+          b.appendChild(el('span', '', o[1])); if (o[2]) b.appendChild(tagNode(o[2]));
           b.onclick = () => { value = o[0]; shut(); onPick(o[0]); };
           return b;
         }));
