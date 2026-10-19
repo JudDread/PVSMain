@@ -200,20 +200,22 @@ function tagNode(text) {
 /* A quantity box with buttons: (0)(-big)(-small)[ box ](+small)(+big)(max). steps = the two step sizes, e.g. [1, 10] or [1, 5]: the buttons
    show whatever you give (-5 and +5 for [1, 5]). getMax() = the largest allowed number (the max button and every + stop there).
    onChange() runs after any button press or any typing. inputClass lets the caller recognise its box (to hold redraws while typing).
-   Returns { root, input, get(), set(v) }; set() only fills the box, it does not call onChange. */
+   extras = [[label, () => number], ...] adds more buttons after max (they set the box to that number). Returns { root, input, get(), set(v), extras: [buttons] };
+   set() only fills the box, it does not call onChange. */
 const qtyStyle = document.createElement('style');
-qtyStyle.textContent = '.qty{display:flex;align-items:center;justify-content:center;gap:4px}.qty button{margin:0;padding:7px 0;min-width:34px;font-size:13px}.qty button.qmax{min-width:42px}.qty input{width:58px;box-sizing:border-box;text-align:center;margin:0;padding:7px 4px}';
+qtyStyle.textContent = '.qty{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:4px}.qty button{margin:0;padding:7px 0;min-width:34px;font-size:13px}.qty button.qmax{min-width:42px}.qty input{width:58px;box-sizing:border-box;text-align:center;margin:0;padding:7px 4px}';
 document.head.appendChild(qtyStyle);
-export function qtyControl({ steps = [1, 10], getMax = () => 100, onChange = () => {}, inputClass = '' } = {}) {
+export function qtyControl({ steps = [1, 10], getMax = () => 100, onChange = () => {}, inputClass = '', extras = [] } = {}) {
   const root = el('div', 'qty'), inp = document.createElement('input');
   inp.type = 'number'; inp.inputMode = 'numeric'; inp.step = '1'; inp.min = '0'; inp.className = inputClass; inp.setAttribute('aria-label', 'Quantity'); inp.value = 0;
   const cur = () => { const v = Number(inp.value); return Number.isFinite(v) ? v : 0; };
   const put = v => { inp.value = Math.max(0, Math.min(getMax(), Math.floor(v))); };
   const mk = (label, fn, cls) => { const b = el('button', 'alt' + (cls ? ' ' + cls : ''), label); b.type = 'button'; b.onclick = () => { fn(); onChange(); }; return b; };
   const big = steps.slice().sort((a, b) => b - a), small = steps.slice().sort((a, b) => a - b);
-  root.append(mk('0', () => put(0)), ...big.map(n => mk('-' + n, () => put(cur() - n))), inp, ...small.map(n => mk('+' + n, () => put(cur() + n))), mk('max', () => put(getMax()), 'qmax'));
+  const ex = extras.map(([label, fn]) => mk(label, () => put(fn()), 'qmax'));   /* extras = [[label, () => number], ...]: more buttons after max */
+  root.append(mk('0', () => put(0)), ...big.map(n => mk('-' + n, () => put(cur() - n))), inp, ...small.map(n => mk('+' + n, () => put(cur() + n))), mk('max', () => put(getMax()), 'qmax'), ...ex);
   inp.addEventListener('input', () => onChange());
-  return { root, input: inp, get: () => inp.value, set: v => { inp.value = v; } };
+  return { root, input: inp, get: () => inp.value, set: v => { inp.value = v; }, extras: ex };
 }
 export function createPicker(onPick, label) {
   const root = el('div', 'lp'), btn = el('button', 'locsel'), name = el('span', 'lpname'), side = el('span', 'lpside'), list = el('div', 'lplist');
