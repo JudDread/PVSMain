@@ -143,6 +143,11 @@ export async function storageAt(db, characterId, locId) {
 // ---------- step 3: pilot, thrust and endurance ----------
 // Highest thrust the ship may use = its hull's max_g, raised by the pilot's Heavy Burn skill (SQL skill_effect:
 // +3% per Grade), never above the code limit of 12 g. Bots have no skills (effect 0).
+// The one rule for a ship's highest thrust: hull max_g raised by the pilot's Heavy Burn boost, never above the code limit of 12 g.
+// Used by getMaxG (flying) and by the state answer (the page shows it as 'max accel').
+export function calcMaxG(hullG, boost) {
+  return Math.min(12, Math.round(Number(hullG) * (1 + (Number(boost) || 0)) * 1000) / 1000);
+}
 export async function getMaxG(db, ship) {
   const { data, error } = await db.from('hulls').select('max_g').eq('id', ship.hull_id).maybeSingle();
   if (error) throw error;
@@ -153,7 +158,7 @@ export async function getMaxG(db, ship) {
     if (ee) throw ee;
     boost = Number(eff) || 0;
   }
-  return Math.min(12, Math.round(hullG * (1 + boost) * 1000) / 1000);
+  return calcMaxG(hullG, boost);
 }
 
 // READ-ONLY. For a list of trip durations (game days) flown at `g`: what each costs in endurance and whether
