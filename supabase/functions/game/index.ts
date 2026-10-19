@@ -6,7 +6,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { J2000_MS, G0, AU_M, DAY_S, KMS, C_KMS, KM_PER_AU, DOCK_RADIUS_AU, DOCK_SPEED_KMS, SUN_DANGER_AU, BODIES, BODY_INDEX, bodyId, bodyName, mag, gToAuDay2, bodyAngle, bodyPos, bodyVel, targetState, segmentEnd, stateAt, solvePlan, stopPlan, coastPlan, sunClearance, shipStateAt, planTravel, planTravelBar, planTravelPulse, pulseState, shipStateAbs, LAUNCH_MS, CLOCK, gameDaysAt, realMsAt, rescale, gameDate } from './physics_bundle.ts';
 
-import { cors, json, getCharacter, getLocation, resolveFor, getShip, planTrip, pilotNumbers, getMaxG, spendEndurance } from './common.ts';
+import { cors, json, getCharacter, getLocation, resolveFor, getShip, planTrip, pilotNumbers, getMaxG, calcMaxG, spendEndurance } from './common.ts';
 import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll } from './market.ts';
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard } from './ships.ts';
@@ -160,6 +160,13 @@ async function me(db, user) {
     const act = ch.active_ship_id;
     out.ships = (ships.data ?? []).slice().sort((a, b) =>
       ((b.id === act) - (a.id === act)) || String(a.created_at).localeCompare(String(b.created_at)));
+    // Each ship's highest thrust ('max accel' on the Assets screen): hull max_g x the pilot's Heavy Burn, the same rule as flying (calcMaxG).
+    const { data: hulls, error: he } = await db.from('hulls').select('id,max_g');
+    if (he) throw he;
+    const { data: hb, error: hbe } = await db.rpc('skill_effect', { p_character: ch.id, p_skill: 'heavy_burn' });
+    if (hbe) throw hbe;
+    const hullG = {}; (hulls ?? []).forEach(h => { hullG[h.id] = Number(h.max_g); });
+    out.ships = out.ships.map(sh => ({ ...sh, max_g: calcMaxG(hullG[sh.hull_id] ?? sh.thrust_g ?? 3, hb) }));
     out.actions = actions.data; out.events = events.data;
     // Level, XP (including XP earned so far on a trip in flight) and the endurance bar, worked out by SQL.
     const { data: pilot, error: pe } = await db.rpc('pilot_status', { p_character: ch.id, p_now_t: out.game_days });
