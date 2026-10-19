@@ -8,7 +8,7 @@
 // The Rigging screen opens this one with openFacilities(place, { shipId, label, shipLoc, back }): then a bought rig can be fitted at once.
 import { S, $, say, call, locName, money, whole, el, LS, addScreen, setShipLine, dockedAt, defaultLoc, createPicker, openScreen, qtyControl } from 'core';
 import { applyBackdrop } from 'backdrop';
-import { rigError, KIND_PLURAL } from 'rigtext';
+import { rigError, KIND_PLURAL, hullPicUrl } from 'rigtext';
 
 const TIERS = ['Light', 'Medium', 'Heavy', 'Super'];
 
@@ -53,6 +53,7 @@ $('scr-market').after(scr);
     '.fpop { border: 1px solid #4a6190; background: #131a2a; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }',
     '.fpoptitle { font-weight: 700; color: #f3d28a; margin-bottom: 4px; }',
     '.fpopinfo div { margin: 2px 0; font-size: 13px; }',
+    '.fhullpic { display: block; width: 100%; max-height: 150px; object-fit: contain; margin: 4px 0 6px; border-radius: 6px; background: #0b0f19; }',
     '.fpoprow { margin-top: 8px; display: flex; justify-content: flex-end; }',
     '.fpoprow button { margin: 0; padding: 8px 22px; }',
     '.fctx { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }',
@@ -72,12 +73,14 @@ const num = x => Number(x) || 0;
 const isTyping = () => !!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('fin'));
 function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 && q <= 100 ? q : NaN; }
 const credits = () => (S.last && S.last.character ? num(S.last.character.credits) : 0);
+const keyOf = x => x.rig_id || x.ship_id || x.hull_id;
 const isSel = (kind, id) => !!fsel && fsel.loc === floc && fsel.kind === kind && fsel.id === id;
 const fmtK = n => (n >= 1000 ? String(Math.round(n / 100) / 10) + 'k' : String(n));   // 300000 -> 300k
 const pct = x => Math.round(num(x) * 100);
 function curItem() {
   if (!fsel || !yard) return null;
-  return (fsel.kind === 'buy' ? (yard.buy || []) : (yard.stock || [])).find(x => x.rig_id === fsel.id) || null;
+  const list = fsel.kind === 'buy' ? yard.buy : fsel.kind === 'sell' ? yard.stock : fsel.kind === 'hbuy' ? yard.hulls : yard.my_hulls;
+  return (list || []).find(x => keyOf(x) === fsel.id) || null;
 }
 // The place list only has places with a facility. If the chosen place is not one, take the docked place (if it has one), else the first.
 function fixLoc() {
@@ -156,6 +159,40 @@ function refreshPop() {
   }
 }
 
+/* ---------- the box under a selected hull row (buy or sell; no quantity) ---------- */
+const hpop = (() => {
+  const root = el('div', 'fpop'), title = el('div', 'fpoptitle'), pic = document.createElement('img'), flavor = el('div', 'muted'), info = el('div', 'fpopinfo'), row = el('div', 'fpoprow');
+  pic.className = 'fhullpic'; pic.alt = ''; pic.onerror = () => { pic.hidden = true; }; pic.onload = () => { pic.hidden = false; };
+  const b1 = el('button', '', '');
+  row.append(b1); root.append(title, pic, flavor, info, row);
+  b1.onclick = () => doHull();
+  return { root, title, pic, flavor, info, b1 };
+})();
+function placeHullPop(x) {
+  const buy = fsel.kind === 'hbuy';
+  hpop.root.className = 'fpop' + (buy ? '' : ' sell');
+  hpop.title.textContent = x.name + (x.class ? ' (' + x.class.toLowerCase() + ')' : '');
+  hpop.pic.src = hullPicUrl(x.hull_id);
+  hpop.flavor.textContent = buy ? (x.flavor || '') : '';
+  hpop.info.replaceChildren();
+  const line = (cls, t) => hpop.info.appendChild(el('div', cls, t));
+  if (buy) {
+    line('', 'Price ' + money(x.cost) + ' credits.');
+    if (x.level_ok === false) line('err', 'You need level ' + x.min_level + '.');
+    else if (num(x.cost) > credits()) line('err', 'You have ' + money(credits()) + ' credits.');
+    else if (num(yard.ships_owned) >= num(yard.max_ships)) line('err', 'You already own ' + whole(yard.ships_owned) + ' ships, the most allowed.');
+    line('muted', 'The ship is parked at ' + locName(floc) + '. You own ' + whole(yard.ships_owned) + ' of ' + whole(yard.max_ships) + ' allowed ships.');
+    hpop.b1.textContent = 'Buy';
+    hpop.b1.disabled = fbusy || x.level_ok === false || num(x.cost) > credits() || num(yard.ships_owned) >= num(yard.max_ships);
+  } else {
+    line('', 'You get ' + money(x.sell_price) + ' credits.');
+    if (x.why) line('err', rigError({ message: x.why, data: { count: x.rigs } }));
+    hpop.b1.textContent = 'Sell';
+    hpop.b1.disabled = fbusy || !!x.why;
+  }
+  return hpop.root;
+}
+
 /* ---------- drawing ---------- */
 function drawLocBox() {
   const dl = dockedAt();
@@ -196,25 +233,24 @@ function drawTable(parent, kind, items, cols, lastHead, lastFn) {
   [{ h: 'Name' }, ...cols, { h: lastHead }].forEach(c => { const th = document.createElement('th'); th.textContent = c.h; if (c.cls) th.className = c.cls; hr.appendChild(th); });
   const tb = t.createTBody(), n = cols.length + 2;
   items.forEach(x => {
-    const sel = isSel(kind, x.rig_id), tr = tb.insertRow();
+    const sel = isSel(kind, keyOf(x)), tr = tb.insertRow();
     tr.className = sel ? 'sel' : '';
     const nm = tr.insertCell();
     nm.appendChild(document.createTextNode(x.name));
-    const sub = kind === 'buy' ? (num(x.in_storage) > 0 ? 'you have ' + whole(x.in_storage) + ' here' : '') : (x.elite ? 'elite' : '');
+    const sub = kind === 'buy' ? (num(x.in_storage) > 0 ? 'you have ' + whole(x.in_storage) + ' here' : '') : kind === 'sell' ? (x.elite ? 'elite' : '') : kind === 'hsell' ? (x.is_active ? 'you are flying it' : '') : (x.level_ok === false ? 'level ' + x.min_level : '');
     if (sub) nm.appendChild(el('span', 'sub', sub));
     cols.forEach(c => { const td = tr.insertCell(); td.textContent = c.f(x); if (c.cls) td.className = c.cls; });
     tr.insertCell().textContent = lastFn(x);
-    tr.onclick = () => toggle(kind, x.rig_id);
-    if (sel) { const pr = tb.insertRow(), pc = pr.insertCell(); pc.colSpan = n; pc.className = 'fpoptd'; pc.appendChild(placePop(x)); }
+    tr.onclick = () => toggle(kind, keyOf(x));
+    if (sel) { const pr = tb.insertRow(), pc = pr.insertCell(); pc.colSpan = n; pc.className = 'fpoptd'; pc.appendChild(kind === 'hbuy' || kind === 'hsell' ? placeHullPop(x) : placePop(x)); }
   });
   wrap.appendChild(t); parent.appendChild(wrap);
 }
 
-const rof = s => { const v = Math.round(100 / Math.max(0.01, num(s))) / 100; return String(v); };   // seconds between shots -> shots per second (4 s -> 0.25)
 const WEAPON_COLS = [
   { h: 'Power', cls: 'c', f: x => whole(x.power_use) },
   { h: 'Damage', cls: 'c', f: x => whole(x.damage) },
-  { h: 'RoF/s', cls: 'c', f: x => rof(x.reuse_sec) },
+  { h: 'Cooldown', cls: 'c', f: x => String(num(x.reuse_sec)) },
   { h: 'Best km', cls: 'c', f: x => fmtK(num(x.optimal_range_km)) },
   { h: 'Max km', cls: 'c', f: x => fmtK(num(x.max_range_km)) },
   { h: 'Acc % best/max', cls: 'c', f: x => pct(x.optimal_accuracy) + '/' + pct(x.max_accuracy) },
@@ -225,12 +261,30 @@ const RIG_COLS = [
   { h: 'Effect', cls: 'fx', f: x => x.effect_text + (x.works_now ? '' : ' (inactive)') },
 ];
 const SELL_COLS = [{ h: 'Qty', cls: 'c', f: x => whole(x.quantity) }];
+const HULL_COLS = [
+  { h: 'Hold', cls: 'c', f: x => whole(x.hold_size) },
+  { h: 'Max g', cls: 'c', f: x => String(num(x.max_g)) },
+  { h: 'Power', cls: 'c', f: x => whole(x.power) },
+  { h: 'Shield', cls: 'c', f: x => whole(x.shields) },
+  { h: 'Armor', cls: 'c', f: x => whole(x.armor) },
+  { h: 'Hull', cls: 'c', f: x => whole(x.hull_points) },
+  { h: 'Slots W/E/U', cls: 'c', f: x => x.weapon_bays + '/' + x.engineering_slots + '/' + x.utility_slots },
+];
+const MYHULL_COLS = [{ h: 'Rigs fitted', cls: 'c', f: x => whole(x.rigs) }];
 
 function drawShipyard(body) {
   if (fsel && (fsel.loc !== floc || !curItem())) { fsel = null; fEdited = false; }
   facHeader(body, 'yard', 'Shipyard', 'shipyard', box => {
     if (!yard) { box.appendChild(el('div', 'muted pad', 'Loading the shipyard...')); return; }
     const buy = yard.buy || [], stock = yard.stock || [];
+    const hulls = yard.hulls || [], mine = yard.my_hulls || [];
+    if (mine.length) section(box, 'sellhull', 'Sell: your parked hulls here', mine.length, b => drawTable(b, 'hsell', mine, MYHULL_COLS, 'Each', x => money(x.sell_price)));
+    if (hulls.length) section(box, 'buyhull', 'Buy: hulls', hulls.length, b => {
+      TIERS.forEach(tier => {
+        const items = hulls.filter(x => x.class === tier);
+        if (items.length) section(b, 'buyhull:' + tier, tier, items.length, c => drawTable(c, 'hbuy', items, HULL_COLS, 'Price', x => money(x.cost)), 2);
+      });
+    });
     if (stock.length) section(box, 'sell', 'Sell: your rigs stored here', stock.length, b => drawTable(b, 'sell', stock, SELL_COLS, 'Each', x => money(x.sell_price)));
     const weapons = buy.filter(x => x.kind === 'weapon');
     if (weapons.length) section(box, 'buy:weapon', 'Buy: weapons', weapons.length, b => {
@@ -263,8 +317,7 @@ function drawFac() {
   if (!fl.length) { body.appendChild(el('div', 'muted pad', 'There is nothing to do at ' + locName(floc) + ' yet.')); return; }
   fl.forEach(f => { if (f.kind === 'shipyard') drawShipyard(body); });
   /* the buy / sell box is as wide as the table's visible part, so it stays in view when a wide table is scrolled sideways */
-  const w = pop.root.closest('.fwrap');
-  pop.root.style.width = w ? Math.max(200, w.clientWidth - 4) + 'px' : '';
+  [pop.root, hpop.root].forEach(p => { const w = p.closest('.fwrap'); p.style.width = w ? Math.max(200, w.clientWidth - 4) + 'px' : ''; });
 }
 
 /* ---------- buying and selling ---------- */
@@ -282,6 +335,21 @@ async function doTrade() {
     if (kind === 'buy' && ctx && ctx.shipId && ctx.shipLoc === loc) offerFit(it, q);
   } catch (e) { say(rigError(e), 'err'); }
   finally { fbusy = false; fEdited = false; fRedraw = false; if (S.refresh) S.refresh(); refreshFac(); }
+}
+
+async function doHull() {
+  if (fbusy || !fsel || !yard) return;
+  const x = curItem(); if (!x) return;
+  const kind = fsel.kind, loc = floc;
+  fbusy = true; drawFac();
+  try {
+    const r = kind === 'hbuy' ? await call('hull_buy', { location: loc, hull: x.hull_id }) : await call('hull_sell', { location: loc, ship: x.ship_id });
+    if (S.last && S.last.character && r.credits != null) { S.last.character.credits = r.credits; setShipLine(); }
+    say(kind === 'hbuy' ? 'Bought a ' + x.name + ' for ' + money(r.cost) + ' credits. It is parked at ' + locName(loc) + ' (Assets, Hulls here).'
+                        : 'Sold the ' + x.name + ' for ' + money(r.total) + ' credits.', 'ok');
+    fsel = null;
+  } catch (e) { say(rigError(e), 'err'); }
+  finally { fbusy = false; if (S.refresh) S.refresh(); refreshFac(); }
 }
 
 /* ---------- "Fit it now?" (only when we were opened from the Rigging screen for a ship docked HERE) ---------- */
