@@ -6,7 +6,7 @@
 // Each facility has a big header box, the same size as the place box; its picture is web/img/facilities/<kind>.webp (3:1; none = plain box).
 // Creates its own screen block (#scr-facilities) and the "Fit it now?" pop-up (#fprompt), so index.html needs only the import-map line.
 // The Rigging screen opens this one with openFacilities(place, { shipId, label, shipLoc, back }): then a bought rig can be fitted at once.
-import { S, $, say, call, locName, money, whole, el, LS, addScreen, setShipLine, dockedAt, defaultLoc, createPicker, openScreen } from 'core';
+import { S, $, say, call, locName, money, whole, el, LS, addScreen, setShipLine, dockedAt, defaultLoc, createPicker, openScreen, qtyControl } from 'core';
 import { applyBackdrop } from 'backdrop';
 import { rigError, KIND_PLURAL } from 'rigtext';
 
@@ -35,7 +35,9 @@ $('scr-market').after(scr);
   const st = document.createElement('style');
   st.textContent = [
     '#fbody .sub { line-height: 1.15 !important; }',
-    '#fbody .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; cursor: pointer; }',
+    '#fbody .sech { padding-top: 5px !important; padding-bottom: 5px !important; min-height: 0 !important; line-height: 1.2 !important; font-weight: 600 !important; letter-spacing: 0.02em; cursor: pointer; border-radius: 6px; }',
+    '#fbody .sech1 { background: #2a3a5a !important; border-top: 2px solid #5b74a6 !important; border-bottom: 1px solid #3a4c70 !important; }',
+    '#fbody .sech2 { background: #3b4f78 !important; border-top: 2px solid #6f8bc0 !important; border-bottom: 1px solid #4a6190 !important; }',
     '#fbody .msec .msec { margin-top: 8px !important; }',
     '#fbody .fhead { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 0 0 8px; background-size: cover; background-position: center; }',
     '#fbody .fwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }',
@@ -44,9 +46,15 @@ $('scr-market').after(scr);
     '#fbody .ftab td { padding: 5px 8px; border-bottom: 1px solid #1c2438; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; cursor: pointer; vertical-align: top; }',
     '#fbody .ftab th:first-child, #fbody .ftab td:first-child { text-align: left; position: sticky; left: 0; background: #0b0f19; z-index: 1; }',
     '#fbody .ftab td.fx, #fbody .ftab th.fx { text-align: left; white-space: normal; min-width: 150px; }',
+    '#fbody .ftab td.c, #fbody .ftab th.c { text-align: center; }',
     '#fbody .ftab tr.sel td { background: #2a3350; }',
     '#fbody .ftab td.fpoptd { position: static; padding: 0; cursor: default; background: none; white-space: normal; }',
-    '#fbody .ftab td.fpoptd .pop { position: sticky; left: 0; box-sizing: border-box; }',
+    '#fbody .ftab td.fpoptd .fpop { position: sticky; left: 0; box-sizing: border-box; }',
+    '.fpop { border: 1px solid #4a6190; background: #131a2a; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }',
+    '.fpoptitle { font-weight: 700; color: #f3d28a; margin-bottom: 4px; }',
+    '.fpopinfo div { margin: 2px 0; font-size: 13px; }',
+    '.fpoprow { margin-top: 8px; display: flex; justify-content: flex-end; }',
+    '.fpoprow button { margin: 0; padding: 8px 22px; }',
     '.fctx { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }',
     '.fctx button { margin: 0; padding: 6px 12px; }',
     '#fprompt { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }',
@@ -62,7 +70,7 @@ $('scr-market').after(scr);
 /* ---------- small helpers ---------- */
 const num = x => Number(x) || 0;
 const isTyping = () => !!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('fin'));
-function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 1 && q <= 100 ? q : NaN; }
+function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 && q <= 100 ? q : NaN; }
 const credits = () => (S.last && S.last.character ? num(S.last.character.credits) : 0);
 const isSel = (kind, id) => !!fsel && fsel.loc === floc && fsel.kind === kind && fsel.id === id;
 const fmtK = n => (n >= 1000 ? String(Math.round(n / 100) / 10) + 'k' : String(n));   // 300000 -> 300k
@@ -102,52 +110,49 @@ async function refreshFac() {
   drawFac();
 }
 
-/* ---------- the dropdown under a selected row: built ONCE, moved on every redraw, so a number you type survives ---------- */
+/* ---------- the box under a selected row: built ONCE, moved on every redraw, so a number you type survives ---------- */
+// Largest quantity that makes sense for the selected row: buy = what you can pay for, sell = what you have stored (never more than 100 per action).
+function popMax() {
+  const it = curItem(); if (!it || !fsel) return 0;
+  return fsel.kind === 'buy' ? Math.max(0, Math.min(100, Math.floor(credits() / Math.max(1, num(it.price))))) : Math.min(100, num(it.quantity));
+}
 const pop = (() => {
-  const root = el('div', 'pop'), left = el('div', 'popl'), right = el('div', 'popr');
-  const title = el('div', 'poptitle'), info = el('div', 'popinfo'), row = el('div', 'poprow'), brow = el('div', 'poprow');
-  const inp = document.createElement('input');
-  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '1'; inp.max = '100'; inp.step = '1'; inp.className = 'fin'; inp.setAttribute('aria-label', 'Quantity');
-  const chips = el('div', 'chips'), b1 = el('button', '', '');
-  row.append(inp, chips); brow.append(b1); left.append(title, info); right.append(row, brow); root.append(left, right);
-  inp.addEventListener('input', () => { fEdited = true; refreshPop(); });
-  inp.addEventListener('blur', () => setTimeout(() => { if (fRedraw && !isTyping()) { fRedraw = false; drawFac(); } }, 350));
+  const root = el('div', 'fpop'), title = el('div', 'fpoptitle'), info = el('div', 'fpopinfo'), row = el('div', 'fpoprow');
+  const q = qtyControl({ steps: [1, 10], getMax: popMax, inputClass: 'fin', onChange: () => { fEdited = true; refreshPop(); } });
+  const b1 = el('button', '', '');
+  row.append(b1); root.append(title, info, q.root, row);
+  q.input.addEventListener('blur', () => setTimeout(() => { if (fRedraw && !isTyping()) { fRedraw = false; drawFac(); } }, 350));
   b1.onclick = () => doTrade();
-  return { root, title, info, inp, chips, b1 };
+  return { root, title, info, q, inp: q.input, b1 };
 })();
-function addChip(label, fn) { const b = el('button', 'alt', label); b.onclick = fn; pop.chips.appendChild(b); }
-function setQty(q) { pop.inp.value = q; fEdited = true; refreshPop(); }
 
 function placePop(it) {
   const buy = fsel.kind === 'buy';
-  pop.root.className = 'pop' + (buy ? '' : ' sell');
+  pop.root.className = 'fpop' + (buy ? '' : ' sell');
   pop.title.textContent = it.name;
-  pop.chips.replaceChildren();
-  if (!fEdited) pop.inp.value = 1;
-  addChip('1', () => setQty(1));
-  if (buy) { addChip('5', () => setQty(5)); addChip('10', () => setQty(10)); }
-  else addChip('All', () => setQty(Math.min(100, it.quantity)));
+  if (!fEdited) pop.q.set(1);
   refreshPop();
   return pop.root;
 }
 function refreshPop() {
   const it = curItem(); if (!it || !fsel) return;
-  const buy = fsel.kind === 'buy', q = qtyOf(pop.inp), bad = isNaN(q);
+  const buy = fsel.kind === 'buy', q = qtyOf(pop.inp), bad = isNaN(q), none = !bad && q === 0;
   pop.info.replaceChildren();
   const line = (cls, t) => pop.info.appendChild(el('div', cls, t));
   if (bad) line('', 'Enter a whole number from 1 to 100.');
+  else if (none) line('muted', 'Choose how many.');
   if (buy) {
     const total = bad ? 0 : q * num(it.price), poor = !bad && total > credits();
-    if (!bad) line('', 'Total ' + money(total) + ' credits.');
+    if (!bad && !none) line('', 'Total ' + money(total) + ' credits.');
     if (poor) line('err', 'You have ' + money(credits()) + ' credits.');
     line('muted', 'Goes into your storage at ' + locName(floc) + '.');
-    pop.b1.textContent = 'Buy'; pop.b1.disabled = bad || poor || fbusy;
+    pop.b1.textContent = 'Buy'; pop.b1.disabled = bad || none || poor || fbusy;
   } else {
     const over = !bad && q > it.quantity;
-    if (!bad) line('', 'You get ' + money(q * num(it.sell_price)) + ' credits.');
+    if (!bad && !none) line('', 'You get ' + money(q * num(it.sell_price)) + ' credits.');
     if (over) line('err', 'You only have ' + whole(it.quantity) + ' here.');
     line('muted', 'Taken from your storage at ' + locName(floc) + '.');
-    pop.b1.textContent = 'Sell'; pop.b1.disabled = bad || over || fbusy;
+    pop.b1.textContent = 'Sell'; pop.b1.disabled = bad || none || over || fbusy;
   }
 }
 
@@ -160,9 +165,9 @@ function drawLocBox() {
   applyBackdrop(fpick.btn, floc);        /* the picture behind the box follows the chosen place */
 }
 // A small section bar (open / closed is remembered).
-function section(parent, key, title, count, drawBody) {
+function section(parent, key, title, count, drawBody, depth) {
   const k = floc + ':' + key, open = secOpen[k] === true;
-  const box = el('div', 'msec'), h = el('div', 'sech');
+  const box = el('div', 'msec'), h = el('div', 'sech sech' + (depth || 1));
   h.appendChild(el('span', '', (open ? '\u25BE ' : '\u25B8 ') + title + (count != null ? ' (' + count + ')' : '')));
   h.onclick = () => { secOpen[k] = !open; saveSec(); drawFac(); };
   box.appendChild(h);
@@ -205,20 +210,21 @@ function drawTable(parent, kind, items, cols, lastHead, lastFn) {
   wrap.appendChild(t); parent.appendChild(wrap);
 }
 
+const rof = s => { const v = Math.round(100 / Math.max(0.01, num(s))) / 100; return String(v); };   // seconds between shots -> shots per second (4 s -> 0.25)
 const WEAPON_COLS = [
-  { h: 'Power', f: x => whole(x.power_use) },
-  { h: 'Damage', f: x => whole(x.damage) },
-  { h: 'Reuse s', f: x => String(num(x.reuse_sec)) },
-  { h: 'Best km', f: x => fmtK(num(x.optimal_range_km)) },
-  { h: 'Max km', f: x => fmtK(num(x.max_range_km)) },
-  { h: 'Acc % best/max', f: x => pct(x.optimal_accuracy) + '/' + pct(x.max_accuracy) },
-  { h: 'Ammo', f: x => (x.ammo != null ? whole(x.ammo) : '-') },
+  { h: 'Power', cls: 'c', f: x => whole(x.power_use) },
+  { h: 'Damage', cls: 'c', f: x => whole(x.damage) },
+  { h: 'RoF/s', cls: 'c', f: x => rof(x.reuse_sec) },
+  { h: 'Best km', cls: 'c', f: x => fmtK(num(x.optimal_range_km)) },
+  { h: 'Max km', cls: 'c', f: x => fmtK(num(x.max_range_km)) },
+  { h: 'Acc % best/max', cls: 'c', f: x => pct(x.optimal_accuracy) + '/' + pct(x.max_accuracy) },
+  { h: 'Ammo', cls: 'c', f: x => (x.ammo != null ? whole(x.ammo) : '-') },
 ];
 const RIG_COLS = [
-  { h: 'Power', f: x => whole(x.power_use) },
+  { h: 'Power', cls: 'c', f: x => whole(x.power_use) },
   { h: 'Effect', cls: 'fx', f: x => x.effect_text + (x.works_now ? '' : ' (inactive)') },
 ];
-const SELL_COLS = [{ h: 'Qty', f: x => whole(x.quantity) }];
+const SELL_COLS = [{ h: 'Qty', cls: 'c', f: x => whole(x.quantity) }];
 
 function drawShipyard(body) {
   if (fsel && (fsel.loc !== floc || !curItem())) { fsel = null; fEdited = false; }
@@ -230,7 +236,7 @@ function drawShipyard(body) {
     if (weapons.length) section(box, 'buy:weapon', 'Buy: weapons', weapons.length, b => {
       TIERS.forEach(tier => {
         const items = weapons.filter(x => x.tier === tier);
-        if (items.length) section(b, 'buy:weapon:' + tier, tier, items.length, c => drawTable(c, 'buy', items, WEAPON_COLS, 'Price', x => money(x.price)));
+        if (items.length) section(b, 'buy:weapon:' + tier, tier, items.length, c => drawTable(c, 'buy', items, WEAPON_COLS, 'Price', x => money(x.price)), 2);
       });
     });
     ['engineering', 'utility'].forEach(k => {
@@ -265,7 +271,7 @@ function drawFac() {
 async function doTrade() {
   if (fbusy || !fsel || !yard) return;
   const it = curItem(); if (!it) return;
-  const q = qtyOf(pop.inp); if (isNaN(q)) return;
+  const q = qtyOf(pop.inp); if (isNaN(q) || q < 1) return;
   const kind = fsel.kind, loc = floc;
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   fbusy = true; drawFac();
