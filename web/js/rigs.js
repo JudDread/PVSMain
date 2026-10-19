@@ -2,10 +2,10 @@
 // Reached from Assets (touch the ship card or a hull row); it has no tab of its own. Display only: the server decides everything.
 // Data: 'rigs' (this hull: slots, power, hold, what is fitted, rigs here with can_fit / the reason), 'facilities' (places with a shipyard).
 // Actions: rig_fit, rig_unfit, rig_unfit_all. The Shipyard button opens Facilities at this place (openFacilities), where a bought rig can be fitted at once.
+// facilities.js is loaded only when that button is pressed (import()), NOT at the top: a top-level import would make Facilities register its tab before Assets.
 // Creates its own screen block (#scr-rigging), so index.html needs only the import-map line.
 import { S, $, say, call, locName, whole, r2, el, cell, addScreen, openScreen, hullName } from 'core';
 import { rigError, KIND_LABEL, hullPic } from 'rigtext';
-import { openFacilities } from 'facilities';
 
 const KINDS = ['weapon', 'engineering', 'utility'];
 const KIND_HEAD = { weapon: 'Weapons', engineering: 'Engineering rigs', utility: 'Utility rigs' };
@@ -130,7 +130,10 @@ function drawRig() {
     const place = s.location_id;
     if (yards && (yards[place] || []).length) {
       const shop = el('button', 'alt', 'Shipyard');
-      shop.onclick = () => openFacilities(place, { shipId: s.id, label: s.hull_name || hullName(s.hull_id), shipLoc: place, back: () => openRigging(s.id, rback) });
+      shop.onclick = async () => {
+        const fac = await import('facilities');
+        fac.openFacilities(place, { shipId: s.id, label: s.hull_name || hullName(s.hull_id), shipLoc: place, back: () => openRigging(s.id, rback) });
+      };
       hh.appendChild(shop);
     }
     hsec.appendChild(hh);
