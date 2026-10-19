@@ -1,9 +1,12 @@
-// assets.js - the Assets screen: everything the player owns at ONE place.
-// Sections (each hides when empty): Hold -> Stored here -> Freight (contracts I posted, at their pickup).
+// assets.js - the Assets screen.
+// TOP (always shown, whatever place is chosen): the ship I fly (touch it to rig it) and its Hold.
+// Then the place picker and, for the chosen place (each section hides when empty): Hulls here (touch one to rig it) -> Rigs and weapons here -> Stored here -> Freight.
 // Display only: the server decides everything. Data: 'storage', 'freight_mine', 'freight_hauling'.
 // Creates its own screen block (#scr-assets) and the "Hire hauler" pop-up (#ahire), so index.html needs only the import-map line.
-import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc, hullName, createPicker } from 'core';
+import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc, hullName, createPicker, openScreen, qtyControl } from 'core';
 import { applyBackdrop } from 'backdrop';
+import { hullPic } from 'rigtext';
+import { openRigging } from 'rigs';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
 
@@ -18,20 +21,34 @@ let abusy = false, aEdited = false, aRedraw = false, aconfirm = false;
 /* ---------- screen block + styles (written here so index.html does not change) ---------- */
 const scr = document.createElement('div'); scr.id = 'scr-assets'; scr.hidden = true;
 const apick = createPicker(v => { aloc = v; asel = null; aEdited = false; aconfirm = false; drawAssets(); });   // the place picker (same look as Market, .lp* in index.html)
-const abody = el('div', 'muted', 'Loading...'); abody.id = 'abody';
-scr.append(apick.root, abody);
+const abody = el('div', 'muted', 'Loading...'); abody.id = 'abody'; abody.classList.add('ascope');
+const sbox = el('div', 'ascope'); sbox.id = 'asbox';   // the ship I fly and its hold: above the picker, not tied to the chosen place
+scr.append(sbox, apick.root, abody);
 $('scr-market').after(scr);
 
 (() => {
   const st = document.createElement('style');
   st.textContent = [
-    '#abody .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; }',
-    '#abody .sub { line-height: 1.15 !important; }',
-    '#abody .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; }',
-    '#abody .sech button { padding: 2px 10px !important; min-height: 0 !important; }',
-    '#abody .sech button.ub { background: #e8b64a !important; color: #14100a !important; border: 0 !important; border-radius: 6px !important; font-weight: 700 !important; padding: 5px 14px !important; }',
-    '#abody .sech button.ub:disabled { opacity: .45; }',
-    '#abody .msec + .msec { margin-top: 14px !important; }',
+    '.ascope .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; }',
+    '.ascope .sub { line-height: 1.15 !important; }',
+    '.ascope .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; }',
+    '.ascope .sech button { padding: 2px 10px !important; min-height: 0 !important; }',
+    '.ascope .sech button.ub { background: #e8b64a !important; color: #14100a !important; border: 0 !important; border-radius: 6px !important; font-weight: 700 !important; padding: 5px 14px !important; }',
+    '.ascope .sech button.ub:disabled { opacity: .45; }',
+    '.ascope .msec + .msec { margin-top: 14px !important; }',
+    '.ascope .scard { display: flex; align-items: center; gap: 10px; padding: 8px; border: 1px solid #333d57; border-radius: 10px; background: #131a2a; margin: 0 0 8px; }',
+    '.ascope .scard.tap { cursor: pointer; }',
+    '.ascope .smid { flex: 1 1 auto; min-width: 0; }',
+    '.ascope .sname { font-weight: 700; color: #f3d28a; }',
+    '.ascope .scaret { font-size: 24px; color: #8d98b2; padding: 0 4px; }',
+    '.ascope .hl { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }',
+    '.ascope .row.tap { cursor: pointer; }',
+    '.ascope .rigsub { padding: 6px 8px 0; font-size: 12px; color: #8d98b2; }',
+    '.apop { box-sizing: border-box; border: 1px solid #4a6190; background: #131a2a; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }',
+    '.apoptitle { font-weight: 700; color: #f3d28a; margin-bottom: 4px; }',
+    '.apopinfo div { margin: 2px 0; font-size: 13px; }',
+    '.apoprow { margin-top: 8px; display: flex; gap: 8px; justify-content: flex-end; }',
+    '.apoprow button { margin: 0; padding: 8px 18px; }',
     '#ahire { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }',
     '#ahire .abox { background: #131a2a; border: 2px solid #e8b64a; border-radius: 10px; padding: 12px; width: 100%; max-width: 420px; max-height: 92%; overflow-y: auto; box-sizing: border-box; }',
     '#ahire .alab { font-size: 13px; color: #8d98b2; margin: 8px 0 0; }',
@@ -56,7 +73,10 @@ const num = x => Number(x) || 0;
 const storedHere = () => ((stAll && stAll.items) || []).filter(i => i.location_id === aloc);
 const freeHold = () => stAll ? Math.max(0, num(stAll.hold_size) - num(stAll.hold_used)) : 0;
 const maxLoad = x => Math.max(0, Math.min(x.quantity, Math.floor((freeHold() + 1e-9) / num(x.hold_per_unit || 1))));
-const isSel = (kind, id) => !!asel && asel.loc === aloc && asel.kind === kind && asel.id === id;
+const selLoc = kind => (kind === 'cargo' || kind === 'hfreight' ? 'hold' : aloc);   // hold rows belong to the ship, not to the chosen place
+const isSel = (kind, id) => !!asel && asel.loc === selLoc(kind) && asel.kind === kind && asel.id === id;
+const isRig = x => String(x.good_id || '').startsWith('rig_');   // rigs and weapons are goods whose id starts with rig_ (migration 051)
+const accel = x => (x.max_g != null ? 'max accel ' + r2(x.max_g) + ' g' : '');
 
 // time left from a deadline in GAME days, in real seconds (1 game day = 86400 / scale real seconds)
 function remain(dl) {
@@ -114,20 +134,17 @@ async function refreshAssets() {
 }
 
 /* ---------- the dropdown under a selected row: built ONCE, moved on every redraw, so a number you type survives ---------- */
+function popMax() { const it = curRow(); return it && asel && (asel.kind === 'cargo' || asel.kind === 'storage') ? num(it.quantity) : 0; }
+function fullMax() { const it = curRow(); return it && asel && asel.kind === 'storage' ? maxLoad(it) : 0; }
 const pop = (() => {
-  const root = el('div', 'pop'), left = el('div', 'popl'), right = el('div', 'popr');
-  const title = el('div', 'poptitle'), info = el('div', 'popinfo'), row = el('div', 'poprow'), brow = el('div', 'poprow');
-  const inp = document.createElement('input');
-  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'ain'; inp.setAttribute('aria-label', 'Quantity');
-  const chips = el('div', 'chips'), b1 = el('button', '', ''), b2 = el('button', 'alt', '');
-  row.append(inp, chips); brow.append(b1, b2);
-  left.append(title, info); right.append(row, brow); root.append(left, right);
-  inp.addEventListener('input', () => { aEdited = true; refreshPop(); });
-  inp.addEventListener('blur', () => setTimeout(() => { if (aRedraw && !isTyping()) { aRedraw = false; drawAssets(); } }, 350));
+  const root = el('div', 'apop'), title = el('div', 'apoptitle'), info = el('div', 'apopinfo'), brow = el('div', 'apoprow');
+  const q = qtyControl({ steps: [1, 10], getMax: popMax, inputClass: 'ain', extras: [['Full', fullMax]], onChange: () => { aEdited = true; refreshPop(); } });
+  const b1 = el('button', '', ''), b2 = el('button', 'alt', '');
+  brow.append(b1, b2); root.append(title, info, q.root, brow);
+  q.input.addEventListener('blur', () => setTimeout(() => { if (aRedraw && !isTyping()) { aRedraw = false; drawAssets(); } }, 350));
   b1.onclick = () => doAct(1); b2.onclick = () => doAct(2);
-  return { root, title, info, row, brow, inp, chips, b1, b2 };
+  return { root, title, info, row: q.root, brow, inp: q.input, full: q.extras[0], b1, b2 };
 })();
-function addChip(label, fn) { const b = el('button', 'alt', label); b.onclick = fn; pop.chips.appendChild(b); }
 
 function curRow() {
   if (!asel || !stAll || !fm || !fh) return null;
@@ -141,29 +158,23 @@ function placePop(it) {
   const p = pop, k = asel.kind, qty = k === 'cargo' || k === 'storage';
   p.row.style.display = qty ? '' : 'none';
   p.b2.style.display = k === 'storage' ? '' : 'none';
+  p.full.style.display = k === 'storage' ? '' : 'none';   // 'Full' = as much as fits the free hold
   p.title.style.display = qty ? 'none' : '';
   p.title.textContent = k === 'open' ? 'Open freight: ' + it.good_name : 'Freight on board';
-  p.chips.replaceChildren();
-  if (qty) {
-    if (!aEdited) p.inp.value = it.quantity;
-    addChip('1', () => { p.inp.value = 1; aEdited = true; refreshPop(); });
-    addChip('10', () => { p.inp.value = 10; aEdited = true; refreshPop(); });
-    if (k === 'storage') addChip('Full', () => { p.inp.value = maxLoad(it); aEdited = true; refreshPop(); });
-    addChip('All', () => { p.inp.value = it.quantity; aEdited = true; refreshPop(); });
-  }
+  if (qty && !aEdited) p.inp.value = it.quantity;
   refreshPop();
   return p.root;
 }
 function refreshPop() {
   const it = curRow(); if (!it || !asel) return;
-  const p = pop, k = asel.kind, here = dockedAt() === aloc;
+  const p = pop, k = asel.kind, here = k === 'cargo' ? !!dockedAt() : dockedAt() === aloc;   // unloading needs the ship docked anywhere; loading needs it docked HERE
   p.info.replaceChildren();
   const line = (cls, t) => p.info.appendChild(el('div', cls, t));
   if (k === 'cargo' || k === 'storage') {
     const q = qtyOf(p.inp), bad = isNaN(q) || q < 1, over = !isNaN(q) && q > it.quantity;
     if (isNaN(q)) line('', 'Enter a whole number (1 or more).');
     if (over) line('err', 'You only have ' + whole(it.quantity) + '.');
-    if (k === 'cargo') { p.b1.textContent = 'Unload'; p.b1.disabled = bad || over || abusy; line('muted', 'Moves goods from the hold into storage here.'); return; }
+    if (k === 'cargo') { p.b1.textContent = 'Unload'; p.b1.disabled = bad || over || abusy || !here; line('muted', 'Moves goods from the hold into storage here.'); return; }
     p.b1.textContent = 'Load'; p.b1.disabled = bad || over || !here || q > maxLoad(it) || abusy;
     p.b2.textContent = 'Hire hauler'; p.b2.disabled = bad || over || abusy;
     line('muted', here ? 'Hold space free: ' + r2(freeHold()) + '.' : 'Loading needs your ship docked here.');
@@ -196,11 +207,11 @@ function drawLocBox() {
   if (dockedAt()) ids.add(dockedAt());
   if (aloc) ids.add(aloc);
   const list = [...ids].sort((a, b) => locName(a).localeCompare(locName(b))), dl = dockedAt();
-  apick.set(list.map(id => [id, locName(id), dl === id ? 'ship here' : '']), aloc);
+  apick.set(list.map(id => [id, locName(id), dl === id ? '@ship' : '']), aloc);
   applyBackdrop(apick.btn, aloc);        /* the picture behind the box follows the chosen place */
 }
 function section(parent, key, title, count, btn, drawBody) {
-  const k = aloc + ':' + key, open = secOpen[k] !== false;
+  const k = (key.startsWith('@') ? key : aloc + ':' + key), open = secOpen[k] !== false;   // a key starting with @ is not tied to the chosen place
   const box = el('div', 'msec'), h = el('div', 'sech');
   h.appendChild(el('span', '', (open ? ARROW_OPEN : ARROW_SHUT) + title + ' (' + count + ')'));
   if (btn) h.appendChild(btn);
@@ -210,7 +221,7 @@ function section(parent, key, title, count, btn, drawBody) {
   parent.appendChild(box);
 }
 function toggle(kind, id) {
-  asel = isSel(kind, id) ? null : { loc: aloc, kind, id };
+  asel = isSel(kind, id) ? null : { loc: selLoc(kind), kind, id };
   aEdited = false; aconfirm = false; drawAssets();
 }
 function stackRow(box, kind, x, selectable) {
@@ -220,43 +231,43 @@ function stackRow(box, kind, x, selectable) {
   box.appendChild(r);
   if (sel) box.appendChild(placePop(x));
 }
+// The ship I fly: picture, name, where it is, hold and max acceleration. Touch it to rig it (needs the ship docked).
+function drawShipCard(parent) {
+  const sh = (S.last.ships || [])[0]; if (!sh) return;
+  const docked = sh.state === 'docked', pod = sh.hull_id === 'life_pod';
+  const card = el('div', 'scard' + (docked && !pod ? ' tap' : '')), mid = el('div', 'smid');
+  if (!pod) card.appendChild(hullPic(sh.hull_id, 'thumb'));
+  mid.appendChild(el('div', 'sname', hullName(sh.hull_id) + ' (flying)'));
+  mid.appendChild(el('div', 'sub', docked ? 'Docked at ' + locName(sh.location_id) : 'Travelling'));
+  mid.appendChild(el('div', 'sub', pod ? 'Life pod: no cargo hold' : 'Hold ' + (stAll ? r2(stAll.hold_used) + ' / ' + r2(stAll.hold_size) : r2(sh.hold_size)) + (accel(sh) ? ', ' + accel(sh) : '')));
+  card.appendChild(mid);
+  if (docked && !pod) card.appendChild(el('span', 'scaret', '\u203A'));
+  card.onclick = () => {
+    if (pod) say('A life pod has no slots to rig.');
+    else if (!docked) say('Rigging needs your ship docked.');
+    else openRigging(sh.id, () => openScreen('assets'));
+  };
+  parent.appendChild(card);
+}
 function drawAssets() {
   if (isTyping()) { aRedraw = true; return; }
   aRedraw = false;
   if (!aloc) return;
-  const body = abody; body.replaceChildren();
+  const body = abody; body.replaceChildren(); sbox.replaceChildren();
   drawLocBox();
+  if (S.last) drawShipCard(sbox);
   if (!stAll || !fm || !fh) { body.appendChild(el('div', 'muted pad', 'Loading...')); return; }
-  if (asel && (asel.loc !== aloc || !curRow())) { asel = null; aEdited = false; aconfirm = false; }
+  if (asel && ((asel.loc !== 'hold' && asel.loc !== aloc) || !curRow())) { asel = null; aEdited = false; aconfirm = false; }
 
-  const sh = (S.last.ships || [])[0], moving = !!sh && sh.state !== 'docked', here = dockedAt() === aloc;
+  const sh = (S.last.ships || [])[0], docked = !!dockedAt(), here = dockedAt() === aloc;
   const cargo = stAll.cargo || [], hf = (fh.items || []).filter(b => b.status === 'active'), stored = storedHere();
-  let shown = 0;
 
-  // 0) SHIPS of mine that are docked at this place (the one I fly, and parked ones)
-  const here_ships = (S.last.ships || []).filter(s => s.state === 'docked' && s.location_id === aloc);
-  if (here_ships.length) {
-    shown++;
-    section(body, 'ships', 'Ships here', here_ships.length, null, box => here_ships.forEach(s => {
-      const isAct = !!sh && s.id === sh.id, r = el('div', 'row'), right = el('span', 'num');
-      r.append(cell('', hullName(s.hull_id) + (isAct ? ' (flying)' : ''), 'hold ' + r2(s.hold_size) + ', thrust ' + r2(s.thrust_g) + ' g'), right);
-      if (isAct && s.hull_id !== 'life_pod') {
-        const b = el('button', 'alt', 'Leave ship'); b.disabled = abusy; b.onclick = () => openShip('leave', s); right.appendChild(b);
-      } else if (!isAct && here) {
-        const b = el('button', 'alt', 'Board'); b.disabled = abusy;
-        b.onclick = () => (sh.hull_id === 'life_pod' ? doBoard(s) : openShip('board', s)); right.appendChild(b);
-      } else if (!isAct) right.appendChild(el('span', 'muted', 'parked'));
-      box.appendChild(r);
-    }));
-  }
-
-  // 1) HOLD: where the ship is docked, or anywhere while it is travelling
-  if ((here || moving) && (cargo.length || hf.length)) {
-    shown++;
+  // THE HOLD (always shown under the ship card, whatever place is chosen). Goods first, then rigs and weapons.
+  if (cargo.length || hf.length) {
     let ub = null;
-    if (here && cargo.length) { ub = el('button', 'ub', 'Unload all'); ub.disabled = abusy; ub.onclick = doUnloadAll; }
-    section(body, 'hold', 'Hold ' + r2(stAll.hold_used) + ' / ' + r2(stAll.hold_size) + (moving ? ', travelling' : ''), cargo.length + hf.length, ub, box => {
-      cargo.forEach(x => stackRow(box, 'cargo', x, here));
+    if (docked && cargo.length) { ub = el('button', 'ub', 'Unload all'); ub.disabled = abusy; ub.onclick = doUnloadAll; }
+    section(sbox, '@hold', 'Hold ' + r2(stAll.hold_used) + ' / ' + r2(stAll.hold_size) + (sh && sh.state !== 'docked' ? ', travelling' : ''), cargo.length + hf.length, ub, box => {
+      cargo.filter(x => !isRig(x)).forEach(x => stackRow(box, 'cargo', x, docked));
       hf.forEach(b => {
         const sel = isSel('hfreight', b.batch_id), r = el('div', 'row' + (sel ? ' sel' : ''));
         const right = el('span', 'num'); right.append(timerSpan(b.deadline_t), el('span', 'sub', 'left'));
@@ -265,16 +276,49 @@ function drawAssets() {
         box.appendChild(r);
         if (sel) box.appendChild(placePop(b));
       });
+      const hr = cargo.filter(isRig);
+      if (hr.length) { box.appendChild(el('div', 'rigsub', 'Rigs and weapons')); hr.forEach(x => stackRow(box, 'cargo', x, docked)); }
     });
   }
 
-  // 2) STORED HERE
-  if (stored.length) {
+  let shown = 0;
+  // 1) HULLS HERE: my ships docked at this place (touch one to rig it)
+  const here_ships = (S.last.ships || []).filter(s => s.state === 'docked' && s.location_id === aloc);
+  if (here_ships.length) {
     shown++;
-    section(body, 'storage', 'Stored here', stored.length, null, box => stored.forEach(x => stackRow(box, 'storage', x, true)));
+    section(body, 'ships', 'Hulls here', here_ships.length, null, box => here_ships.forEach(s => {
+      const isAct = !!sh && s.id === sh.id, pod = s.hull_id === 'life_pod', r = el('div', 'row tap'), right = el('span', 'num'), lg = el('div', 'hl');
+      if (!pod) lg.appendChild(hullPic(s.hull_id, 'small'));
+      lg.appendChild(cell('', hullName(s.hull_id) + (isAct ? ' (flying)' : ''), 'hold ' + r2(s.hold_size) + (accel(s) ? ', ' + accel(s) : '')));
+      r.append(lg, right);
+      if (isAct && !pod) {
+        const b = el('button', 'alt', 'Leave ship'); b.disabled = abusy; b.onclick = () => openShip('leave', s); right.appendChild(b);
+      } else if (!isAct && here) {
+        const b = el('button', 'alt', 'Board'); b.disabled = abusy;
+        b.onclick = () => (sh.hull_id === 'life_pod' ? doBoard(s) : openShip('board', s)); right.appendChild(b);
+      } else if (!isAct) right.appendChild(el('span', 'muted', 'parked'));
+      r.onclick = e => {
+        if (e.target.closest && e.target.closest('button')) return;
+        if (pod) say('A life pod has no slots to rig.'); else openRigging(s.id, () => openScreen('assets'));
+      };
+      box.appendChild(r);
+    }));
   }
 
-  // 3) FREIGHT: contracts I posted that start here. One line for the open units, one line per load on the way.
+  // 2) RIGS AND WEAPONS in storage here (kept apart from the goods)
+  const rigsStored = stored.filter(isRig), goodsStored = stored.filter(x => !isRig(x));
+  if (rigsStored.length) {
+    shown++;
+    section(body, 'rigs', 'Rigs and weapons here', rigsStored.length, null, box => rigsStored.forEach(x => stackRow(box, 'storage', x, true)));
+  }
+
+  // 3) STORED HERE: goods
+  if (goodsStored.length) {
+    shown++;
+    section(body, 'storage', 'Stored here', goodsStored.length, null, box => goodsStored.forEach(x => stackRow(box, 'storage', x, true)));
+  }
+
+  // 4) FREIGHT: contracts I posted that start here. One line for the open units, one line per load on the way.
   const lines = [];
   (fm.items || []).filter(c => c.pickup_location === aloc).forEach(c => {
     if (num(c.units_open) > 0 && c.status === 'open') lines.push({ kind: 'open', c });
@@ -491,5 +535,5 @@ addScreen('assets', 'Assets', scr, {
 export function resetAssets() {
   aloc = null; adock = undefined; asel = null; stAll = fm = fh = null; aconfirm = false; aEdited = false;
   closeHire(); closeShip();
-  abody.replaceChildren();
+  abody.replaceChildren(); sbox.replaceChildren();
 }
