@@ -1,11 +1,12 @@
 // main.js - the app shell: login, the 15 s refresh, the 1 s clock tick, buttons outside the screens.
-// Loads fly.js, market.js, assets.js and facilities.js (each registers its own screen).
+// Loads fly.js, market.js, assets.js, facilities.js and rigs.js (each registers its own screen).
 import { J2000_MS } from 'physics';
 import { S, $, say, li, call, fmt, curGd, nowMs, locName, screens, openScreen, setShipLine, enduranceNow } from 'core';
 import { invalidateDeps, resetFly } from 'fly';
 import { resetMarket } from 'market';
 import { resetAssets } from 'assets';
 import { resetFacilities } from 'facilities';
+import { resetRigging } from 'rigs';
 import { resetProfile } from 'profile';
 import 'home';
 import { resetMissions } from './missions.js';
@@ -97,7 +98,7 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-const logout = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetFacilities(); resetProfile(); resetMissions(); resetTour(); S.current = null; show('auth'); };
+const logout = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetFacilities(); resetRigging(); resetProfile(); resetMissions(); resetTour(); S.current = null; show('auth'); };
 $('out').onclick = logout; $('out2').onclick = logout;
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
