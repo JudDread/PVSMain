@@ -47,7 +47,7 @@ const TOURS = [
       title: 'Luna Flight Control',
       paras: [
         'Flight Control clears you for departure, ' + name + '. Your courier carries no fuel at all: the G-Drive bends gravity in front of the hull and the ship falls into it.',
-        'There are no brakes in space. A ship keeps its momentum, so every trip is an acceleration to the halfway point, a flip, and an equal deceleration to stop. More thrust gets you there sooner, but anything above your base threshold (3 g), drains your Endurance. The default trip will use 50% of your bar, wait for it to refill, then drain it again.'',
+        'There are no brakes in space. A ship keeps its momentum, so every trip is an acceleration to the halfway point, a flip, and an equal deceleration to stop. More thrust gets you there sooner, but anything above your base threshold (3 g), drains your Endurance. The default trip will use 50\% of your bar, wait for it to refill, then drain it again.'',
         'The planets will hold still while you travel. Distances are constantly changing: the same trip can be short today and long next week.',
         'Your first run is to EARTHH ORBIT. Earth Space Command keeps its fleet there, and they notice who arrives. Get there, and they will have work for you.',
       ],
