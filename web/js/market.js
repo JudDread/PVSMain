@@ -1,11 +1,13 @@
 // market.js - the Market screen (goods in markets, in storage and in the hold). Display only: the server decides every trade.
-import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine, createPicker } from 'core';
+import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine, createPicker, qtyControl } from 'core';
 import { applyBackdrop } from 'backdrop';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
 
 let mloc = null;            // chosen place: a location id, or 'ALL'
-let mdock;                  // the place the ship was docked at last time we looked (to notice a new dock)
+let mDockSeen;              // the place the ship was docked at when we last reset the page for a dock (null = in flight)
+const selLoc = {};          // Produced / Consumed place selectors: 'place:section' -> chosen place id (missing = All)
+const isRig = id => String(id || '').startsWith('rig_');   // rigs never show on the Market page
 let mAt = 0;                // when the screen was last refreshed
 const mc = {};              // cache per location: mc[id] = { d: market_at answer, at, bestSt, bestCg }
 const mLoading = {};
@@ -50,6 +52,19 @@ function sortGoods(list) {
     '#mbody .msec + .msec { margin-top: 14px !important; }',
     '#mbody .sech button.ub { background: #e8b64a !important; color: #14100a !important; border: 0 !important; border-radius: 6px !important; font-weight: 700 !important; padding: 5px 14px !important; }',
     '#mbody .sech button.ub:disabled { opacity: .45; }',
+    '#mbody .sech select { background: #192033 !important; color: #e3e9f7 !important; border: 1px solid #333d57 !important; border-radius: 6px !important; font: inherit; font-size: 13px !important; padding: 2px 6px !important; margin: 0 !important; width: auto !important; max-width: 48% !important; min-height: 0 !important; }',
+    '.mpop { background: rgba(120,160,210,0.10); border: 1px solid rgba(120,160,210,0.35); border-radius: 8px; padding: 10px; margin: 4px 0 8px; }',
+    '.mpop .mpinfo { margin-bottom: 8px; }',
+    '.mpop .mi { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }',
+    '.mpop .mi b { font-weight: 700; }',
+    '.mpbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }',
+    '.mpbar > button { margin: 0; padding: 8px 14px; }',
+    '.mcf { position: fixed; inset: 0; z-index: 9000; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; padding: 16px; }',
+    '.mcfbox { background: #131a2a; border: 1px solid #3a4666; border-radius: 10px; padding: 16px; max-width: 360px; width: 100%; box-sizing: border-box; }',
+    '.mcft { font-weight: 700; font-size: 16px; margin-bottom: 10px; text-align: center; }',
+    '.mcfb > div { margin-bottom: 8px; }',
+    '.mcfr { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }',
+    '.mcfr button { margin: 0; padding: 8px 18px; min-width: 100px; }',
     '#mbody .sech { background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; }'
   ].join('\n');
   document.head.appendChild(st);
@@ -66,7 +81,7 @@ function defaultLoc() {
 function placeIds() {
   const s = new Set();
   Object.values(mc).forEach(x => ((x.d && x.d.market_ids) || []).forEach(i => s.add(i)));
-  ((stAll && stAll.items) || []).forEach(i => s.add(i.location_id));
+  ((stAll && stAll.items) || []).filter(i => !isRig(i.good_id)).forEach(i => s.add(i.location_id));
   if (dockedAt()) s.add(dockedAt());
   if (mloc && mloc !== 'ALL') s.add(mloc);
   return [...s].sort((a, b) => locName(a).localeCompare(locName(b)));
@@ -233,26 +248,29 @@ function toggleSel(loc, kind, good) { if (isDD(loc, kind, good)) { dd = null; ms
 
 /* ---- the quantity pop-up: built ONCE and moved under the selected row on every redraw, so a number you are typing survives.
    While the box has focus, redraws wait until you leave it. ---- */
-const isTyping = () => !!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('qin'));
+const isTyping = () => { const a = document.activeElement; return !!(a && ((a.classList && a.classList.contains('qin')) || a.tagName === 'SELECT')); };
 function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 ? q : NaN; }
+// the biggest number the box may hold: buying = the server's maximum; selling / loading = what you have
+function popMax() {
+  const it = curItem(); if (!it || !msel) return 0;
+  if (msel.kind === 'goods') { const mq = quotes[qKey(0)]; return mq && mq.d && mq.d.ok ? mq.d.max_quantity : 0; }
+  return it.quantity;
+}
 const pop = (() => {
-  const root = el('div', 'pop'), left = el('div', 'popl'), right = el('div', 'popr');
-  const title = el('div', 'poptitle'), row = el('div', 'poprow'), brow = el('div', 'poprow');
-  const inp = document.createElement('input');
-  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'qin'; inp.setAttribute('aria-label', 'Quantity');
-  const b1 = el('button', '', ''), b2 = el('button', 'alt', '');
-  const chips = el('div', 'chips'), info = el('div', 'popinfo');
-  row.append(inp, chips);            // top right: the number box and its quick buttons
-  brow.append(b1, b2);               // under them: the Buy / Sell / Load buttons
-  left.append(title, info);          // left: what you are doing + the explanation lines
-  right.append(row, brow);
-  root.append(left, right);
-  inp.addEventListener('input', () => { mEdited = true; refreshPop(); });
+  const root = el('div', 'mpop'), info = el('div', 'mpinfo'), bar = el('div', 'mpbar');
+  const q = qtyControl({
+    steps: [1, 10], getMax: popMax, inputClass: 'qin',
+    onChange: () => { mEdited = true; refreshPop(); },
+    extras: [['full', () => { const it = curItem(), d = curData(); return it && d ? maxLoad(d, it) : 0; }]],   // storage only: as much as fits the free hold space
+  });
+  const inp = q.input, b1 = el('button', '', ''), b2 = el('button', 'alt', '');
+  b1.type = 'button'; b2.type = 'button';
+  bar.append(q.root, b1, b2);        // one row: the number box with its buttons, then Buy / Sell, then the other button
+  root.append(info, bar);
   inp.addEventListener('blur', () => setTimeout(() => { if (mRedraw && !isTyping()) { mRedraw = false; drawMarket(); } }, 350));
   b1.onclick = () => doAct('main'); b2.onclick = () => doAct('second');
-  return { root, title, inp, b1, b2, chips, info };
+  return { root, inp, q, b1, b2, info };
 })();
-function addChip(label, fn) { const b = el('button', 'alt', label); b.onclick = fn; pop.chips.appendChild(b); }
 /* ---- server quotes: the exact price of an order and the real maximum come from the server ('quote'), never from the page.
    A quote with quantity 0 = "just tell me the most I can do". Answers are kept 15 s; typing waits 300 ms before asking. ---- */
 const quotes = {};                      // key -> { d: answer | null, err, at }
@@ -276,6 +294,7 @@ async function fetchQuote(key, args) {
   try { rec = { d: await call('quote', args), at: Date.now() }; }
   catch (e) { rec = { d: null, err: e, at: Date.now() }; }
   qBusy[key] = false; quotes[key] = rec;
+  refreshConfirm();
   if (!msel || !curData()) return;
   // the maximum has arrived and you have not typed your own number: fill it in
   if (msel.kind === 'goods' && !mEdited && !isTyping() && key === qKey(0) && rec.d && rec.d.ok) pop.inp.value = rec.d.max_quantity;
@@ -290,48 +309,91 @@ function problemText(qd) {
   if (p === 'not_enough_cargo' || p === 'not_enough_stored') return 'You do not have that many.';
   return 'This cannot be done right now.';
 }
-// one info line for an order: the exact total from the server, or why it cannot be priced yet
-function quoteLine(verb, q, nm, qd) {
-  if (qd && qd.d && qd.d.ok && !nm) { const l = el('div', '', verb + ' ' + whole(q) + ': ' + money(qd.d.total) + ' in total, ' + money(qd.d.unit_price) + ' avg'); l.style.whiteSpace = 'nowrap'; return l; }
-  if (qd && qd.d && qd.d.ok) return el('div', '', verb + ' ' + whole(q) + ' ' + nm + ': ' + money(qd.d.total) + ' in total (' + money(qd.d.unit_price) + ' each on average)');
-  if (qd && qd.err) return el('div', 'muted', 'Could not get the exact price: ' + marketError(qd.err));
-  return el('div', 'muted', 'Checking the price...');
+// two labelled numbers from the server's quote: the whole order and the average price of one item
+function infoRow(label, value) { const r = el('div', 'mi'); r.append(el('span', '', label), el('b', '', value)); return r; }
+function priceRows(info, qd) {
+  if (qd && qd.d && qd.d.ok) { info.appendChild(infoRow('Total price', money(qd.d.total))); info.appendChild(infoRow('Price each (average)', money(qd.d.unit_price))); }
+  else if (qd && qd.err) info.appendChild(el('div', 'muted', 'Could not get the exact price: ' + marketError(qd.err)));
+  else info.appendChild(el('div', 'muted', 'Checking the price...'));
 }
 function refreshPop() {
   const it = curItem(), d = curData(); if (!it || !d) return;
   const q = qtyOf(pop.inp), bad = isNaN(q) || q < 1, p = pop;
   p.info.replaceChildren();
-  if (isNaN(q)) p.info.appendChild(el('div', '', msel.kind === 'goods' && !mEdited ? 'Checking the most you can buy...' : 'Enter a whole number (0 or more).'));
   if (msel.kind === 'goods') {
     const dest = buyDest(d), mq = wantQuote(0);
     p.b1.textContent = 'Buy'; p.b1.disabled = bad || mbusy;
     p.b2.textContent = 'To: ' + (dest === 'hold' ? 'Hold' : 'Storage'); p.b2.disabled = mbusy || !d.here;
-    if (!isNaN(q)) { const qd = q >= 1 ? wantQuote(q) : null; if (q >= 1) { p.info.appendChild(quoteLine('Buy', q, it.name, qd)); if (qd && qd.d && qd.d.ok && qd.d.problem) p.info.appendChild(el('div', 'err', problemText(qd))); if (qd && qd.d && qd.d.can_do === false) p.b1.disabled = true; } if (dest === 'hold') p.info.appendChild(el('div', 'muted', 'Hold space free: ' + r2(Math.max(0, d.hold_size - d.hold_used)))); }
-    p.info.appendChild(el('div', 'muted', 'Goes into ' + (dest === 'hold' ? 'your hold.' : 'your storage at ' + d.location_name + '.') + (d.here ? '' : ' Hold needs your ship docked here.')));
-    if (mq && mq.d && mq.d.ok && mq.d.max_quantity === 0) p.info.appendChild(el('div', 'muted', 'You cannot buy any right now: ' + ({ stock: 'sold out', credits: 'low funds', hold: 'hold full' }[mq.d.limit] || 'not available') + '.'));
-    else if (mq && mq.d && mq.d.ok) p.info.appendChild(el('div', 'muted', 'Most you can buy now: ' + whole(mq.d.max_quantity) + '.'));
+    if (isNaN(q)) p.info.appendChild(el('div', 'muted', !mEdited ? 'Checking the most you can buy...' : 'Enter a whole number.'));
+    else if (q >= 1) {
+      const qd = wantQuote(q); priceRows(p.info, qd);
+      if (qd && qd.d && qd.d.ok && qd.d.problem) p.info.appendChild(el('div', 'err', problemText(qd)));
+      if (qd && qd.d && qd.d.can_do === false) p.b1.disabled = true;
+    }
+    if (mq && mq.d && mq.d.ok && mq.d.max_quantity === 0) p.info.appendChild(el('div', 'err', 'You cannot buy any right now: ' + ({ stock: 'sold out', credits: 'low funds', hold: 'hold full' }[mq.d.limit] || 'not available') + '.'));
     return;
   }
   const sells = it.sell_here != null, cargo = msel.kind === 'cargo';
   p.b1.textContent = 'Sell'; p.b1.disabled = bad || !sells || q > it.quantity || mbusy;
   if (cargo) { p.b2.textContent = 'Unload'; p.b2.disabled = bad || q > it.quantity || mbusy; }
   else { p.b2.textContent = 'Load'; p.b2.disabled = bad || !d.here || q > it.quantity || q > maxLoad(d, it) || mbusy; }
+  if (isNaN(q)) p.info.appendChild(el('div', 'muted', 'Enter a whole number.'));
   if (!sells) p.info.appendChild(el('div', 'muted', 'This place does not buy that.'));
-  else if (!isNaN(q) && q >= 1 && q <= it.quantity) { p.info.appendChild(quoteLine('Sell', q, '', wantQuote(q))); p.info.appendChild(el('div', 'muted', 'You have ' + whole(it.quantity) + '.')); }
+  else if (!isNaN(q) && q >= 1 && q <= it.quantity) {
+    const qd = wantQuote(q); priceRows(p.info, qd);
+    if (qd && qd.d && qd.d.ok && qd.d.problem) p.info.appendChild(el('div', 'err', problemText(qd)));
+  }
   if (!isNaN(q) && q > it.quantity) p.info.appendChild(el('div', 'err', 'You only have ' + whole(it.quantity) + '.'));
 }
 function placePop(d, kind, it) {
   const p = pop;
-  p.title.textContent = kind === 'goods' ? 'Buy ' + it.name : '';
-  p.title.style.display = kind === 'goods' ? '' : 'none';   // cargo / stored: the row above already says what it is
   if (!mEdited) { if (kind === 'goods') { const mq = quotes[qKey(0)]; p.inp.value = mq && mq.d && mq.d.ok ? mq.d.max_quantity : ''; } else p.inp.value = it.quantity; }
-  p.chips.replaceChildren();
-  addChip('1', () => { p.inp.value = 1; mEdited = true; refreshPop(); });
-  addChip('10', () => { p.inp.value = 10; mEdited = true; refreshPop(); });
-  if (kind === 'storage') addChip('Full', () => { mEdited = true; p.inp.value = maxLoad(d, it); refreshPop(); });   // as much as fits the empty hold space
-  addChip(kind === 'goods' ? 'Max' : 'All', () => { mEdited = false; if (kind === 'goods') { delete quotes[qKey(0)]; p.inp.value = ''; } else p.inp.value = it.quantity; refreshPop(); });
+  p.q.extras[0].hidden = kind !== 'storage';
   refreshPop();
   return p.root;
+}
+
+/* ---- the confirmation box for a buy or a sell: shows the numbers the server quoted, then Cancel / Confirm ---- */
+let cfSnap = null, cfEls = null;
+function cfBuild() {
+  if (cfEls) return cfEls;
+  const ov = el('div', 'mcf'), box = el('div', 'mcfbox'), title = el('div', 'mcft'), body = el('div', 'mcfb'), row = el('div', 'mcfr');
+  const no = el('button', 'alt', 'Cancel'), yes = el('button', '', 'Confirm');
+  no.type = 'button'; yes.type = 'button';
+  row.append(no, yes); box.append(title, body, row); ov.appendChild(box); ov.hidden = true; document.body.appendChild(ov);
+  no.onclick = closeConfirm;
+  ov.addEventListener('pointerdown', e => { if (e.target === ov) closeConfirm(); });
+  yes.onclick = () => { if (!cfSnap || mbusy) return; const s = cfSnap; closeConfirm(); runTrade(s); };
+  cfEls = { ov, title, body, yes };
+  return cfEls;
+}
+function closeConfirm() { cfSnap = null; if (cfEls) cfEls.ov.hidden = true; }
+function openConfirm() {
+  const it = curItem(), d = curData(); if (!it || !d || mbusy || !msel) return;
+  const q = qtyOf(pop.inp); if (!(q >= 1)) return;
+  const buy = msel.kind === 'goods', dest = buy ? buyDest(d) : null;
+  cfSnap = { loc: msel.loc, kind: msel.kind, good: msel.good, name: it.name, q, buy, dest, avg: it.avg_cost, place: d.location_name, key: qKey(q) };
+  cfBuild().ov.hidden = false;
+  wantQuote(q);
+  refreshConfirm();
+}
+function refreshConfirm() {
+  if (!cfSnap || !cfEls || cfEls.ov.hidden) return;
+  const s = cfSnap, c = cfEls, qd = quotes[s.key];
+  c.title.textContent = s.buy ? 'Confirm purchase' : 'Confirm sale';
+  c.body.replaceChildren();
+  let ready = false;
+  if (qd && qd.d && qd.d.ok && !qd.d.problem && qd.d.can_do !== false) {
+    ready = true;
+    const r = qd.d;
+    c.body.appendChild(el('div', '', 'You will ' + (s.buy ? 'buy ' : 'sell ') + whole(s.q) + ' ' + s.name + ' for ' + money(r.total) + ' in total, ' + money(r.unit_price) + ' each on average.'));
+    if (s.buy) c.body.appendChild(el('div', 'muted', s.dest === 'hold' ? 'They go into your hold.' : 'They go into storage at ' + s.place + '.'));
+    else if (s.avg != null) { const each = r.unit_price - s.avg; c.body.appendChild(el('div', tone(each), 'You paid ' + money(s.avg) + ' each, so you make ' + sgn(each) + ' per item (' + sgn(each * s.q) + ' in total).')); }
+    else c.body.appendChild(el('div', 'muted', 'Your cost is unknown, so the profit cannot be shown.'));
+  } else if (qd && qd.d && qd.d.ok) c.body.appendChild(el('div', 'err', problemText(qd)));
+  else if (qd && qd.err) c.body.appendChild(el('div', 'err', 'Could not get the exact price: ' + marketError(qd.err)));
+  else c.body.appendChild(el('div', 'muted', 'Checking the price...'));
+  c.yes.disabled = !ready || mbusy;
 }
 
 /* ---- drawing ---- */
@@ -345,7 +407,7 @@ function section(parent, loc, key, title, count, btn, drawBody, defOpen) {
   const box = el('div', 'msec'), h = el('div', 'sech');
   h.appendChild(el('span', '', (open ? ARROW_OPEN : ARROW_SHUT) + title + ' (' + count + ')'));
   if (btn) h.appendChild(btn);
-  h.onclick = e => { if (e.target.tagName === 'BUTTON') return; secOpen[k] = !open; drawMarket(); };
+  h.onclick = e => { if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT' || e.target.tagName === 'OPTION') return; secOpen[k] = !open; drawMarket(); };
   box.appendChild(h);
   if (open) drawBody(box);
   parent.appendChild(box);
@@ -447,11 +509,38 @@ function drawFreight(box, d, loc, items) {
     if (sel) box.appendChild(frPop(d, loc, x, scale));
   });
 }
+/* the place selector in a Produced / Consumed header (right side). All = this place only; a place = only the goods that place trades,
+   and the Best column shows that place's price, stock and percent of its node. */
+function placeSelect(sk, P) {
+  const s = document.createElement('select');
+  s.setAttribute('aria-label', 'Show another place');
+  const ids = placeIds(); if (P !== 'ALL' && !ids.includes(P)) ids.push(P);
+  s.appendChild(new Option('All', 'ALL'));
+  ids.forEach(id => s.appendChild(new Option(locName(id), id)));
+  s.value = P;
+  s.onclick = e => e.stopPropagation();
+  s.onchange = () => { selLoc[sk] = s.value; s.blur(); if (s.value !== 'ALL' && !(mc[s.value] && mc[s.value].d)) loadLoc(s.value); drawMarket(); };
+  s.addEventListener('blur', () => setTimeout(() => { if (mRedraw && !isTyping()) { mRedraw = false; drawMarket(); } }, 350));
+  return s;
+}
 /* one list of goods with its sortable header. showBest: the 'Best' column = the other place with the best price
    (producer list: pays the most; consumer list: cheapest to buy). Touch a header to sort by it. */
 function goodsSection(parent, loc, d, key, title, list, showBest) {
   const grid = showBest ? '' : '1fr 84px 84px 72px';   // without the Best column the old four columns
-  section(parent, loc, key, title, list.length, null, box => {
+  const sk = loc + ':' + key, P = showBest ? (selLoc[sk] || 'ALL') : 'ALL';
+  let rows = list, wait = false;
+  if (P !== 'ALL') {
+    const pd = mc[P] && mc[P].d;
+    if (!pd) { wait = true; rows = []; if (!mLoading[P]) loadLoc(P); }
+    else {
+      const idx = {}; (pd.goods || []).forEach(o => { idx[o.good_id] = o; });
+      // produced: what that place pays when you sell there; consumed: what it asks when you buy there
+      rows = list.filter(g => idx[g.good_id]).map(g => { const o = idx[g.good_id]; return { ...g, best_name: locName(P), best_price: key === 'produced' ? o.sell_price : o.buy_price, pl_stock: o.stock, pl_base: o.base_supply }; });
+    }
+  }
+  const selBox = showBest ? placeSelect(sk, P) : null;
+  section(parent, loc, key, title, wait ? list.length : rows.length, selBox, box => {
+    if (wait) { box.appendChild(el('div', 'muted pad', 'Loading ' + locName(P) + '...')); return; }
     const hd = el('div', 'mhead'); if (grid) hd.style.gridTemplateColumns = grid;
     const cols = [['name', 'Good', '']];
     if (showBest) cols.push(['best_price', 'Best', 'num']);
@@ -463,11 +552,15 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
       sp.appendChild(b); hd.appendChild(sp);
     });
     box.appendChild(hd);
-    sortGoods(list).forEach(g => {
+    if (!rows.length) box.appendChild(el('div', 'muted pad', 'Nothing in this list is traded at ' + locName(P) + '.'));
+    sortGoods(rows).forEach(g => {
       const sel = isSel(loc, 'goods', g.good_id);
       const r = el('div', 'mrow' + (sel ? ' sel' : '')); if (grid) r.style.gridTemplateColumns = grid;
       const cells = [cell('', g.name)];
-      if (showBest) cells.push(g.best_name ? cell('num', g.best_name, money(g.best_price)) : cell('num muted', '-'));
+      if (showBest) {
+        if (P !== 'ALL') cells.push(cell('num', money(g.best_price), whole(g.pl_stock) + (g.pl_base > 0 ? ' (' + Math.round(100 * g.pl_stock / g.pl_base) + '%)' : '')));
+        else cells.push(g.best_name ? cell('num', g.best_name, money(g.best_price)) : cell('num muted', '-'));
+      }
       cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), g.base_supply > 0 ? '(' + Math.round(100 * g.stock / g.base_supply) + '%)' : ''));
       r.append(...cells);
       wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
@@ -480,7 +573,7 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
 function drawLoc(parent, loc) {
   const c = mc[loc];
   if (!c || !c.d) { parent.appendChild(el('div', 'muted pad', 'Loading...')); return; }
-  const d = c.d, cargo = d.cargo || [], stored = d.storage || [], goods = d.goods || [];
+  const d = c.d, cargo = (d.cargo || []).filter(x => !isRig(x.good_id)), stored = (d.storage || []).filter(x => !isRig(x.good_id)), goods = (d.goods || []).filter(x => !isRig(x.good_id));
   if (!d.here && d.remote_fee > 0) parent.appendChild(el('div', 'muted hint pad', 'Your ship is not docked here, so trades at this market carry an extra ' + Math.round(d.remote_fee * 100) + '% fee. Prices below include it.'));
   if (d.here) {
     const ub = el('button', 'ub', 'Unload all'); ub.disabled = mbusy || !cargo.length; ub.onclick = doUnloadAll;
@@ -519,7 +612,7 @@ function drawMarket() {
     const ids = placeIds();
     if (!ids.length) body.appendChild(el('div', 'muted pad', 'Nothing yet.'));
     ids.forEach(id => {
-      const open = !!openLocs[id], n = ((stAll && stAll.items) || []).filter(i => i.location_id === id).length;
+      const open = !!openLocs[id], n = ((stAll && stAll.items) || []).filter(i => i.location_id === id && !isRig(i.good_id)).length;
       const g = el('div', 'locg');
       g.append(el('span', '', (open ? ARROW_OPEN : ARROW_SHUT) + locName(id) + (dockedAt() === id ? ' (ship here)' : '')), el('span', 'muted', n ? n + ' stored' : ''));
       g.onclick = () => { openLocs[id] = !open; if (!open) loadLoc(id); drawMarket(); };
@@ -543,30 +636,35 @@ function marketError(e) {
   if (m === 'server_error') return 'Server error. Has migration 011 been run in the SQL editor?';
   return 'Error: ' + m;
 }
+// what a confirmed trade asks the server to do (one place, so the buy and sell arguments cannot drift apart)
+function tradeArgs(s) {
+  return s.buy
+    ? { action: 'trade_at', args: { location: s.loc, kind: 'buy', good: s.good, quantity: s.q, stack: s.dest === 'hold' ? 'cargo' : 'storage' } }   // the server calls the hold 'cargo'
+    : { action: 'trade_at', args: { location: s.loc, kind: 'sell', good: s.good, quantity: s.q, stack: s.kind === 'cargo' ? 'cargo' : 'storage' } };
+}
+async function execute(action, args, okText) {
+  mbusy = true; refreshPop(); drawMarket();
+  try { const r = await call(action, args); say(okText(r), 'ok'); }
+  catch (e) { say(marketError(e), 'err'); }
+  finally { mbusy = false; mEdited = false; mRedraw = false; clearQuotes(); refreshMarket(); }
+}
+function runTrade(s) {
+  if (mbusy) return;
+  const t = tradeArgs(s);
+  execute(t.action, t.args, r => s.buy
+    ? 'Bought ' + s.q + ' ' + s.name + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each) into ' + (s.dest === 'hold' ? 'the hold.' : 'storage at ' + s.place + '.')
+    : 'Sold ' + s.q + ' ' + s.name + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).');
+}
 async function doAct(which) {
   if (mbusy || !msel) return;
   const it = curItem(), d = curData(); if (!it || !d) return;
   if (msel.kind === 'goods' && which === 'second') { buyTo = buyTo === 'hold' ? 'storage' : 'hold'; LS.set('pvs_buyto', buyTo); mEdited = false; drawMarket(); return; }
   const q = qtyOf(pop.inp); if (!(q >= 1)) return;
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-  const s = { ...msel }, nm = it.name;
-  let action, args, okText;
-  if (s.kind === 'goods') {
-    const dest = buyDest(d);
-    action = 'trade_at'; args = { location: s.loc, kind: 'buy', good: s.good, quantity: q, stack: dest === 'hold' ? 'cargo' : 'storage' };   // the server calls the hold 'cargo'
-    okText = r => 'Bought ' + q + ' ' + nm + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each) into ' + (dest === 'hold' ? 'the hold.' : 'storage at ' + d.location_name + '.');
-  } else if (which === 'main') {
-    action = 'trade_at'; args = { location: s.loc, kind: 'sell', good: s.good, quantity: q, stack: s.kind === 'cargo' ? 'cargo' : 'storage' };
-    okText = r => 'Sold ' + q + ' ' + nm + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).';
-  } else if (s.kind === 'cargo') {
-    action = 'unload'; args = { good: s.good, quantity: q }; okText = () => 'Unloaded ' + q + ' ' + nm + ' into storage.';
-  } else {
-    action = 'load'; args = { good: s.good, quantity: q }; okText = () => 'Loaded ' + q + ' ' + nm + ' into the hold.';
-  }
-  mbusy = true; refreshPop(); drawMarket();
-  try { const r = await call(action, args); say(okText(r), 'ok'); }
-  catch (e) { say(marketError(e), 'err'); }
-  finally { mbusy = false; mEdited = false; mRedraw = false; clearQuotes(); refreshMarket(); }
+  if (which === 'main') { openConfirm(); return; }   // Buy or Sell: money moves, so ask first
+  const s = { ...msel }, nm = it.name;               // Load / Unload: no money moves
+  if (s.kind === 'cargo') execute('unload', { good: s.good, quantity: q }, () => 'Unloaded ' + q + ' ' + nm + ' into storage.');
+  else execute('load', { good: s.good, quantity: q }, () => 'Loaded ' + q + ' ' + nm + ' into the hold.');
 }
 async function doUnloadAll() {
   if (mbusy) return;
@@ -582,21 +680,30 @@ const mpick = createPicker(v => {   /* the place picker (button list) goes into 
   drawMarket();
 });
 $('mloc').appendChild(mpick.root);
+/* Every time the ship docks (anywhere, whichever screen is open): the place at the top becomes the docked place, and the selected row,
+   the open lists and both place selectors go back to their defaults. Checked on every state update, when Market opens, and on a 2-second timer. */
+function syncDock() {
+  const dl = dockedAt();
+  if (!dl) { mDockSeen = null; return; }     // in flight: forget, so docking again at the same place counts as a new dock
+  if (dl === mDockSeen) return;
+  mDockSeen = dl; LS.set('pvs_lastdock', dl);
+  mloc = dl; msel = null; dd = null; frSel = null; mEdited = false;
+  Object.keys(selLoc).forEach(k => delete selLoc[k]);
+  if (S.current === 'market') { refreshMarket(); drawMarket(); }
+}
+setInterval(syncDock, 2000);
 addScreen('market', 'Market', $('scr-market'), {
-  onShow: () => { mdock = dockedAt(); if (!mloc) mloc = defaultLoc(); refreshMarket(); drawMarket(); },
+  onShow: () => { syncDock(); if (!mloc) mloc = defaultLoc(); refreshMarket(); drawMarket(); },
   update: ship => {
-    const dl = (ship && ship.state === 'docked') ? ship.location_id : null;
-    if (dl) LS.set('pvs_lastdock', dl);
-    let changed = false;
-    if (dl !== mdock) { mdock = dl; changed = true; if (dl && mloc !== 'ALL') mloc = dl; }
-    if (!mloc) { mloc = defaultLoc(); changed = true; }
-    if (changed || Date.now() - mAt > 20000) refreshMarket();
+    syncDock();
+    if (!mloc) mloc = defaultLoc();
+    if (Date.now() - mAt > 20000) refreshMarket();
   },
 });
 
 /* called by main.js on log out */
 export function resetMarket() {
-  mloc = null; mdock = undefined; msel = null; dd = null; stAll = null; hold = null; frSel = null; frBusy = false;
+  mloc = null; mDockSeen = undefined; msel = null; closeConfirm(); Object.keys(selLoc).forEach(k => delete selLoc[k]); dd = null; stAll = null; hold = null; frSel = null; frBusy = false;
   Object.keys(frQty).forEach(k => delete frQty[k]);
   Object.keys(mc).forEach(k => delete mc[k]);
   clearQuotes();
