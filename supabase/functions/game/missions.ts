@@ -11,6 +11,8 @@ import { json, getCharacter } from './common.ts';
 export async function missionsView(db, user) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
+  // 058: post the pilot's private tutorial freight job when its turn has come (does nothing otherwise; a failure never blocks the list)
+  try { await db.rpc('tutorial_freight_post', { p_character: ch.id }); } catch (e) { /* ignore */ }
   const { data, error } = await db.rpc('quest_list', { p_character: ch.id });
   if (error) throw error;
   return json({ ok: true, chains: data.chains, quests: data.quests, ready: data.ready, new: data.new });
