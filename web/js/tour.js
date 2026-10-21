@@ -1,7 +1,9 @@
 // tour.js - the guided tours of the tutorial missions: a pointer (and, for tutorial 1, a welcome message) that walks the player through the screens.
 // All the wording and the targets live in TOURS below. The SERVER keeps the progress (mission steps); this file only shows it.
 // A step is finished by itself when its id equals the name of a screen opened or of a server action that succeeded (see missions.js).
-// FREE MODE: the player can tap anything while a pointer is up; the pointer follows what they have done.
+// LOCKED: while a pointer is up only the highlighted thing (and the speech box buttons) can be tapped; `hole` = a list of selectors that stay tappable too ([] = nothing).
+// A beat with fromMissions: true is also shown while the Missions screen is open (the first beat of a new mission points at a bottom tab).
+// A final with next + label 'OK' keeps the last instruction on screen until the player taps OK.
 // The 'Skip tour' choice is one switch per pilot: it switches off the pointers of ALL tutorials.
 import { S, LS, say, screenWatchers } from 'core';
 import { missionList, missionWatchers, reportStep } from './missions.js';
@@ -38,7 +40,10 @@ const TOURS = [
       { target: '#scr-profile', screen: 'profile', next: true, text: 'Your pilot file: level, Cals, credits, net worth, career, ship and reputation. Most of it is public, other pilots can read it. Tap Next when you are done looking.' },
       { target: '#vs', until: 'home', text: 'Tap the Vacuum State button to open the Home page: help, the Discord link and Log Out can be found here.' },
     ],
-    final: { target: '#nav button[data-screen="missions"]', text: 'Mission complete! Open the Missions tab and claim your reward.' },
+    finals: [
+      { target: '#scr-home', screen: 'home', next: true, label: 'OK', hole: [], text: 'This is the Home page: help, the Discord link and Log Out can be found here. Tap OK when you are ready.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Mission complete! Open the Missions tab and claim your reward.' },
+    ],
   },
   {
     quest: 'tutorial_2',
@@ -54,15 +59,18 @@ const TOURS = [
       start: 'Show me the controls', skip: "Skip - I'll work it out",
     }),
     beats: [
-      { target: '#nav button[data-screen="travel"]', until: 'travel', text: 'Time to fly. Tap the Fly tab.' },
+      { target: '#nav button[data-screen="travel"]', fromMissions: true, until: 'travel', text: 'Time to fly. Tap the Fly tab.' },
       { target: '#map', screen: 'travel', next: true, text: 'The live map of the solar systemm. The planets orbit the Sun in real time (at 60x normal). Your ship is on the map, and so is every location that you can fly to.' },
       { target: '.zb', screen: 'travel', next: true, text: 'ZOOM. Inner shows the inner planets, System shows everything, Ship centres on your own ship, very close. You can also pan and zoom the map by touch.' },
       { target: '.thr', screen: 'travel', next: true, text: 'THRUST, in g is shown in the bar on the right side of the map. Drag the slider: more g is a faster trip, but above your threshold (3 g at the start) it drains Endurance.' },
-      { target: '#depshead', screen: 'travel', tap: true, text: 'DESTINATIONS. Tap here to open the list of places you can fly to.' },
-      { target: { sel: '#deps .row', text: 'Earth Orbit' }, screen: 'travel', tap: true, text: 'Your first trip is to EARTH ORBIT. Tap it. Every line shows how long the trip takes at your current thrust.' },
-      { target: ['#deps .lbtn', '#go'], screen: 'travel', until: 'queue_travel', text: 'Press LAUNCH. The ship accelerates to the halfway point, flips, and brakes to arrive. Launch gets you under way; the trip time is shown in real minutes.' },
+      { target: '#depshead', screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'DESTINATIONS. Tap here to open the list of places you can fly to.' },
+      { target: { sel: '#deps .row', text: 'Earth Orbit' }, screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'Your first trip is to EARTH ORBIT. Tap it. Every line shows how long the trip takes at your current thrust.' },
+      { target: ['#deps .lbtn', '#go'], screen: 'travel', hole: ['#depshead', '#deps', '#go', '.thr'], until: 'queue_travel', text: 'Press LAUNCH. The ship accelerates to the halfway point, flips, and brakes to arrive. Launch gets you under way; the trip time is shown in real minutes.' },
     ],
-    final: { target: '#nav button[data-screen="missions"]', text: 'You are under way! Open the Missions tab and claim your reward.' },
+    finals: [
+      { target: '#map', screen: 'travel', next: true, label: 'OK', hole: [], text: 'LAUNCHED! The ship accelerates to the halfway point, flips, and brakes to arrive. The trip time is shown in real minutes. Tap OK to continue.' },
+      { target: '#nav button[data-screen="missions"]', text: 'You are under way! Open the Missions tab and claim your reward.' },
+    ],
   },
   {
     quest: 'tutorial_3',
@@ -77,14 +85,14 @@ const TOURS = [
       start: 'Show me the Market Board', skip: "Skip - I know how to trade",
     }),
     beats: [
-      { target: '#nav button[data-screen="market"]', until: 'market', text: 'Tap the Market tab.' },
+      { target: '#nav button[data-screen="market"]', fromMissions: true, until: 'market', text: 'Tap the Market tab.' },
       { target: '#mloc', screen: 'market', next: true, text: 'LOCATION. This is the market of the location you have selected. It opens on your ship\'s own location (tagged with the ship icon). "All locations" lists every location. You can trade at any location from here.' },
       { target: '#mbody', screen: 'market', next: true, text: 'THE SECTIONS. The market screen is divided into sections. "Cargo" is your ship\'s hold. "Stored Here" is what you keep at this location. "Produced Here" lists goods this location makes: cheaper when goods are plentiful, so buy from it when the percentage under the stock is high. "Consumed Here" lists goods that the location will use up: it pays well when the percentage under stock is low, so check it before you sell. Tap a section heading to fold it.' },
       { target: '#mbody .mhead', screen: 'market', next: true, text: 'THE COLUMNS. "Buy for" is what you will pay, "Sell at" is what they pay you, and "Stock" is how many are on the shelf, the % shows how much of the full supply amount that is. A location will produce up to 150% of full supply, and that would be a great time to buy. Touch the top of any column to re-order the rows. Touch it again to flip the order.' },
-      { target: [{ sel: '#mloc .lprow', text: 'Earth' }, '#mloc .locsel'], screen: 'market', check: earthPicked, text: 'Now change the Location Selector to EARTH ORBIT: tap the box, then choose Earth Orbit.' },
+      { target: [{ sel: '#mloc .lprow', text: 'Earth' }, '#mloc .locsel'], screen: 'market', hole: ['#mloc', '#mloc .lprow'], check: earthPicked, text: 'Now change the Location Selector to EARTH ORBIT: tap the box, then choose Earth Orbit.' },
       { target: ['#mbody .hint', '#mloc'], screen: 'market', next: true, text: 'REMOTE FEE. You can trade at any location, even one your ship is not docked at, but it costs an extra fee (10% at the start; the Proxy Broker skill lowers it). The prices on screen already include it. Once your ship is docked at Earth Orbit there is no fee.' },
-      { target: '#mbody .mrow', screen: 'market', check: rowSelected, text: 'Time to BUY. The best way is to wait until your ship has docked at Earth Orbit. Then look at the Stock column of the Produced Here section, and pick the good with the highest % under its quantity: it is the most plentiful, therefore the best bargin. Tap its row to select it.' },
-      { target: ['.pop', '#mbody .mrow'], screen: 'market', until: 'buy:earth', text: 'Start SMALL: press 1 and read the "in total" line. The price rises with every unit you buy, so small lots let you purchase at a better price: compare 1 with 10. When docked, "To: Hold" puts the goods in your ship\'s hold, "Storage" places the goods into storage at that location. (You can move goods from hold to storage and back, on the market screen). Then press BUY.' },
+      { target: '#mbody .mrow', screen: 'market', hole: ['#mbody'], check: rowSelected, text: 'Time to BUY. The best way is to wait until your ship has docked at Earth Orbit. Then look at the Stock column of the Produced Here section, and pick the good with the highest % under its quantity: it is the most plentiful, therefore the best bargin. Tap its row to select it.' },
+      { target: ['.mpop', '#mbody .mrow'], screen: 'market', hole: ['#mbody'], until: 'buy:earth', text: 'Start SMALL: press 1 and read the "in total" line. The price rises with every unit you buy, so small lots let you purchase at a better price: compare 1 with 10. When docked, "To: Hold" puts the goods in your ship\'s hold, "Storage" places the goods into storage at that location. (You can move goods from hold to storage and back, on the market screen). Then press BUY.' },
       { target: '#mbody .row', screen: 'market', next: true, text: 'Bought! To finish this mission, fly back to LUNA and SELL what you bought. Not every place buys every good, so check first: press and HOLD a row for half a second to open its destinations list, and make sure Luna is on it. Goods bought from afar wait in storage, you would need to dock there, and Load them into your hold. Sell from Cargo: tap the row, then Sell. ' },
     ],
     finals: [
@@ -124,29 +132,32 @@ function run(T, q) {
       });
     }
   }
-  if (LS.get(offKey()) === '1' || S.current === 'missions') return stop();
+  if (LS.get(offKey()) === '1') return stop();
+  const onMis = S.current === 'missions';             /* on the Missions screen only a 'fromMissions' beat is shown (the pointer to the next tab) */
   if (q.status === 'ready') {
+    if (onMis) return stop();                         /* the player is there to press Claim */
     const fins = T.finals || [T.final];
     let f = finalOf[T.quest] || 0;
     while (f < fins.length - 1 && fins[f].screen && S.current !== fins[f].screen) f++;
     finalOf[T.quest] = f;
     const fb = fins[f];
     return set('final:' + T.quest + ':' + f, () => pointAt({
-      target: fb.target, text: fb.text,
-      onNext: fb.next ? () => { finalOf[T.quest] = f + 1; evaluate(); } : null, onSkip: fb.next ? skipTour : null }));
+      target: fb.target, text: fb.text, next: fb.label, lock: true, hole: fb.hole,
+      onNext: fb.next ? () => { finalOf[T.quest] = f + 1; evaluate(); } : null, onSkip: skipTour }));
   }
   let i = idxOf[T.quest] || 0;
   while (i < T.beats.length && ((T.beats[i].until && done(T.beats[i].until)) || (T.beats[i].check && T.beats[i].check()))) i++;
   idxOf[T.quest] = i;
   if (i >= T.beats.length) return stop();
   const b = T.beats[i];
+  if (onMis && !b.fromMissions) return stop();
   if (b.screen && S.current !== b.screen) {
     if (b.seen && b.next) { idxOf[T.quest] = i + 1; return run(T, q); }
     return stop();
   }
   set('beat:' + T.quest + ':' + i, () => {
     b.seen = true;
-    pointAt({ target: b.target, text: b.text, onNext: b.next ? () => { idxOf[T.quest] = i + 1; evaluate(); } : null,
+    pointAt({ target: b.target, text: b.text, lock: true, hole: b.hole, onNext: b.next ? () => { idxOf[T.quest] = i + 1; evaluate(); } : null,
       onTarget: b.tap ? () => { idxOf[T.quest] = i + 1; evaluate(); } : null, onSkip: skipTour });
   });
 }
