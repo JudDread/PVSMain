@@ -27,6 +27,22 @@ export async function getLocation(db, id) {
   return data;
 }
 
+// 059: a place the pilot may use. A hidden place the pilot may not see answers exactly like a place that does not exist (null).
+export async function getLocationFor(db, characterId, id) {
+  const loc = await getLocation(db, id);
+  if (!loc || !loc.hidden) return loc;
+  const { data, error } = await db.rpc('location_visible', { p_character: characterId, p_location: id });
+  if (error) throw error;
+  return data ? loc : null;
+}
+
+// 059: every place this pilot may see (public places, shown hidden places, the places where his ships are).
+export async function visibleLocations(db, characterId) {
+  const { data, error } = await db.rpc('locations_for', { p_character: characterId });
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function resolveFor(db, characterId) {
   const { error } = await db.rpc('resolve_due_actions', { p_character: characterId });
   if (error) console.error('resolve failed', error);
