@@ -3,6 +3,7 @@
 // A step is finished by itself when its id equals the name of a screen opened or of a server action that succeeded (see missions.js).
 // LOCKED: while a pointer is up only the highlighted thing (and the speech box buttons) can be tapped; `hole` = a list of selectors that stay tappable too ([] = nothing).
 // A beat with fromMissions: true is also shown while the Missions screen is open (the first beat of a new mission points at a bottom tab).
+// needs = a mission step that must be done before the beat is shown (until then the pointer stays quiet); label = text of the Next button.
 // A final with next + label 'OK' keeps the last instruction on screen until the player taps OK.
 // The 'Skip tour' choice is one switch per pilot: it switches off the pointers of ALL tutorials.
 import { S, LS, say, screenWatchers } from 'core';
@@ -15,6 +16,8 @@ import { pointAt, clearPointer, modal, closeModal } from './coach.js';
 // tap = moves on when the player taps the highlighted thing; screen = only shown while that screen is open (a Next beat for a screen the player has left moves on).
 // target = a css selector, {sel, text} or a list of those (see coach.js).
 const earthPicked = () => { const n = document.querySelector('#mloc .lpname'); return !!n && n.textContent.includes('Earth'); };   /* the Market place box shows Earth */
+
+const lunaPicked = () => { const n = document.querySelector('#mloc .lpname'); return !!n && n.textContent.includes('Luna'); };   /* the Market place box shows Luna */
 
 const rowSelected = () => !!document.querySelector('#mbody .mrow.sel');   /* a good is selected in a Market list (its buy panel is open) */
 
@@ -91,13 +94,15 @@ const TOURS = [
       { target: '#mbody .mhead', screen: 'market', next: true, text: 'THE COLUMNS. "Buy for" is what you will pay, "Sell at" is what they pay you, and "Stock" is how many are on the shelf, the % shows how much of the full supply amount that is. A location will produce up to 150% of full supply, and that would be a great time to buy. Touch the top of any column to re-order the rows. Touch it again to flip the order.' },
       { target: [{ sel: '#mloc .lprow', text: 'Earth' }, '#mloc .locsel'], screen: 'market', hole: ['#mloc', '#mloc .lprow'], check: earthPicked, text: 'Now change the Location Selector to EARTH ORBIT: tap the box, then choose Earth Orbit.' },
       { target: ['#mbody .hint', '#mloc'], screen: 'market', next: true, text: 'REMOTE FEE. You can trade at any location, even one your ship is not docked at, but it costs an extra fee (10% at the start; the Proxy Broker skill lowers it). The prices on screen already include it. Once your ship is docked at Earth Orbit there is no fee.' },
-      { target: '#mbody .mrow', screen: 'market', hole: ['#mbody'], check: rowSelected, text: 'Time to BUY. The best way is to wait until your ship has docked at Earth Orbit. Then look at the Stock column of the Produced Here section, and pick the good with the highest % under its quantity: it is the most plentiful, therefore the best bargin. Tap its row to select it.' },
-      { target: ['.mpop', '#mbody .mrow'], screen: 'market', hole: ['#mbody'], until: 'buy:earth', text: 'Start SMALL: press 1 and read the "in total" line. The price rises with every unit you buy, so small lots let you purchase at a better price: compare 1 with 10. When docked, "To: Hold" puts the goods in your ship\'s hold, "Storage" places the goods into storage at that location. (You can move goods from hold to storage and back, on the market screen). Then press BUY.' },
-      { target: '#mbody .row', screen: 'market', next: true, text: 'Bought! To finish this mission, fly back to LUNA and SELL what you bought. Not every place buys every good, so check first: press and HOLD a row for half a second to open its destinations list, and make sure Luna is on it. Goods bought from afar wait in storage, you would need to dock there, and Load them into your hold. Sell from Cargo: tap the row, then Sell. ' },
+      { target: '#mbody', screen: 'market', hole: ['#mbody'], check: rowSelected, text: 'Time to BUY. Find ONE good you like and tap its row to select it. In the Produced Here section a high % under the Stock column means it is plentiful and cheap. Any good will do for this mission, and the best time to buy is once your ship has docked at Earth Orbit.' },
+      { target: ['.mpop', '#mbody .mrow'], screen: 'market', hole: ['#mbody'], until: 'buy:earth', text: 'Buy just 1 for now: the box starts at the MAXIMUM you can afford, so change it to 1 and read the "in total" line. The price rises with every unit, so small lots are cheaper. When docked, "To: Hold" puts the good in your ship\'s hold, "Storage" keeps it at this location. Then press BUY.' },
+      { target: '#mbody .row', screen: 'market', next: true, text: 'Bought! Next, fly back to LUNA and SELL what you bought. Not every place buys every good, so check first: press and HOLD a row for half a second to open its destinations list, and make sure Luna is on it. Goods bought from afar wait in storage, you would need to dock there, and Load them into your hold. Sell from Cargo: tap the row, then Sell. ' },
+      { needs: 'sell:luna', target: [{ sel: '#mloc .lprow', text: 'Luna' }, '#mloc .locsel'], screen: 'market', hole: ['#mloc', '#mloc .lprow'], check: lunaPicked, text: 'Sold! Now the FREIGHT job: it was posted at LUNA. Set the Location Selector to LUNA: tap the box, then choose Luna.' },
+      { needs: 'sell:luna', target: [{ sel: '#mbody .sech', text: 'Freight' }, '#mbody'], screen: 'market', hole: ['#mbody'], until: 'freight_take', text: 'FREIGHT. Contracts that start at this place show here. This one was posted for you: 5 CU to EARTH ORBIT, 500 credits for each CU. Tap it, choose 5 units and press Accept (your ship must be docked at Luna). Deliver early for a bonus. If you give up the load, or it is late, it goes back on the board here and you can try again. If you do not see Freight yet, wait a few seconds.' },
+      { needs: 'freight_take', target: '#nav button[data-screen="travel"]', next: true, label: 'OK', hole: [], text: 'Loaded! Now fly to EARTH ORBIT, the same way as on your first flight. When your ship docks there, the freight is delivered by itself and you are paid. Tap OK, then open the Fly tab.' },
     ],
     finals: [
-      { target: { sel: '#mbody .sech', text: 'Freight' }, screen: 'market', next: true, text: 'FREIGHT. Contracts that start at this place show here (when there are none, there is no Freight heading). Each names a destination, the pay per unit of hold space (CU) and a time window. Tap one, choose how many units, and accept: it uses your hold. Deliver early for a bonus; late and the load fails.' },
-      { target: '#nav button[data-screen="missions"]', text: 'Mission complete! Open the Missions tab and claim your reward.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Freight delivered! Mission complete! Open the Missions tab and claim your reward.' },
     ],
   },
 ];
@@ -151,13 +156,14 @@ function run(T, q) {
   if (i >= T.beats.length) return stop();
   const b = T.beats[i];
   if (onMis && !b.fromMissions) return stop();
+  if (b.needs && !done(b.needs)) return stop();            /* its turn has not come yet */
   if (b.screen && S.current !== b.screen) {
     if (b.seen && b.next) { idxOf[T.quest] = i + 1; return run(T, q); }
     return stop();
   }
   set('beat:' + T.quest + ':' + i, () => {
     b.seen = true;
-    pointAt({ target: b.target, text: b.text, lock: true, hole: b.hole, onNext: b.next ? () => { idxOf[T.quest] = i + 1; evaluate(); } : null,
+    pointAt({ target: b.target, text: b.text, next: b.label, lock: true, hole: b.hole, onNext: b.next ? () => { idxOf[T.quest] = i + 1; evaluate(); } : null,
       onTarget: b.tap ? () => { idxOf[T.quest] = i + 1; evaluate(); } : null, onSkip: skipTour });
   });
 }
