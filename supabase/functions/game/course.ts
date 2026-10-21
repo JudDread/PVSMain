@@ -13,7 +13,7 @@
 // The old trip is cancelled and the new course saved in ONE step (SQL ship_replan), so a ship never has two trips.
 // ======================================================================
 import { BODY_INDEX, bodyId, KMS, stateAt, shipStateAbs, stopPlan, coastPlan, planTravelPulse, pulseState, gameDaysAt, realMsAt, CLOCK } from './physics_bundle.ts';
-import { json, getCharacter, getLocation, resolveFor, getShip, getMaxG, pilotNumbers, enduranceFly, enduranceFlyPulse, placeXY } from './common.ts';
+import { json, getCharacter, getLocation, getLocationFor, visibleLocations, resolveFor, getShip, getMaxG, pilotNumbers, enduranceFly, enduranceFlyPulse, placeXY } from './common.ts';
 
 const FLYING = ['traveling', 'hopping', 'drifting'];
 const REST_DAYS = 3650;   // a drifting ship refills its bar at the flight rate (not the faster docked rate) for this long
@@ -98,8 +98,7 @@ export async function courseOptions(db, user, body) {
     speed_kms: Math.hypot(cur.abs.vx, cur.abs.vy) * KMS,
     departures: [],
   };
-  const { data: locs, error: le } = await db.from('locations').select('*');
-  if (le) throw le;
+  const locs = await visibleLocations(db, ch.id);   // 059: only places this pilot may see
   const cache = {};
   for (const to of locs ?? []) {
     const est = planGo(cur, to, t, g, p, regen0, cache);
@@ -157,7 +156,7 @@ export async function courseChange(db, user, body) {
     if (!id) return json({ error: 'no_destination' }, 400);
     to = await getLocation(db, id); g = p.freeG;
   } else {
-    to = await getLocation(db, String(body.to ?? ''));
+    to = await getLocationFor(db, ch.id, String(body.to ?? ''));   // 059: hidden and not shown = bad_destination
     const maxG = await getMaxG(db, ship);
     g = body.g == null ? Number(ship.thrust_g) : Number(body.g);
     if (!(g >= 1) || g > maxG + 1e-9) return json({ error: 'bad_thrust', max_g: maxG }, 400);
