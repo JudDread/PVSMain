@@ -101,13 +101,14 @@ function place(first) {
     if (r.bottom + 14 + th <= low) top = r.bottom + 14;
     else if (r.top - 14 - th >= 8) top = r.top - 14 - th;
   }
+  if (top == null && cfg.dock === 'top') top = 8;                          /* dock: 'top' keeps the speech box off the lower part of the screen */
   tip.style.left = left + 'px';
   if (top == null) { tip.style.top = 'auto'; tip.style.bottom = '90px'; }  /* docked above the tab bar */
   else { tip.style.bottom = 'auto'; tip.style.top = top + 'px'; }
   lockPlace(t);
 }
 
-// pointAt({target, text, next: label, onNext, onTarget, skipLabel, onSkip, lock, hole}) - Next and Skip buttons only appear when their function is given.
+// pointAt({target, text, next: label, onNext, onTarget, skipLabel, onSkip, lock, hole, dock}) - Next and Skip buttons only appear when their function is given.
 export function pointAt(c) {
   ensure(); cfg = c;
   tip.replaceChildren(el('div', '', c.text));
