@@ -1,5 +1,7 @@
 // coach.js - the pointer (a gold ring + a speech box) and the message box used by the guided tours. Display only.
-// FREE MODE: the ring never blocks a tap (pointer-events none), so the player can use the whole page while a pointer is up.
+// The ring itself never blocks a tap (pointer-events none). LOCK: pointAt({lock:true}) puts four invisible panels around the tappable box, so everything else on
+// the page is dead while the pointer is up. The tappable box = the target, or the union of the elements named in `hole` (a list of css selectors;
+// an EMPTY list = nothing is tappable except the speech box). If no tappable element can be found, nothing is locked (the player is never trapped).
 // A target is a css selector, or {sel, text} (the first VISIBLE match whose text contains `text`), or a list of those (the first one that is visible wins).
 // onTarget (optional): called once, shortly after the player taps the target.
 import { el } from 'core';
@@ -10,6 +12,7 @@ css.textContent = [
   '#coachtip{position:fixed;z-index:95;background:#131a2a;border:2px solid #e8b64a;border-radius:10px;padding:10px 12px;box-sizing:border-box;font-size:15px;line-height:1.35;box-shadow:0 4px 18px rgba(0,0,0,.6)}',
   '#coachtip .cbtns{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:8px}',
   '#coachtip button{margin:0;padding:6px 14px;font-size:14px}',
+  '.coachblk{position:fixed;z-index:89;background:transparent;touch-action:none}',
   '#coachmodal{position:fixed;top:0;left:0;right:0;bottom:0;z-index:100;background:rgba(5,8,15,.85);display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box}',
   '#coachmodal .card{background:#131a2a;border:2px solid #e8b64a;border-radius:12px;padding:14px;max-width:440px;width:100%;max-height:100%;overflow-y:auto;box-sizing:border-box}',
   '#coachmodal .kick{font-size:12px;font-weight:700;letter-spacing:1px;color:#6be08f;margin-bottom:4px}',
@@ -21,6 +24,7 @@ css.textContent = [
 document.head.appendChild(css);
 
 let ring = null, tip = null, cfg = null, timer = null, modalEl = null;
+const blk = [];                                  // the four lock panels: top, bottom, left, right
 
 function findTarget(t) {
   for (const x of (Array.isArray(t) ? t : [t])) {
@@ -40,6 +44,7 @@ function ensure() {
   ring = el('div'); ring.id = 'coachring'; tip = el('div'); tip.id = 'coachtip';
   ring.hidden = tip.hidden = true;
   document.body.append(ring, tip);
+  for (let k = 0; k < 4; k++) { const b = el('div', 'coachblk'); b.hidden = true; document.body.appendChild(b); blk.push(b); }
   window.addEventListener('resize', () => place());
   window.addEventListener('scroll', () => place(), true);
   document.addEventListener('click', ev => {                /* capture phase: runs before the page's own tap handler */
@@ -47,6 +52,34 @@ function ensure() {
     const t = findTarget(cfg.target);
     if (t && t.contains(ev.target)) { const f = cfg.onTarget; cfg.onTarget = null; setTimeout(f, 80); }   /* after the page has reacted */
   }, true);
+}
+
+// The box that stays tappable while locked (null = none found).
+function holeRect(t) {
+  const els = [];
+  if (Array.isArray(cfg.hole)) cfg.hole.forEach(s => document.querySelectorAll(s).forEach(e => els.push(e)));
+  else if (t) els.push(t);
+  let u = null;
+  for (const e of els) {
+    const r = e.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue;
+    u = u ? { left: Math.min(u.left, r.left), top: Math.min(u.top, r.top), right: Math.max(u.right, r.right), bottom: Math.max(u.bottom, r.bottom) }
+          : { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  }
+  return u;
+}
+function lockPlace(t) {
+  if (!cfg || !cfg.lock) { blk.forEach(b => { b.hidden = true; }); return; }
+  const vw = window.innerWidth, vh = window.innerHeight, none = Array.isArray(cfg.hole) && cfg.hole.length === 0;
+  let u = none ? { left: 0, top: 0, right: 0, bottom: 0 } : holeRect(t);
+  if (!u) { blk.forEach(b => { b.hidden = true; }); return; }
+  if (!none) u = { left: Math.max(0, u.left - 4), top: Math.max(0, u.top - 4), right: Math.min(vw, u.right + 4), bottom: Math.min(vh, u.bottom + 4) };
+  const h = Math.max(0, u.bottom - u.top);
+  const boxes = [[0, 0, vw, u.top], [0, u.bottom, vw, vh - u.bottom], [0, u.top, u.left, h], [u.right, u.top, vw - u.right, h]];
+  blk.forEach((b, k) => {
+    const x = boxes[k]; b.hidden = false;
+    b.style.left = x[0] + 'px'; b.style.top = x[1] + 'px'; b.style.width = Math.max(0, x[2]) + 'px'; b.style.height = Math.max(0, x[3]) + 'px';
+  });
 }
 
 // Where do the ring and the speech box go? Worked out from the real position of the target on screen, so it fits any tablet or phone.
@@ -71,9 +104,10 @@ function place(first) {
   tip.style.left = left + 'px';
   if (top == null) { tip.style.top = 'auto'; tip.style.bottom = '90px'; }  /* docked above the tab bar */
   else { tip.style.bottom = 'auto'; tip.style.top = top + 'px'; }
+  lockPlace(t);
 }
 
-// pointAt({target, text, next: label, onNext, onTarget, skipLabel, onSkip}) - Next and Skip buttons only appear when their function is given.
+// pointAt({target, text, next: label, onNext, onTarget, skipLabel, onSkip, lock, hole}) - Next and Skip buttons only appear when their function is given.
 export function pointAt(c) {
   ensure(); cfg = c;
   tip.replaceChildren(el('div', '', c.text));
@@ -88,6 +122,7 @@ export function pointAt(c) {
 export function clearPointer() {
   cfg = null; clearInterval(timer); timer = null;
   if (ring) ring.hidden = tip.hidden = true;
+  blk.forEach(b => { b.hidden = true; });
 }
 
 // modal({kicker, title, paras: [text, ...], buttons: [{label, alt, onClick}, ...]}) - a full-screen message the player must answer.
