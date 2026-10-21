@@ -6,6 +6,16 @@
 // ======================================================================
 import { json, getCharacter } from './common.ts';
 
+// 059: a mission can show or hide places (quests.effects, SQL quest_effects_apply). The accept / claim has already succeeded, so try twice.
+async function applyEffects(db, characterId, quest, event) {
+  for (let k = 0; k < 2; k++) {
+    const { error } = await db.rpc('quest_effects_apply', { p_character: characterId, p_quest: quest, p_event: event });
+    if (!error) return;
+    console.error('quest effects failed', error);
+  }
+  throw new Error('quest_effects_failed');
+}
+
 // Everything the Missions screen needs (also starts any mission that is due).
 // chains = the open cards, quests = the pilot's missions (each has its chain), ready = rewards waiting, new = missions not looked at yet.
 export async function missionsView(db, user) {
@@ -38,6 +48,7 @@ export async function missionAccept(db, user, body) {
   const { data, error } = await db.rpc('quest_accept', { p_character: ch.id, p_quest: String(body.quest ?? '') });
   if (error) throw error;
   if (!data.ok) return json({ error: data.error }, 409);
+  await applyEffects(db, ch.id, String(body.quest ?? ''), 'accept');
   return json(data);
 }
 
@@ -48,6 +59,7 @@ export async function missionClaim(db, user, body) {
   const { data, error } = await db.rpc('quest_claim', { p_character: ch.id, p_quest: String(body.quest ?? '') });
   if (error) throw error;
   if (!data.ok) return json({ error: data.error }, 409);
+  await applyEffects(db, ch.id, String(body.quest ?? ''), 'claim');
   return json(data);
 }
 
