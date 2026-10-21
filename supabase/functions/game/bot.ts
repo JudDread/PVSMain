@@ -73,7 +73,7 @@ async function botTurn(db, cfg, t0) {
     const [rs, rt, rl] = await Promise.all([
       db.from('ships').select('id,character_id,state,location_id,hold_size').in('id', shipIds),
       db.from('bot_trips').select('*').eq('status', 'flying'),
-      db.from('locations').select('*'),
+      db.from('locations').select('*').eq('hidden', false),   // 059: bots never see hidden places
     ]);
     if (rs.error) throw rs.error;
     if (rt.error) throw rt.error;
