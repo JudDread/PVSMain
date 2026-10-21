@@ -1,196 +1,186 @@
-// missions.js - the Missions screen (bottom tab). Makes its own div and its own styles: index.html has no missions markup.
-// One CARD per mission chain (a chain is a group of missions: Pilot Training, Earth Space Command, ...). Only open chains are sent.
-// Server actions: 'missions' (list), 'mission_step' {quest, step}, 'mission_accept' {quest}, 'mission_claim' {quest}, 'missions_seen'.
-// Display only: the server decides everything (what is available, timers, rewards).
-// STEP RULE (for now): a step is finished by itself when its id equals the NAME of a screen the player opens (tutorial_1: 'profile' = the Profile screen)
-// or the name of a server action that succeeded (tutorial_2: 'queue_travel' = a trip was launched);
-// a trade also finishes 'buy', 'sell', 'buy:<place id>' and 'sell:<place id>' (tutorial_3).
-// TAB DOT: shows while a reward waits (me.missions_ready) or a mission has not been looked at yet (me.missions_new).
-import { S, $, el, call, say, money, whole, nowMs, addScreen, screenWatchers, actionWatchers } from 'core';
+// tour.js - the guided tours of the tutorial missions: a pointer (and, for tutorial 1, a welcome message) that walks the player through the screens.
+// All the wording and the targets live in TOURS below. The SERVER keeps the progress (mission steps); this file only shows it.
+// A step is finished by itself when its id equals the name of a screen opened or of a server action that succeeded (see missions.js).
+// LOCKED: while a pointer is up only the highlighted thing (and the speech box buttons) can be tapped; `hole` = a list of selectors that stay tappable too ([] = nothing).
+// A beat with fromMissions: true is also shown while the Missions screen is open (the first beat of a new mission points at a bottom tab).
+// needs = a mission step that must be done before the beat is shown (until then the pointer stays quiet); label = text of the Next button.
+// A final with next + label 'OK' keeps the last instruction on screen until the player taps OK.
+// The 'Skip tour' choice is one switch per pilot: it switches off the pointers of ALL tutorials.
+import { S, LS, say, screenWatchers } from 'core';
+import { missionList, missionWatchers, reportStep } from './missions.js';
+import { pointAt, clearPointer, modal, closeModal } from './coach.js';
 
-const st = document.createElement('style');
-st.textContent = [
-  '#scr-missions .mch{display:flex;width:100%;justify-content:space-between;align-items:center;gap:8px;text-align:left;margin:0 0 6px;padding:10px 12px}',
-  '#scr-missions .mch .ct{font-weight:700;font-size:16px;color:#e8b64a}',
-  '#scr-missions .mch .cs{font-size:12px;font-weight:600;color:#8d98b2;text-align:right}',
-  '#scr-missions .mch .cs.hot{color:#6be08f}',
-  '#scr-missions .mcb{margin:0 0 14px}',
-  '#scr-missions .mcd{margin:0 2px 8px;color:#8d98b2;font-size:13px}',
-  '#scr-missions .mq{background:#131a2a;border:1px solid #222b40;border-radius:8px;padding:10px;margin-bottom:10px}',
-  '#scr-missions .mq.ready{border-color:#6be08f}',
-  '#scr-missions .mq.failed{opacity:.65}',
-  '#scr-missions .mqh{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}',
-  '#scr-missions .mqt{font-weight:700;font-size:16px;color:#e8b64a}',
-  '#scr-missions .mqs{font-size:12px;font-weight:600;white-space:nowrap;color:#8d98b2}',
-  '#scr-missions .mq.ready .mqs{color:#6be08f}',
-  '#scr-missions .mqd{margin:4px 0 6px;color:#c6cfe4;font-size:14px}',
-  '#scr-missions .mst{display:flex;gap:8px;padding:5px 0;border-top:1px solid #1c2438;font-size:14px}',
-  '#scr-missions .mst .ck{flex:none;width:18px;text-align:center;color:#8d98b2}',
-  '#scr-missions .mst.done .ck{color:#6be08f}',
-  '#scr-missions .mst.done .tx{color:#8d98b2}',
-  '#scr-missions .mqr{margin-top:6px;font-size:14px;color:#6be08f}',
-  '#scr-missions .mdue{margin-top:4px;font-size:13px;color:#e8b64a}',
-  '#scr-missions .mq button{margin:8px 0 0}',
-  '#scr-missions .mqfold{width:100%;margin:0 0 8px;text-align:left}',
-].join('');
-document.head.appendChild(st);
+// A beat points at one thing. until = the mission step that finishes it (no Next button); next = shows a Next button;
+// check = a function: the beat is finished when it returns true (looked at about every 0.7 s).
+// finals = what the pointer does once the mission is READY, one after the other (default: just `final`); a final with screen is skipped when the player is elsewhere.
+// tap = moves on when the player taps the highlighted thing; screen = only shown while that screen is open (a Next beat for a screen the player has left moves on).
+// target = a css selector, {sel, text} or a list of those (see coach.js).
+const earthPicked = () => { const n = document.querySelector('#mloc .lpname'); return !!n && n.textContent.includes('Earth'); };   /* the Market place box shows Earth */
 
-const div = el('div'); div.id = 'scr-missions'; div.hidden = true;
-$('haschar').appendChild(div);
+const lunaPicked = () => { const n = document.querySelector('#mloc .lpname'); return !!n && n.textContent.includes('Luna'); };   /* the Market place box shows Luna */
 
-let data = null;        // latest answer of the server action 'missions'
-let loading = false, busy = false, failed = '';
-const openMap = {};     // chain id -> true / false once the player has toggled the card (until then: open when there is something to do)
-const doneMap = {};     // chain id -> the 'Completed' fold is open
+const rowSelected = () => !!document.querySelector('#mbody .mrow.sel');   /* a good is selected in a Market list (its buy panel is open) */
 
-const list = () => ((data && data.quests) || []);
-export const missionList = list;                 // for tour.js
-export const missionWatchers = [];               // functions run after every load of the list (tour.js adds one)
+const TOURS = [
+  {
+    quest: 'tutorial_1',
+    welcome: name => ({
+      kicker: 'NEW MISSION STARTED: WELCOME ABOARD',
+      title: 'Luna Sovereignty - Pilot Registry',
+      paras: [
+        'Welcome to Luna, ' + name + '. Your papers are stamped and your slot in the registry is open.',
+        'You are Homo Sapiens Astroalis, a pilot bred for the darkness of space and the rigours of the G-Drive. It burns no fuel: instead creating a  gravity well in front of your hull, that pulls your ship forward, and it asks your body to pay for it. Earthers call your kind Black-Eyes. Out here you are simply the people who can fly.',
+        'Luna is neutral ground: shipyards, banks and brokers, where Earth Space Command, the Jovian Compact and the Martian Core all trade and mostly keep their guns quiet. Out in the Belt, Ceres and Vesta fight over every tonne of ice. On the dark side of Luna, the Black Tryst takes a cut of everything else.',
+        'Everything in the sky is moving, and nobody waits for you. Your first assignment is short: learn your cockpit.',
+      ],
+      start: 'Start the tour', skip: "Skip - I'll find my own way",
+    }),
+    beats: [
+      { target: '.bars > .bitem:first-child', next: true, text: 'Your LEVEL and XP. You earn XP by flying, fighting, and completing missions. Every level-up gives you Calibrations (Cal) to spend on skills.' },
+      { target: '#enitem', next: true, text: 'Your ENDURANCE. The G-Drive\'s high acceleration is hard on the body: burning above your thrust threshold (3 g at the start) drains this bar, and it refills when you move at 3 g or dock. Tap the bar for a countdown.' },
+      { target: '#money', next: true, text: 'Your CREDITS. Everything in the system is bought and sold with them.' },
+      { target: '#pic', until: 'profile', text: 'Tap your portrait circle to open your pilot profile.' },
+      { target: '#scr-profile', screen: 'profile', next: true, text: 'Your pilot file: level, Cals, credits, net worth, career, ship and reputation. Most of it is public, other pilots can read it. Tap Next when you are done looking.' },
+      { target: '#vs', until: 'home', text: 'Tap the Vacuum State button to open the Home page: help, the Discord link and Log Out can be found here.' },
+    ],
+    finals: [
+      { target: '#scr-home', screen: 'home', next: true, label: 'OK', hole: [], text: 'This is the Home page: help, the Discord link and Log Out can be found here. Tap OK when you are ready.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Mission complete! Open the Missions tab and claim your reward.' },
+    ],
+  },
+  {
+    quest: 'tutorial_2',
+    welcome: name => ({
+      kicker: 'NEW MISSION STARTED: FIRST FLIGHT',
+      title: 'Luna Flight Control',
+      paras: [
+        'Flight Control clears you for departure, ' + name + '. Your courier carries no fuel at all: the G-Drive bends gravity in front of the hull and the ship falls into it.',
+        'There are no brakes in space. A ship keeps its momentum, so every trip is an acceleration to the halfway point, a flip, and an equal deceleration to stop. More thrust gets you there sooner, but anything above your base threshold (3 g), drains your Endurance. The default trip will use 50% of your bar, wait for it to refill, then drain it again.',
+        'The planets will not hold still while you travel. Distances are constantly changing: the same trip can be short today and long next week.',
+        'Your first run is to EARTH ORBIT. Earth Space Command keeps its fleet there, and they notice who arrives. Get there, and they will have work for you.',
+      ],
+      start: 'Show me the controls', skip: "Skip - I'll work it out",
+    }),
+    beats: [
+      { target: '#nav button[data-screen="travel"]', fromMissions: true, until: 'travel', text: 'Time to fly. Tap the Fly tab.' },
+      { target: '#map', screen: 'travel', next: true, text: 'The live map of the solar systemm. The planets orbit the Sun in real time (at 60x normal). Your ship is on the map, and so is every location that you can fly to.' },
+      { target: '.zb', screen: 'travel', next: true, text: 'ZOOM. Inner shows the inner planets, System shows everything, Ship centres on your own ship, very close. You can also pan and zoom the map by touch.' },
+      { target: '.thr', screen: 'travel', next: true, text: 'THRUST, in g is shown in the bar on the right side of the map. Drag the slider: more g is a faster trip, but above your threshold (3 g at the start) it drains Endurance.' },
+      { target: '#depshead', screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'DESTINATIONS. Tap here to open the list of places you can fly to.' },
+      { target: { sel: '#deps .row', text: 'Earth Orbit' }, screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'Your first trip is to EARTH ORBIT. Tap it. Every line shows how long the trip takes at your current thrust.' },
+      { target: ['#deps .lbtn', '#go'], screen: 'travel', hole: ['#depshead', '#deps', '#go', '.thr'], until: 'queue_travel', text: 'Press LAUNCH. The ship accelerates to the halfway point, flips, and brakes to arrive. Launch gets you under way; the trip time is shown in real minutes.' },
+    ],
+    finals: [
+      { target: '#map', screen: 'travel', next: true, label: 'OK', hole: [], text: 'LAUNCHED! The ship accelerates to the halfway point, flips, and brakes to arrive. The trip time is shown in real minutes. Tap OK to continue.' },
+      { target: '#nav button[data-screen="missions"]', text: 'You are under way! Open the Missions tab and claim your reward.' },
+    ],
+  },
+  {
+    quest: 'tutorial_3',
+    welcome: name => ({
+      kicker: 'NEW MISSION STARTED: FIRST TRADE',
+      title: 'Luna Exchange',
+      paras: [
+        'Credits do not create themselves, ' + name + '. The Exchange runs on one rule: carry goods from where they are cheap to where they are wanted.',
+        'Every place either makes a good, which increases the supply over time, or consumes it, which makes it valuable. Prices follow supply and demand, and the house takes a cutt on every trade, both ways.',
+        'Your job: learn the Market Board, buy something at Earth Orbit, bring it home and sell it at Luna. Then the Exchange will show you the Freight Section.',
+      ],
+      start: 'Show me the Market Board', skip: "Skip - I know how to trade",
+    }),
+    beats: [
+      { target: '#nav button[data-screen="market"]', fromMissions: true, until: 'market', text: 'Tap the Market tab.' },
+      { target: '#mloc', screen: 'market', next: true, text: 'LOCATION. This is the market of the location you have selected. It opens on your ship\'s own location (tagged with the ship icon). "All locations" lists every location. You can trade at any location from here.' },
+      { target: '#mbody', screen: 'market', next: true, text: 'THE SECTIONS. The market screen is divided into sections. "Cargo" is your ship\'s hold. "Stored Here" is what you keep at this location. "Produced Here" lists goods this location makes: cheaper when goods are plentiful, so buy from it when the percentage under the stock is high. "Consumed Here" lists goods that the location will use up: it pays well when the percentage under stock is low, so check it before you sell. Tap a section heading to fold it.' },
+      { target: '#mbody .mhead', screen: 'market', next: true, text: 'THE COLUMNS. "Buy for" is what you will pay, "Sell at" is what they pay you, and "Stock" is how many are on the shelf, the % shows how much of the full supply amount that is. A location will produce up to 150% of full supply, and that would be a great time to buy. Touch the top of any column to re-order the rows. Touch it again to flip the order.' },
+      { target: [{ sel: '#mloc .lprow', text: 'Earth' }, '#mloc .locsel'], screen: 'market', hole: ['#mloc', '#mloc .lprow'], check: earthPicked, text: 'Now change the Location Selector to EARTH ORBIT: tap the box, then choose Earth Orbit.' },
+      { target: ['#mbody .hint', '#mloc'], screen: 'market', next: true, text: 'REMOTE FEE. You can trade at any location, even one your ship is not docked at, but it costs an extra fee (10% at the start; the Proxy Broker skill lowers it). The prices on screen already include it. Once your ship is docked at Earth Orbit there is no fee.' },
+      { target: '#mbody', screen: 'market', hole: ['#mbody'], check: rowSelected, text: 'Time to BUY. Find ONE good you like and tap its row to select it. In the Produced Here section a high % under the Stock column means it is plentiful and cheap. Any good will do for this mission, and the best time to buy is once your ship has docked at Earth Orbit.' },
+      { target: ['.mpop', '#mbody .mrow'], screen: 'market', hole: ['#mbody'], until: 'buy:earth', text: 'Buy just 1 for now: the box starts at the MAXIMUM you can afford, so change it to 1 and read the "in total" line. The price rises with every unit, so small lots are cheaper. When docked, "To: Hold" puts the good in your ship\'s hold, "Storage" keeps it at this location. Then press BUY.' },
+      { target: '#mbody .row', screen: 'market', next: true, text: 'Bought! Next, fly back to LUNA and SELL what you bought. Not every place buys every good, so check first: press and HOLD a row for half a second to open its destinations list, and make sure Luna is on it. Goods bought from afar wait in storage, you would need to dock there, and Load them into your hold. Sell from Cargo: tap the row, then Sell. ' },
+      { needs: 'sell:luna', target: [{ sel: '#mloc .lprow', text: 'Luna' }, '#mloc .locsel'], screen: 'market', hole: ['#mloc', '#mloc .lprow'], check: lunaPicked, text: 'Sold! Now the FREIGHT job: it was posted at LUNA. Set the Location Selector to LUNA: tap the box, then choose Luna.' },
+      { needs: 'sell:luna', target: [{ sel: '#mbody .sech', text: 'Freight' }, '#mbody'], screen: 'market', hole: ['#mbody'], until: 'freight_take', text: 'FREIGHT. Contracts that start at this place show here. This one was posted for you: 5 CU to EARTH ORBIT, 500 credits for each CU. Tap it, choose 5 units and press Accept (your ship must be docked at Luna). Deliver early for a bonus. If you give up the load, or it is late, it goes back on the board here and you can try again. If you do not see Freight yet, wait a few seconds.' },
+      { needs: 'freight_take', target: '#nav button[data-screen="travel"]', next: true, label: 'OK', hole: [], text: 'Loaded! Now fly to EARTH ORBIT, the same way as on your first flight. When your ship docks there, the freight is delivered by itself and you are paid. Tap OK, then open the Fly tab.' },
+    ],
+    finals: [
+      { target: '#nav button[data-screen="missions"]', text: 'Freight delivered! Mission complete! Open the Missions tab and claim your reward.' },
+    ],
+  },
+];
 
-const rewardText = r => {
-  r = r || {}; const p = [];
-  if (Number(r.credits)) p.push('Cr ' + money(r.credits));
-  if (Number(r.xp)) p.push(whole(r.xp) + ' XP');
-  if (Number(r.cal)) p.push(whole(r.cal) + ' Cal');
-  return p.length ? p.join('  \u00B7  ') : 'No reward';
-};
-const span = ms => {                              // 3725000 -> '1h 2m'
-  const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
-  return h ? h + 'h ' + m + 'm' : m ? m + 'm ' + (s % 60) + 's' : (s % 60) + 's';
-};
-const leftText = q => { const ms = new Date(q.due_at).getTime() - nowMs(); return ms > 0 ? 'Time left: ' + span(ms) : 'Time is up'; };
+const idxOf = {};                         // quest id -> position in its beats
+const finalOf = {};                       // quest id -> position in its finals
+let key = '', busy = false;
+const name = () => (S.last && S.last.character && S.last.character.name) || 'pilot';
+const offKey = () => 'pvs_tour_off:' + name();
 
-async function load() {
-  if (loading) return;
-  loading = true;
-  try { data = await call('missions'); failed = ''; }
-  catch (e) { failed = e.message; }
-  finally { loading = false; }
-  if (S.current === 'missions') {
-    paint();
-    if (data && Number(data.new) > 0) {            /* the player is looking at the list: the 'new' dot can go out */
-      data.new = 0;
-      call('missions_seen').then(() => { if (S.refresh) S.refresh(); }).catch(() => {});
+function stop() { if (key) { key = ''; clearPointer(); closeModal(); } }
+function set(k, show) { if (key === k) return; key = k; closeModal(); clearPointer(); show(); }
+
+async function answer(T, on) {
+  if (busy) return; busy = true;
+  LS.set(offKey(), on ? '0' : '1');
+  try { idxOf[T.quest] = 0; await reportStep(T.quest, 'welcome'); }
+  catch (e) { say('Error: ' + e.message, 'err'); }
+  finally { busy = false; }
+}
+function skipTour() { LS.set(offKey(), '1'); stop(); say('Tour switched off. Your missions are still under Missions.', 'ok'); }
+
+function run(T, q) {
+  const steps = q.steps || [];
+  const done = id => steps.some(s => s.id === id && s.done);
+  if (T.welcome) {
+    if (!steps.some(s => s.id === 'welcome')) return stop();   /* no welcome step on the server yet: stay quiet */
+    if (!done('welcome')) {
+      return set('welcome:' + T.quest, () => {
+        const w = T.welcome(name());
+        modal({ kicker: w.kicker, title: w.title, paras: w.paras, buttons: [{ label: w.start, onClick: () => answer(T, true) }, { label: w.skip, alt: true, onClick: () => answer(T, false) }] });
+      });
     }
   }
-  missionWatchers.forEach(f => { try { f(); } catch (e) {} });
-}
-
-// Report a step by name (throws when the server refuses). Used by tour.js; the screen-name rule below uses the same action.
-export async function reportStep(quest, step) {
-  const r = await call('mission_step', { quest, step });
-  if (r && r.ok === false) throw new Error(r.error || 'refused');
-  await load();
-  if (S.refresh) S.refresh();
-}
-
-async function act(action, q, btn, okText) {
-  if (busy) return;
-  busy = true; btn.disabled = true;
-  try {
-    await call(action, { quest: q.id });
-    if (okText) say(okText, 'ok');
-    if (S.refresh) await S.refresh();   /* credits, XP and the tab dot */
-  } catch (e) {
-    say(e.message === 'not_ready' ? 'That mission is not finished yet.' : e.message === 'not_offered' ? 'That mission is not waiting for you any more.' : 'Error: ' + e.message, 'err');
-  } finally { busy = false; await load(); }
-}
-
-const STATUS = { offered: 'Available', active: 'In progress', ready: 'Ready to claim', claimed: 'Done', failed: 'Failed' };
-
-function card(q) {
-  const c = el('div', 'mq ' + q.status);
-  const h = el('div', 'mqh');
-  h.append(el('span', 'mqt', q.title), el('span', 'mqs', STATUS[q.status] || q.status));
-  c.appendChild(h);
-  if (q.description) c.appendChild(el('div', 'mqd', q.description));
-  (q.steps || []).forEach(s => {
-    const done = s.done || q.status === 'claimed';
-    const r = el('div', 'mst' + (done ? ' done' : ''));
-    r.append(el('span', 'ck', done ? '\u2713' : '\u25CB'), el('span', 'tx', s.label));
-    c.appendChild(r);
+  if (LS.get(offKey()) === '1') return stop();
+  const onMis = S.current === 'missions';             /* on the Missions screen only a 'fromMissions' beat is shown (the pointer to the next tab) */
+  if (q.status === 'ready') {
+    if (onMis) return stop();                         /* the player is there to press Claim */
+    const fins = T.finals || [T.final];
+    let f = finalOf[T.quest] || 0;
+    while (f < fins.length - 1 && fins[f].screen && S.current !== fins[f].screen) f++;
+    finalOf[T.quest] = f;
+    const fb = fins[f];
+    return set('final:' + T.quest + ':' + f, () => pointAt({
+      target: fb.target, text: fb.text, next: fb.label, lock: true, hole: fb.hole,
+      onNext: fb.next ? () => { finalOf[T.quest] = f + 1; evaluate(); } : null, onSkip: skipTour }));
+  }
+  let i = idxOf[T.quest] || 0;
+  while (i < T.beats.length && ((T.beats[i].until && done(T.beats[i].until)) || (T.beats[i].check && T.beats[i].check()))) i++;
+  idxOf[T.quest] = i;
+  if (i >= T.beats.length) return stop();
+  const b = T.beats[i];
+  if (onMis && !b.fromMissions) return stop();
+  if (b.needs && !done(b.needs)) return stop();            /* its turn has not come yet */
+  if (b.screen && S.current !== b.screen) {
+    if (b.seen && b.next) { idxOf[T.quest] = i + 1; return run(T, q); }
+    return stop();
+  }
+  set('beat:' + T.quest + ':' + i, () => {
+    b.seen = true;
+    pointAt({ target: b.target, text: b.text, next: b.label, lock: true, hole: b.hole, onNext: b.next ? () => { idxOf[T.quest] = i + 1; evaluate(); } : null,
+      onTarget: b.tap ? () => { idxOf[T.quest] = i + 1; evaluate(); } : null, onSkip: skipTour });
   });
-  c.appendChild(el('div', 'mqr', (q.status === 'claimed' ? 'Reward paid: ' : 'Reward: ') + rewardText(q.reward)));
-  if (q.status === 'active' && q.due_at) { const d = el('div', 'mdue', leftText(q)); d.dataset.due = q.due_at; c.appendChild(d); }
-  if (q.status === 'offered' && q.time_limit_minutes) c.appendChild(el('div', 'mdue', 'Time limit once accepted: ' + span(q.time_limit_minutes * 60000)));
-  if (q.status === 'failed') c.appendChild(el('div', 'mdue', 'The time ran out.'));
-  if (q.status === 'ready') { const b = el('button', '', 'Claim reward'); b.onclick = () => act('mission_claim', q, b, 'Reward claimed: ' + rewardText(q.reward)); c.appendChild(b); }
-  if (q.status === 'offered') { const b = el('button', '', 'Accept mission'); b.onclick = () => act('mission_accept', q, b, 'Mission accepted: ' + q.title); c.appendChild(b); }
-  return c;
 }
 
-function chainCard(ch) {
-  const mine = list().filter(q => q.chain === ch.id);
-  const rank = { ready: 0, offered: 1, active: 2, failed: 3 };
-  const open = mine.filter(q => q.status !== 'claimed').sort((a, b) => rank[a.status] - rank[b.status]);
-  const done = mine.filter(q => q.status === 'claimed');
-  const n = s => open.filter(q => q.status === s).length;
-  const live = open.filter(q => q.status !== 'failed').length;
-  const sum = n('ready') ? n('ready') + ' ready to claim' : n('offered') ? n('offered') + ' available' : n('active') ? 'In progress' : 'No missions available';
-  const isOpen = openMap[ch.id] !== undefined ? openMap[ch.id] : live > 0;
-  const wrap = el('div');
-  const hd = el('button', 'alt mch');
-  hd.append(el('span', 'ct', (isOpen ? '\u25BE ' : '\u25B8 ') + ch.title), el('span', 'cs' + (n('ready') || n('offered') ? ' hot' : ''), sum));
-  hd.onclick = () => { openMap[ch.id] = !isOpen; paint(); };
-  wrap.appendChild(hd);
-  if (!isOpen) return wrap;
-  const body = el('div', 'mcb');
-  if (ch.description) body.appendChild(el('div', 'mcd', ch.description));
-  if (!open.length) body.appendChild(el('div', 'muted pad', 'No missions available at this time.'));
-  open.forEach(q => body.appendChild(card(q)));
-  if (done.length) {
-    const f = el('button', 'alt mqfold', (doneMap[ch.id] ? '- ' : '+ ') + 'Completed (' + done.length + ')');
-    f.onclick = () => { doneMap[ch.id] = !doneMap[ch.id]; paint(); };
-    body.appendChild(f);
-    if (doneMap[ch.id]) done.forEach(q => body.appendChild(card(q)));
+function evaluate() {
+  if (!S.last || !S.last.character) return stop();
+  const qs = missionList();
+  for (const T of TOURS) {
+    const q = qs.find(x => x.id === T.quest);
+    if (!q || q.status === 'claimed' || q.status === 'failed' || q.status === 'offered') continue;
+    return run(T, q);                                  /* the first tutorial that is still open */
   }
-  wrap.appendChild(body);
-  return wrap;
+  stop();
 }
 
-function paint() {
-  div.replaceChildren();
-  div.appendChild(el('h2', '', 'Missions'));
-  if (failed) { div.appendChild(el('div', 'err pad', 'Could not load the missions: ' + failed)); return; }
-  if (!data) { div.appendChild(el('div', 'muted pad', 'Loading...')); return; }
-  const chains = data.chains || [];
-  if (!chains.length) div.appendChild(el('div', 'muted pad', 'No missions yet.'));
-  chains.forEach(ch => div.appendChild(chainCard(ch)));
-}
+missionWatchers.push(evaluate);
+screenWatchers.push(evaluate);
+setInterval(() => { if (key.startsWith('beat:') || key.startsWith('final:')) evaluate(); }, 700);   /* beats with a check, and beats whose screen the player has left */
 
-setInterval(() => {                                   /* waiting for the tutorial freight delivery (the server records it): look again every 20 s */
-  if (document.hidden || !S.last || !S.last.character) return;
-  if (list().some(q => q.status === 'active' && (q.steps || []).some(s => s.id === 'freight_take' && s.done) && (q.steps || []).some(s => s.id === 'freight_deliver' && !s.done))) load();
-}, 20000);
-
-setInterval(() => {                                   /* countdowns of timed missions (none exist yet) */
-  if (S.current !== 'missions') return;
-  div.querySelectorAll('.mdue[data-due]').forEach(d => { d.textContent = leftText({ due_at: d.dataset.due }); });
-}, 1000);
-
-/* A screen was opened or a server action succeeded: if an open mission has an undone step named like it, report it.
-   A trade ('trade_at') also finishes steps named after what was done and where: 'buy', 'sell', 'buy:earth', 'sell:luna'. */
-async function noteStep(name, extra) {
-  if (/^missions?(_|$)/.test(name) || !S.last || !S.last.character) return;
-  const names = [name];
-  if (name === 'trade_at' && extra && extra.kind) names.push(extra.kind, extra.kind + ':' + extra.location);
-  if (name === 'freight_accept') await load();     /* the server has just recorded the step 'freight_take' of the tutorial job */
-  if (!data) await load();
-  let sent = false;
-  for (const q of list().filter(x => x.status === 'active')) {
-    for (const nm of names) {
-      if (!(q.steps || []).some(s => s.id === nm && !s.done)) continue;
-      try { await call('mission_step', { quest: q.id, step: nm }); sent = true; } catch (e) { /* a refused step is not worth a message */ }
-    }
-  }
-  if (sent) { await load(); if (S.refresh) S.refresh(); }
-}
-screenWatchers.push(noteStep);
-actionWatchers.push(noteStep);
-
-export function resetMissions() { data = null; failed = ''; loading = false; busy = false; for (const k in openMap) delete openMap[k]; for (const k in doneMap) delete doneMap[k]; div.replaceChildren(); }
-
-addScreen('missions', 'Missions', div, {
-  onShow() { paint(); load(); },
-  dot: () => !!S.last && (Number(S.last.missions_ready) > 0 || Number(S.last.missions_new) > 0),
-});
+export function resetTour() { for (const k in idxOf) delete idxOf[k]; for (const k in finalOf) delete finalOf[k]; key = ''; busy = false; TOURS.forEach(T => T.beats.forEach(b => { b.seen = false; })); clearPointer(); closeModal(); }
