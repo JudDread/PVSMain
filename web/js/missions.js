@@ -158,6 +158,11 @@ function paint() {
   chains.forEach(ch => div.appendChild(chainCard(ch)));
 }
 
+setInterval(() => {                                   /* waiting for the tutorial freight delivery (the server records it): look again every 20 s */
+  if (document.hidden || !S.last || !S.last.character) return;
+  if (list().some(q => q.status === 'active' && (q.steps || []).some(s => s.id === 'freight_take' && s.done) && (q.steps || []).some(s => s.id === 'freight_deliver' && !s.done))) load();
+}, 20000);
+
 setInterval(() => {                                   /* countdowns of timed missions (none exist yet) */
   if (S.current !== 'missions') return;
   div.querySelectorAll('.mdue[data-due]').forEach(d => { d.textContent = leftText({ due_at: d.dataset.due }); });
@@ -169,6 +174,7 @@ async function noteStep(name, extra) {
   if (/^missions?(_|$)/.test(name) || !S.last || !S.last.character) return;
   const names = [name];
   if (name === 'trade_at' && extra && extra.kind) names.push(extra.kind, extra.kind + ':' + extra.location);
+  if (name === 'freight_accept') await load();     /* the server has just recorded the step 'freight_take' of the tutorial job */
   if (!data) await load();
   let sent = false;
   for (const q of list().filter(x => x.status === 'active')) {
