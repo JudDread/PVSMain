@@ -6,7 +6,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { J2000_MS, G0, AU_M, DAY_S, KMS, C_KMS, KM_PER_AU, DOCK_RADIUS_AU, DOCK_SPEED_KMS, SUN_DANGER_AU, BODIES, BODY_INDEX, bodyId, bodyName, mag, gToAuDay2, bodyAngle, bodyPos, bodyVel, targetState, segmentEnd, stateAt, solvePlan, stopPlan, coastPlan, sunClearance, shipStateAt, planTravel, planTravelBar, planTravelPulse, pulseState, shipStateAbs, LAUNCH_MS, CLOCK, gameDaysAt, realMsAt, rescale, gameDate } from './physics_bundle.ts';
 
-import { cors, json, getCharacter, getLocation, resolveFor, getShip, planTrip, pilotNumbers, getMaxG, calcMaxG, spendEndurance } from './common.ts';
+import { cors, json, getCharacter, getLocation, getLocationFor, visibleLocations, resolveFor, getShip, planTrip, pilotNumbers, getMaxG, calcMaxG, spendEndurance } from './common.ts';
 import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll } from './market.ts';
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard } from './ships.ts';
@@ -54,7 +54,7 @@ async function queueTravel(db, user, body) {
   if (ship.state !== 'docked') return json({ error: 'ship_busy' }, 409);
 
   const from = await getLocation(db, ship.location_id);
-  const to = await getLocation(db, String(body.to ?? ''));
+  const to = await getLocationFor(db, ch.id, String(body.to ?? ''));   /* 059: a hidden place the pilot may not see is 'bad_destination' */
   if (!from || !to) return json({ error: 'bad_destination' }, 400);
   if (!(to.anchor_body in BODY_INDEX) || BODY_INDEX[to.anchor_body] < 1) return json({ error: 'bad_destination' }, 400);
   if (!(from.anchor_body in BODY_INDEX)) return json({ error: 'bad_origin' }, 400);
@@ -119,8 +119,7 @@ async function departures(db, user, body) {
   const from = await getLocation(db, ship.location_id);
   if (!from) return json({ error: 'bad_origin' }, 400);
   out.from = from.id;
-  const { data: locs, error: le } = await db.from('locations').select('*');
-  if (le) throw le;
+  const locs = await visibleLocations(db, ch.id);   /* 059: only places this pilot may see */
   const departT = out.game_days, cache = {};
   // Bar now and the pilot numbers (SQL). Every trip is allowed: above the free thrust the flight pulses (burn part of the
   // bar, refill at the free thrust, repeat). Each row says whether it pulses and the average thrust that gives.
@@ -145,12 +144,16 @@ async function departures(db, user, body) {
 async function me(db, user) {
   const ch = await getCharacter(db, user);
   const out = { game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, speed: CLOCK.scale / 60, dev: await isDev(db, user), character: ch };
-  const { data: locs } = await db.from('locations').select('id,name,anchor_body,kind,offset_au,angle_deg,is_default');
-  out.locations = locs ?? [];
+  /* 059: only the places this pilot may see; `epoch`, `hidden` and the like never leave the server */
+  const pub = l => ({ id: l.id, name: l.name, anchor_body: l.anchor_body, kind: l.kind, offset_au: l.offset_au, angle_deg: l.angle_deg, is_default: l.is_default, info: l.info ?? null, pvp: l.pvp ?? true });
+  out.locations = [];
+  if (!ch) { const { data: pl } = await db.from('locations').select('*').eq('hidden', false); out.locations = (pl ?? []).map(pub); }
   if (ch) {
     await resolveFor(db, ch.id); // settle any finished trip before reporting
     await db.rpc('xp_settle', { p_character: ch.id }); // pay XP for trips that just finished
     await freightResolve(db, ch.id, false); // then settle freight that has arrived or run out of time
+    out.locations = (await visibleLocations(db, ch.id)).map(pub);   // after the settling: a ship that has just docked at a hidden place sees it
+    await db.rpc('quest_arrival_check', { p_character: ch.id });   // 059: finishes 'arrive:<place>' mission steps (best effort)
     const [ships, actions, events] = await Promise.all([
       db.from('ships').select('*').eq('character_id', ch.id),
       db.from('scheduled_actions').select('id,action_type,status,payload,resolve_at,resolved_at').eq('character_id', ch.id).order('created_at', { ascending: false }).limit(10),
