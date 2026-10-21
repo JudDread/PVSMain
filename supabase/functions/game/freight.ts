@@ -6,7 +6,10 @@
 import { CLOCK, gameDaysAt } from './physics_bundle.ts';
 import { json, getCharacter, getLocation, resolveFor, getShip, estimateTrip, LOC_RE, UUID_RE } from './common.ts';
 
-// ---------- freight contracts (migrations 020/021) ----------
+// ---------- freight contracts (migrations 020/021; 058 private tutorial job) ----------
+// A contract with `private_to` set is the tutorial job of ONE pilot (058): other pilots never see it and cannot accept it.
+// The tutorial job gets a longer delivery window than a normal Luna-Earth run, so a new player can read the tour texts (game days; 1.25 = about 30 real minutes at 1x).
+const TUTORIAL_WINDOW_DAYS = 1.25;
 // All money and goods maths lives in the database (freight_* functions). The server: checks who is asking,
 // works out game time and the delivery WINDOW per destination (trip time at the reference thrust x a factor),
 // calls the SQL, and passes the answer on. Delivery and expiry are resolved LAZILY: freightResolve runs at the
@@ -40,6 +43,12 @@ export async function freightResolve(db, characterId, strict = true) {
     if (strict) throw error;
     console.error('freight resolve failed', error);
   }
+  await tutorialFreightCheck(db, characterId);
+}
+
+// Records the tutorial freight steps (SQL tutorial_freight_check, 058). Best effort: never stops a freight action.
+async function tutorialFreightCheck(db, characterId) {
+  try { await db.rpc('tutorial_freight_check', { p_character: characterId }); } catch (e) { /* ignore */ }
 }
 
 // Common start of every freight action: who is asking, settle trips, settle freight.
@@ -104,6 +113,14 @@ export async function freightBoard(db, user, body) {
   }
   const { data, error } = await db.rpc('freight_board', { p_character: x.ch.id, p_location: locId, p_windows: windows });
   if (error) throw error;
+  if (data && data.ok && Array.isArray(data.items) && data.items.length) {
+    // 058: hide the private tutorial jobs of other pilots; my own gets the longer window
+    const { data: pv, error: pe } = await db.from('freight_contracts').select('id,private_to').in('id', data.items.map(i => i.contract_id)).not('private_to', 'is', null);
+    if (pe) throw pe;
+    const owner = {}; for (const r of pv ?? []) owner[r.id] = r.private_to;
+    data.items = data.items.filter(i => !owner[i.contract_id] || owner[i.contract_id] === x.ch.id);
+    for (const i of data.items) if (owner[i.contract_id]) i.window_days = Math.max(Number(i.window_days), TUTORIAL_WINDOW_DAYS);
+  }
   return freightAnswer(data);
 }
 
@@ -115,17 +132,19 @@ export async function freightAccept(db, user, body) {
   const x = await freightStart(db, user);
   if (x.resp) return x.resp;
   // Find the route (pickup -> dest) to work out the window. The hauler cannot read contracts, the server can.
-  const { data: c, error: ce } = await db.from('freight_contracts').select('pickup_location,dest_location').eq('id', contract).maybeSingle();
+  const { data: c, error: ce } = await db.from('freight_contracts').select('pickup_location,dest_location,private_to').eq('id', contract).maybeSingle();
   if (ce) throw ce;
-  if (!c) return json({ error: 'contract_not_found' }, 400);
+  if (!c || (c.private_to && c.private_to !== x.ch.id)) return json({ error: 'contract_not_found' }, 400);
   const [from, to] = await Promise.all([getLocation(db, c.pickup_location), getLocation(db, c.dest_location)]);
   if (!from || !to) return json({ error: 'contract_not_found' }, 400);
   const fs = await freightSettings(db);
   const nowT = gameDaysAt(Date.now());
-  const windowDays = freightWindow(fs, from, to, nowT, {});
+  let windowDays = freightWindow(fs, from, to, nowT, {});
   if (windowDays == null) return json({ error: 'no_route' }, 400);
+  if (c.private_to) windowDays = Math.max(windowDays, TUTORIAL_WINDOW_DAYS);
   const { data, error } = await db.rpc('freight_accept', { p_character: x.ch.id, p_contract: contract, p_units: units, p_now_t: nowT, p_window_days: windowDays });
   if (error) throw error;
+  if (data && data.ok && c.private_to) await tutorialFreightCheck(db, x.ch.id);   /* the tutorial step 'freight_take' */
   return freightAnswer(data);
 }
 
