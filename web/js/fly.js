@@ -300,9 +300,32 @@ function sizeDeps() {
 function showDeps() { if (depsOpen) sizeDeps(); $('deps').hidden = !depsOpen; $('depscaret').textContent = depsOpen ? '-' : '+'; }
 window.addEventListener('resize', () => { if (depsOpen) sizeDeps(); });
 $('depshead').onclick = () => { depsOpen = !depsOpen; showDeps(); };
+/* ---------- combat zone box (a precursor to combat): docked at a place of kind 'range' or 'zone' the Fly screen shows a box;
+   one day the combat screen replaces it. OK hides it for this stay. The text comes from the place's `info` (data). ---------- */
+let zoneBox = null, zoneDismissed = null;
+function drawZone(ship) {
+  const l = ship && ship.state === 'docked' ? locById(ship.location_id) : null;
+  if (!l || (l.kind !== 'range' && l.kind !== 'zone')) { zoneDismissed = null; if (zoneBox) zoneBox.hidden = true; return; }
+  const wrap = document.querySelector('#scr-travel .mapwrap');
+  if (!wrap) return;
+  if (!zoneBox) {
+    zoneBox = document.createElement('div');
+    zoneBox.style.cssText = 'position:absolute;left:10px;right:10px;top:10px;z-index:5;padding:12px;border:1px solid #3a5a78;border-radius:8px;background:rgba(8,14,22,.95);color:#d7e4f0;font-size:14px;line-height:1.4';
+    wrap.appendChild(zoneBox);
+  }
+  if (zoneDismissed === l.id) { zoneBox.hidden = true; return; }
+  const title = document.createElement('div'); title.style.cssText = 'font-weight:bold;margin-bottom:6px'; title.textContent = l.name;
+  const text = document.createElement('div'); text.textContent = l.info || 'This is where combat will happen.';
+  const ok = document.createElement('button'); ok.textContent = 'OK'; ok.style.marginTop = '10px';
+  ok.onclick = () => { zoneDismissed = l.id; zoneBox.hidden = true; };
+  zoneBox.replaceChildren(title, text, ok);
+  zoneBox.hidden = false;
+}
+
 addScreen('travel', 'Fly', $('scr-travel'), {
   onShow: () => { map.resize(); map.need(); sizeThrust(); },
   update: ship => {
+    drawZone(ship);
     if (!ship) { map.need(); return; }
     const fl = ship.state !== 'docked';
     /* the list on screen must match the ship's state: docked list for a docked ship, course options for a flying one */
