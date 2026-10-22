@@ -45,6 +45,7 @@ const doneMap = {};     // chain id -> the 'Completed' fold is open
 
 const list = () => ((data && data.quests) || []);
 export const missionList = list;                 // for tour.js
+export const loadMissions = () => load();         // for levelup.js
 export const missionWatchers = [];               // functions run after every load of the list (tour.js adds one)
 
 const rewardText = r => {
