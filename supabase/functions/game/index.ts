@@ -153,7 +153,7 @@ async function me(db, user) {
     await db.rpc('xp_settle', { p_character: ch.id }); // pay XP for trips that just finished
     await freightResolve(db, ch.id, false); // then settle freight that has arrived or run out of time
     out.locations = (await visibleLocations(db, ch.id)).map(pub);   // after the settling: a ship that has just docked at a hidden place sees it
-    await db.rpc('quest_arrival_check', { p_character: ch.id });   // 059: finishes 'arrive:<place>' mission steps (best effort)
+    await db.rpc('quest_checks', { p_character: ch.id });   // 059/061: server-finished mission steps (arrive:<place>, rig_fit, skill_buy; best effort)
     const [ships, actions, events] = await Promise.all([
       db.from('ships').select('*').eq('character_id', ch.id),
       db.from('scheduled_actions').select('id,action_type,status,payload,resolve_at,resolved_at').eq('character_id', ch.id).order('created_at', { ascending: false }).limit(10),
