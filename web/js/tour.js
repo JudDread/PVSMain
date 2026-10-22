@@ -11,6 +11,7 @@
 import { S, LS, say, screenWatchers } from 'core';
 import { missionList, missionWatchers, reportStep } from './missions.js';
 import { pointAt, clearPointer, modal, closeModal } from './coach.js';
+import { levelImages, markLevelSeen } from './levelup.js';
 
 // A beat points at one thing. until = the mission step that finishes it (no Next button); next = shows a Next button;
 // check = a function: the beat is finished when it returns true (looked at about every 0.7 s).
@@ -121,6 +122,52 @@ const TOURS = [
       { target: '#nav button[data-screen="missions"]', text: 'Freight delivered! Mission complete! Open the Missions tab and claim your reward.' },
     ],
   },
+  {
+    quest: 'tutorial_4',
+    welcome: name => ({
+      kicker: 'NEW MISSION STARTED: REFIT',
+      title: 'Luna Registry, Yard Office',
+      paras: [
+        'A hull is only a hull, ' + name + '. The rigs you install decide what she can do: haul, fight or scout. Pick them for the job at hand.',
+        'Let us upgrade your Courier.',
+      ],
+      start: 'Show me', skip: 'Skip - I know my way around',
+    }),
+    beats: [
+      { fromMissions: true, next: true, label: 'OK', until: 'arrive:luna', text: 'The Registry yard is at LUNA. Fly your Courier home. Take your time: trade, haul freight, whatever you like. I will pick this up when you dock.' },
+      { needs: 'arrive:luna', fromMissions: true, target: '#nav button[data-screen="assets"]', until: 'assets', text: 'Welcome home. Open ASSETS: every ship, cargo hold and rig you own, listed by port.' },
+      { target: '.ascope .scard', screen: 'assets', until: 'rigging', text: 'This is your Courier. Touch her to go below decks.' },
+      { target: { sel: '#scr-rigging .msec', text: 'Fitted (' }, screen: 'rigging', next: true, text: 'BELOW DECKS. FITTED shows what is installed, and the empty slots too. The power bar is your reactor budget. Every rig takes a slot and power, so choose for the job.' },
+      { target: { sel: '#scr-rigging .sech button', text: 'Shipyard' }, screen: 'rigging', until: 'facilities', text: 'No rigs installed, and your ledger is hard vacuum. The yard can help. Touch SHIPYARD.' },
+      { screen: 'facilities', next: true, dock: 'top', text: 'The Luna shipyard. These sections list the hulls and rigs you can buy or sell, with prices. A new rig is beyond your reach for now, so the Registry has left you a starter kit in storage here: a railgun and armor plating. They are yours. Fit them before you sell them, or the refit cannot be finished.' },
+      { target: { sel: 'button.alt', text: 'Back to rigging' }, screen: 'facilities', check: () => S.current === 'rigging', text: 'Now back to your Courier. Touch Back to rigging.' },
+      { target: { sel: '#scr-rigging .rside button', text: 'Fit' }, screen: 'rigging', until: 'rig_fit', text: 'Under "Rigs and weapons here" your kit is waiting in storage. Touch Fit.' },
+    ],
+    finals: [
+      { screen: 'rigging', next: true, label: 'OK', hole: [], text: 'Installed. Fit the other one too, if you like. Rigs come off again, free and instant, while docked, so refit her for whatever job comes next.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Refit complete. Open the Missions tab and claim your reward.' },
+    ],
+  },
+  {
+    quest: 'tutorial_5',
+    welcome: name => ({
+      kicker: 'LEVEL UP',
+      images: levelImages((S.last && S.last.pilot && S.last.pilot.level) || 2),
+      title: 'LEVEL ' + ((S.last && S.last.pilot && S.last.pilot.level) || 2),
+      paras: [
+        'The Registry has raised your pilot rating, ' + name + '. With it come Cal: calibrations, the skill points of a pilot.',
+        'Skills are how a pilot grows. Let us spend yours.',
+      ],
+      start: 'Show me the Skills', skip: 'Later',
+    }),
+    beats: [
+      { fromMissions: true, target: '#nav button[data-screen="skills"]', until: 'skills', text: 'Open the SKILLS tab.' },
+      { screen: 'skills', dock: 'top', until: 'skill_buy', text: 'SKILLS. Each skill makes you better at something. Look through them and spend your Cal on one of them.' },
+    ],
+    finals: [
+      { target: '#nav button[data-screen="missions"]', text: 'Cal spent. Skills are how a pilot grows. Open the Missions tab and claim your reward.' },
+    ],
+  },
 ];
 
 const idxOf = {};                         // quest id -> position in its beats
@@ -135,7 +182,7 @@ function set(k, show) { if (key === k) return; key = k; closeModal(); clearPoint
 async function answer(T, on) {
   if (busy) return; busy = true;
   LS.set(offKey(), on ? '0' : '1');
-  try { idxOf[T.quest] = 0; await reportStep(T.quest, 'welcome'); }
+  try { idxOf[T.quest] = 0; markLevelSeen(); await reportStep(T.quest, 'welcome'); }
   catch (e) { say('Error: ' + e.message, 'err'); }
   finally { busy = false; }
 }
@@ -149,7 +196,7 @@ function run(T, q) {
     if (!done('welcome')) {
       return set('welcome:' + T.quest, () => {
         const w = T.welcome(name());
-        modal({ kicker: w.kicker, title: w.title, paras: w.paras, buttons: [{ label: w.start, onClick: () => answer(T, true) }, { label: w.skip, alt: true, onClick: () => answer(T, false) }] });
+        modal({ kicker: w.kicker, images: w.images, title: w.title, paras: w.paras, buttons: [{ label: w.start, onClick: () => answer(T, true) }, { label: w.skip, alt: true, onClick: () => answer(T, false) }] });
       });
     }
   }
