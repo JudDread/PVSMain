@@ -13,6 +13,7 @@ css.textContent = [
   '#coachtip .cbtns{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:8px}',
   '#coachtip button{margin:0;padding:6px 14px;font-size:14px}',
   '.coachblk{position:fixed;z-index:89;background:transparent;touch-action:none}',
+  '#coachmodal .lvimg{display:block;width:100%;max-width:320px;aspect-ratio:1/1;object-fit:cover;margin:0 auto 10px;border-radius:10px}',
   '#coachmodal{position:fixed;top:0;left:0;right:0;bottom:0;z-index:100;background:rgba(5,8,15,.85);display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box}',
   '#coachmodal .card{background:#131a2a;border:2px solid #e8b64a;border-radius:12px;padding:14px;max-width:440px;width:100%;max-height:100%;overflow-y:auto;box-sizing:border-box}',
   '#coachmodal .kick{font-size:12px;font-weight:700;letter-spacing:1px;color:#6be08f;margin-bottom:4px}',
@@ -132,6 +133,11 @@ export function modal(m) {
   modalEl = el('div'); modalEl.id = 'coachmodal';
   const c = el('div', 'card');
   if (m.kicker) c.appendChild(el('div', 'kick', m.kicker));
+  if (m.images && m.images.length) {                     /* a big square picture; tries each url in turn, none = no picture */
+    const im = el('img', 'lvimg'); let k = 0; im.alt = '';
+    im.onerror = () => { k++; if (k < m.images.length) im.src = m.images[k]; else im.remove(); };
+    im.src = m.images[0]; c.appendChild(im);
+  }
   c.appendChild(el('h2', '', m.title));
   (m.paras || []).forEach(p => c.appendChild(el('p', '', p)));
   const row = el('div', 'cmb');
