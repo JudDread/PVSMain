@@ -11,6 +11,7 @@ import { resetProfile } from 'profile';
 import 'home';
 import { resetMissions } from './missions.js';
 import { resetTour } from './tour.js';
+import { checkLevelUp } from './levelup.js';
 
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
 let timer = null, lastNudge = 0;
@@ -47,6 +48,7 @@ async function refresh() {
       S.skew = ((d.real_ms - t0) + (d.sent_ms - t1)) / 2; S.skewRtt = t1 - t0; S.skewAt = t1;
     }
     S.last = d; render();
+    checkLevelUp().catch(() => {});                   /* the level-up screen (levelup.js) */
   }
   catch (e) { say('Error: ' + e.message, 'err'); }
 }
