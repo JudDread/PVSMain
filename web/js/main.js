@@ -12,20 +12,21 @@ import 'home';
 import { resetMissions } from './missions.js';
 import { resetTour } from './tour.js';
 import { checkLevelUp } from './levelup.js';
+import { SUPABASE_KEY } from './config.js';          // the publishable key (safe to publish); empty = the old one-time setup box
 
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
 let timer = null, lastNudge = 0;
 S.refresh = refresh;
 
-function getKey() { try { return localStorage.getItem('pvs_key'); } catch (e) { return null; } }
-function show(which) { ['cfg', 'auth', 'game'].forEach(id => $(id).hidden = id !== which); $('title').hidden = which === 'game'; }
+function getKey() { try { return localStorage.getItem('pvs_key') || SUPABASE_KEY || null; } catch (e) { return SUPABASE_KEY || null; } }
+function show(which) { ['cfg', 'splash', 'auth', 'game'].forEach(id => $(id).hidden = id !== which); $('title').hidden = which === 'game' || which === 'splash'; }
 
 async function init() {
   const k = getKey();
   if (!k) return show('cfg');
   S.sb = window.supabase.createClient(URL_, k);
   const { data } = await S.sb.auth.getSession();
-  if (data.session) enterGame(data.session); else show('auth');
+  if (data.session) enterGame(data.session); else show('splash');   // logged out: the splash screen first, its Enter button opens the login form
 }
 async function enterGame(session) {
   show('game');
@@ -89,8 +90,11 @@ $('savekey').onclick = () => {
   try { localStorage.setItem('pvs_key', v); } catch (e) {}
   say(''); init();
 };
+$('spl-go').onclick = () => show('auth');
 $('signup').onclick = async () => {
-  const { data, error } = await S.sb.auth.signUp({ email: $('email').value.trim(), password: $('pw').value });
+  if (!$('agree').checked) return say('To register, please tick the box: you are 18 or older and accept the terms and privacy page.', 'err');
+  /* the answer is stored with the login (user metadata), free: which terms version was accepted */
+  const { data, error } = await S.sb.auth.signUp({ email: $('email').value.trim(), password: $('pw').value, options: { data: { over_18: true, terms_version: '2026-10-23' } } });
   if (error) return say(error.message, 'err');
   if (data.session) enterGame(data.session);
   else say('Registered. Check your email to confirm, then log in.', 'ok');
