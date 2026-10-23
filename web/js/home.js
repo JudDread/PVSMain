@@ -34,6 +34,9 @@ help.appendChild(el('div', 'muted pad', 'Questions, bugs, ideas or account troub
 const dc = el('button', '', 'Join our Discord');
 dc.addEventListener('click', () => window.open(DISCORD, '_blank', 'noopener'));
 help.appendChild(dc);
+const tp = el('button', 'alt', 'Terms and privacy');            /* web/terms.html, next to index.html */
+tp.addEventListener('click', () => window.open(new URL('terms.html', location.href).href, '_blank', 'noopener'));
+help.appendChild(tp);
 
 /* membership (not connected yet: payments are a later step) */
 const member = block('Membership');
