@@ -1,5 +1,5 @@
 // market.js - the Market screen (goods in markets, in storage and in the hold). Display only: the server decides every trade.
-import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine, createPicker, qtyControl } from 'core';
+import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine, createPicker, qtyControl, SHIP_SVG } from 'core';
 import { applyBackdrop } from 'backdrop';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
@@ -19,6 +19,7 @@ let msel = null;            // selected row { loc, kind: 'cargo' | 'storage' | '
 let dd = null, ddBusy = false;   // open destinations list { loc, kind, good, data }
 let mbusy = false, mEdited = false, mRedraw = false, longFired = false, lastTap = { id: null, t: 0 };
 const frQty = {};            // freight board: contract id -> what is typed in its units box (survives redraws)
+let haul = [];            // my active freight loads (freight_hauling), shown in the Cargo section when the ship is docked here
 let frSel = null, frBusy = false;   // the selected freight row; an Accept is in progress
 let frChain = Promise.resolve();    // freight calls go one after the other (the server settles freight on each call)
 let buyTo = LS.get('pvs_buyto') === 'hold' ? 'hold' : 'storage';   // where bought goods go (remembered)
@@ -115,6 +116,7 @@ async function loadLoc(loc) {
     setShipLine(); drawMarket();
     loadBest(loc);
     loadFreight(loc);
+    if (d.here) loadHaul();
     if (dd && dd.loc === loc) loadDD();
   } catch (e) { say('Error: ' + e.message, 'err'); }
   finally { mLoading[loc] = false; }
@@ -135,6 +137,16 @@ function loadFreight(loc) {
     if (!S.sb) return;
     try { const r = await call('freight_board', { location: loc }); const c = mc[loc]; if (c) { c.fr = (r && r.items) || []; c.frErr = null; } }
     catch (e) { const c = mc[loc]; if (c) c.frErr = e.message; }
+    drawMarket();
+  });
+  return frChain;
+}
+// my active freight loads: they take hold space, so the Cargo section lists them (one line per load)
+function loadHaul() {
+  frChain = frChain.then(async () => {
+    if (!S.sb) return;
+    try { const r = await call('freight_hauling'); haul = ((r && r.items) || []).filter(i => i.status === 'active'); }
+    catch (e) { haul = []; }
     drawMarket();
   });
   return frChain;
@@ -173,10 +185,10 @@ async function loadDD() {
   } catch (e) { if (dd === me) me.data = { error: e.message }; }
   finally { ddBusy = false; drawMarket(); if (dd && dd !== me) loadDD(); }
 }
-// stock number, then stock as a percent of the node size in brackets, with P: (this place produces) or C: (this place consumes) in front
+// stock number, then stock as a percent of the node's TARGET stock (100% = base price; the price uses this) in brackets, with P: (this place produces) or C: (this place consumes) in front
 function stockTag(x) {
-  if (!(x.base_supply > 0)) return whole(x.stock);
-  return whole(x.stock) + ' (' + (x.role === 'producer' ? 'P:' : x.role === 'consumer' ? 'C:' : '') + Math.round(100 * x.stock / x.base_supply) + '%)';
+  if (!(x.target_stock > 0)) return whole(x.stock);
+  return whole(x.stock) + ' (' + (x.role === 'producer' ? 'P:' : x.role === 'consumer' ? 'C:' : '') + Math.round(100 * x.stock / x.target_stock) + '%)';
 }
 function ddBox() {
   const box = el('div', 'routes'), d = dd.data, md = mc[dd.loc] && mc[dd.loc].d;
@@ -363,7 +375,7 @@ function cfBuild() {
   row.append(no, yes); box.append(title, body, row); ov.appendChild(box); ov.hidden = true; document.body.appendChild(ov);
   no.onclick = closeConfirm;
   ov.addEventListener('pointerdown', e => { if (e.target === ov) closeConfirm(); });
-  yes.onclick = () => { if (!cfSnap || mbusy) return; const s = cfSnap; closeConfirm(); runTrade(s); };
+  yes.onclick = () => { if (!cfSnap || mbusy) return; const qq = quotes[cfSnap.key], s = { ...cfSnap, expect: qq && qq.d ? Number(qq.d.total) : null }; closeConfirm(); runTrade(s); };
   cfEls = { ov, title, body, yes };
   return cfEls;
 }
@@ -399,7 +411,7 @@ function refreshConfirm() {
 /* ---- drawing ---- */
 function drawLocBox() {
   const ids = placeIds(), dl = dockedAt();
-  mpick.set([['ALL', 'All locations'], ...ids.map(id => [id, locName(id), dl === id ? 'ship here' : ''])], mloc);
+  mpick.set([['ALL', 'All locations'], ...ids.map(id => [id, locName(id), dl === id ? '@ship here' : ''])], mloc);
   applyBackdrop(mpick.btn, mloc);       /* the picture behind the box follows the chosen place */
 }
 function section(parent, loc, key, title, count, btn, drawBody, defOpen) {
@@ -471,7 +483,7 @@ function frPop(d, loc, x, scale) {
     else if (isNaN(q) || q < 1) why = 'Enter a whole number of 1 or more.';
     else if (q > x.units_open) why = 'Only ' + whole(x.units_open) + ' are open.';
     else if (q * x.hold_each > frFree(d) + 1e-9) why = 'Not enough free hold space: needs ' + r2(q * x.hold_each) + ', free ' + r2(frFree(d)) + '.';
-    if (!isNaN(q) && q >= 1) info.appendChild(el('div', '', 'For ' + whole(q) + ': ' + money(q * x.pay_per_unit) + ' on delivery, plus up to ' + money(q * x.bonus_max_per_cu) + ' bonus if early.'));
+    if (!isNaN(q) && q >= 1) info.appendChild(el('div', '', 'For ' + whole(q) + (x.hold_each > 1 ? ' (' + whole(q * x.hold_each) + ' CU)' : '') + ': ' + money(q * x.pay_per_unit) + ' on delivery, plus up to ' + money(q * x.bonus_max_per_cu) + ' bonus if early.'));
     info.appendChild(el('div', 'muted', 'Deliver within ' + win + ' of accepting. Late = the load fails. The bonus shrinks as time passes. Uses ' + r2(x.hold_each) + ' hold per unit.'));
     if (why) info.appendChild(el('div', soft ? 'muted' : 'err', why));
     acc.disabled = !!why || frBusy;
@@ -488,7 +500,7 @@ function frPop(d, loc, x, scale) {
       const r = await call('freight_accept', { contract: x.contract_id, units: q });
       delete frQty[x.contract_id]; frSel = null;
       const left = r.deadline_t != null && curGd() != null ? (r.deadline_t - curGd()) * 86400 / scale : (r.window_days || x.window_days) * 86400 / scale;
-      say('Accepted ' + whole(r.units) + ' CU to ' + locName(r.dest_location) + '. Deliver within ' + fmt(left) + '.', 'ok');
+      say('Accepted ' + whole(r.hold_used != null ? r.hold_used : r.units * (x.hold_each > 0 ? x.hold_each : 1)) + ' CU to ' + locName(r.dest_location) + '. Deliver within ' + fmt(left) + '.', 'ok');
     } catch (e) { say(freightError(e), 'err'); }
     finally { frBusy = false; mRedraw = false; clearQuotes(); refreshMarket(); }
   };
@@ -499,11 +511,11 @@ function frPop(d, loc, x, scale) {
 function drawFreight(box, d, loc, items) {
   const scale = (S.last && S.last.scale) || 60;
   [...items].sort((a, b) => (b.pay_per_unit - a.pay_per_unit) || a.dest_name.localeCompare(b.dest_name)).forEach(x => {
-    const sel = frSel === x.contract_id;
+    const sel = frSel === x.contract_id, he = x.hold_each > 0 ? Number(x.hold_each) : 1;   // he = CU of hold one unit takes (a rig = 10)
     const r = el('div', 'row' + (sel ? ' sel' : ''));
     r.append(
-      cell('', 'To ' + x.dest_name + (x.mine ? ' (yours)' : ''), whole(x.units_open) + ' CU open, window ' + fmt(x.window_days * 86400 / scale)),
-      cell('num get', money(x.pay_per_unit) + ' / CU', 'bonus up to ' + money(x.bonus_max_per_cu)));
+      cell('', 'To ' + x.dest_name + (x.mine ? ' (yours)' : ''), whole(x.units_open * he) + ' CU open, window ' + fmt(x.window_days * 86400 / scale)),
+      cell('num get', money(x.pay_per_unit / he) + ' / CU', 'bonus up to ' + money(x.bonus_max_per_cu / he)));
     r.onclick = () => { frSel = sel ? null : x.contract_id; drawMarket(); };
     box.appendChild(r);
     if (sel) box.appendChild(frPop(d, loc, x, scale));
@@ -535,7 +547,7 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
     else {
       const idx = {}; (pd.goods || []).forEach(o => { idx[o.good_id] = o; });
       // produced: what that place pays when you sell there; consumed: what it asks when you buy there
-      rows = list.filter(g => idx[g.good_id]).map(g => { const o = idx[g.good_id]; return { ...g, best_name: locName(P), best_price: key === 'produced' ? o.sell_price : o.buy_price, pl_stock: o.stock, pl_base: o.base_supply }; });
+      rows = list.filter(g => idx[g.good_id]).map(g => { const o = idx[g.good_id]; return { ...g, best_name: locName(P), best_price: key === 'produced' ? o.sell_price : o.buy_price, pl_stock: o.stock, pl_base: o.target_stock }; });
     }
   }
   const selBox = showBest ? placeSelect(sk, P) : null;
@@ -561,7 +573,7 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
         if (P !== 'ALL') cells.push(cell('num', money(g.best_price), whole(g.pl_stock) + (g.pl_base > 0 ? ' (' + Math.round(100 * g.pl_stock / g.pl_base) + '%)' : '')));
         else cells.push(g.best_name ? cell('num', g.best_name, money(g.best_price)) : cell('num muted', '-'));
       }
-      cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), g.base_supply > 0 ? '(' + Math.round(100 * g.stock / g.base_supply) + '%)' : ''));
+      cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), g.target_stock > 0 ? '(' + Math.round(100 * g.stock / g.target_stock) + '%)' : ''));
       r.append(...cells);
       wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
       box.appendChild(r);
@@ -577,10 +589,16 @@ function drawLoc(parent, loc) {
   if (!d.here && d.remote_fee > 0) parent.appendChild(el('div', 'muted hint pad', 'Your ship is not docked here, so trades at this market carry an extra ' + Math.round(d.remote_fee * 100) + '% fee. Prices below include it.'));
   if (d.here) {
     const ub = el('button', 'ub', 'Unload all'); ub.disabled = mbusy || !cargo.length; ub.onclick = doUnloadAll;
-    section(parent, loc, 'cargo', 'Cargo, hold ' + r2(d.hold_used) + ' / ' + r2(d.hold_size), cargo.length, ub, box => {
-      if (!cargo.length) box.appendChild(el('div', 'muted pad', 'Empty'));
+    const scl = (S.last && S.last.scale) || 60, gd = curGd();
+    section(parent, loc, 'cargo', 'Cargo, hold ' + r2(d.hold_used) + ' / ' + r2(d.hold_size), cargo.length + haul.length, ub, box => {
+      if (!cargo.length && !haul.length) box.appendChild(el('div', 'muted pad', 'Empty'));
       cargo.forEach(x => stackRow(box, d, loc, 'cargo', x, c.bestCg && c.bestCg[x.good_id]));
-    }, cargo.length > 0);   /* an empty hold starts folded */
+      haul.forEach(h => {
+        const r = el('div', 'row'), left = h.deadline_t != null && gd != null ? (h.deadline_t - gd) * 86400 / scl : null;
+        r.append(cell('', 'Freight to ' + (h.dest_name || locName(h.dest_location)), r2(h.hold_used) + ' CU in the hold'), cell('num', left != null ? fmt(left) : '', 'left'));
+        box.appendChild(r);
+      });
+    }, cargo.length + haul.length > 0);   /* an empty hold starts folded */
   }
   section(parent, loc, 'storage', 'Stored here', stored.length, null, box => {
     if (!stored.length) box.appendChild(el('div', 'muted pad', 'Nothing of yours is stored here.'));
@@ -614,7 +632,9 @@ function drawMarket() {
     ids.forEach(id => {
       const open = !!openLocs[id], n = ((stAll && stAll.items) || []).filter(i => i.location_id === id && !isRig(i.good_id)).length;
       const g = el('div', 'locg');
-      g.append(el('span', '', (open ? ARROW_OPEN : ARROW_SHUT) + locName(id) + (dockedAt() === id ? ' (ship here)' : '')), el('span', 'muted', n ? n + ' stored' : ''));
+      const nm = el('span', '', (open ? ARROW_OPEN : ARROW_SHUT) + locName(id));
+      if (dockedAt() === id) { const ic = el('span', 'lpship'); ic.innerHTML = SHIP_SVG; ic.title = 'ship here'; ic.style.verticalAlign = 'middle'; nm.append(' ', ic); }
+      g.append(nm, el('span', 'muted', n ? n + ' stored' : ''));
       g.onclick = () => { openLocs[id] = !open; if (!open) loadLoc(id); drawMarket(); };
       body.appendChild(g);
       if (open) { const inner = el('div', 'locbody'); drawLoc(inner, id); body.appendChild(inner); }
@@ -625,6 +645,7 @@ function drawMarket() {
 /* ---- actions ---- */
 function marketError(e) {
   const d = e.data || {}, m = e.message;
+  if (m === 'price_changed') return 'The price changed (it is now ' + money(d.now || 0) + ' in total, you saw ' + money(d.expected || 0) + '). Please check the new price and try again.';
   if (m === 'not_enough_hold') return 'Not enough room in the hold (free ' + r2(d.hold_free || 0) + ', needed ' + r2(d.hold_needed || 0) + ').';
   if (m === 'not_enough_credits') return 'Not enough credits (cost ' + money(d.cost || 0) + ', you have ' + money(d.credits || 0) + ').';
   if (m === 'not_enough_stock') return 'The market only has ' + whole(d.available || 0) + ' available.';
@@ -639,8 +660,8 @@ function marketError(e) {
 // what a confirmed trade asks the server to do (one place, so the buy and sell arguments cannot drift apart)
 function tradeArgs(s) {
   return s.buy
-    ? { action: 'trade_at', args: { location: s.loc, kind: 'buy', good: s.good, quantity: s.q, stack: s.dest === 'hold' ? 'cargo' : 'storage' } }   // the server calls the hold 'cargo'
-    : { action: 'trade_at', args: { location: s.loc, kind: 'sell', good: s.good, quantity: s.q, stack: s.kind === 'cargo' ? 'cargo' : 'storage' } };
+    ? { action: 'trade_at', args: { location: s.loc, kind: 'buy', good: s.good, quantity: s.q, stack: s.dest === 'hold' ? 'cargo' : 'storage', expect_total: s.expect } }   // the server calls the hold 'cargo'; expect_total = the price guard
+    : { action: 'trade_at', args: { location: s.loc, kind: 'sell', good: s.good, quantity: s.q, stack: s.kind === 'cargo' ? 'cargo' : 'storage', expect_total: s.expect } };
 }
 async function execute(action, args, okText) {
   mbusy = true; refreshPop(); drawMarket();
