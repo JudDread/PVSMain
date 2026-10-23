@@ -329,6 +329,7 @@ export async function marketAt(db, user, body) {
 
 // "trade_at": body = { location, kind: 'buy'|'sell', good, quantity, stack: 'storage'|'cargo' }.
 // buy: stack = where the goods go. sell: stack = where they come from. 'cargo' needs the ship docked at that location.
+// PRICE GUARD (2026-10-23): optional expect_total = the total the page showed. If the real total is now worse by more than 2% (plus 1 credit), nothing is traded: error 'price_changed'.
 export async function tradeAt(db, user, body) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
@@ -340,6 +341,16 @@ export async function tradeAt(db, user, body) {
   if (stack !== 'storage' && stack !== 'cargo') return json({ error: 'bad_request' }, 400);
   if (!Number.isInteger(qty) || qty < 1 || qty > 1000000) return json({ error: 'bad_quantity' }, 400);
   await resolveFor(db, ch.id);
+  const expect = body.expect_total == null ? null : Number(body.expect_total);
+  if (expect !== null && Number.isFinite(expect) && expect > 0) {
+    const { data: qn, error: qe } = await db.rpc('market_quote', { p_character: ch.id, p_location: loc, p_kind: kind, p_good: good, p_quantity: qty, p_stack: stack });
+    if (qe) throw qe;
+    if (qn && qn.ok && Number.isFinite(Number(qn.total))) {
+      const now = Number(qn.total);
+      const worse = kind === 'buy' ? now > expect * 1.02 + 1 : now < expect * 0.98 - 1;
+      if (worse) return json({ error: 'price_changed', expected: expect, now }, 400);
+    }
+  }
   const { data, error } = await db.rpc('trade_market', { p_character: ch.id, p_location: loc, p_kind: kind, p_good: good, p_quantity: qty, p_stack: stack });
   if (error) throw error;
   if (data && data.ok) await tradeEvent(db, ch.id, loc, good, kind, stack, data);
