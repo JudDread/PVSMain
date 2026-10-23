@@ -189,7 +189,7 @@ export function defaultLoc() {
 const pickStyle = document.createElement('style');
 pickStyle.textContent = '.lptag{display:inline-flex;align-items:center;gap:4px}.lpship{display:inline-flex}.lpship svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}';
 document.head.appendChild(pickStyle);
-const SHIP_SVG = '<svg viewBox="0 0 24 24"><path d="M12 2c3 3 4 7 4 11l3 4-4 .5L12 21l-3-3.5-4-.5 3-4c0-4 1-8 4-11z"/><circle cx="12" cy="9.5" r="1.6"/></svg>';
+export const SHIP_SVG = '<svg viewBox="0 0 24 24"><path d="M12 2c3 3 4 7 4 11l3 4-4 .5L12 21l-3-3.5-4-.5 3-4c0-4 1-8 4-11z"/><circle cx="12" cy="9.5" r="1.6"/></svg>';
 function tagNode(text) {
   const n = el('span', 'lptag');
   let t = String(text || '');
