@@ -126,5 +126,14 @@ $('pic').onclick = () => { if (S.last && S.last.character) openScreen('profile')
 $('enitem').onclick = () => { S.enTimer = !S.enTimer; setShipLine(); };   /* tap the endurance bar: time until full on / off */
 $('evline').onclick = () => { const l = $('evs'); l.hidden = !l.hidden; $('evcaret').textContent = l.hidden ? '+' : '-'; };   /* tap the event line: full list on / off */
 
-setInterval(() => { if (S.last && S.sb) refresh(); }, 15000);
+/* POLLING (free tier: every open page costs function calls). Hidden tab / screen off = no polling, one refresh when you come back.
+   No touch for 5 minutes = one refresh a minute instead of every 15 s. A trip that arrives still refreshes at once (see tick). */
+let lastTouch = Date.now(), idleBeat = 0;
+['pointerdown', 'keydown'].forEach(ev => addEventListener(ev, () => { lastTouch = Date.now(); }, { passive: true }));
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.last && S.sb) refresh(); });
+setInterval(() => {
+  if (!(S.last && S.sb) || document.hidden) return;
+  if (Date.now() - lastTouch > 300000 && ++idleBeat % 4) return;
+  refresh();
+}, 15000);
 init();
