@@ -18,6 +18,24 @@ let mode = null;                       /* in flight only: null (a picked destina
 let thrustG = 3;                       /* the slider value (game g); the server decides if it is allowed */
 let thrustBox = null, thrustIn = null, thrustTxt = null, thrustArea = null, loadTimer = null;
 let ctlBox = null; const ctlBtn = {};
+/* time left on the CURRENT trip: shown at the right under the map (in #actr), the same number the Launch / Confirm button shows when the current destination is picked.
+   tripEndMs = the real clock time of arrival, worked out from the destination list each time it loads. Once the thrust slider is moved the list shows a
+   PROPOSAL, so tripEndMs is then left alone (thrustTouched) until a course is confirmed or the ship docks. */
+let etaEl = null, tripEndMs = null, thrustTouched = false;
+function drawEta() {
+  const box = $('actr'); if (!box) return;
+  const show = isFlying() && deps && deps.dest && tripEndMs != null;
+  if (!etaEl) {
+    etaEl = document.createElement('span');
+    etaEl.style.cssText = 'align-self:center;margin-left:auto;text-align:right;font-size:14px;color:#9fd4ff;white-space:nowrap';
+    box.appendChild(etaEl);
+  }
+  if (!SHOW_FLIGHT_BUTTONS) box.hidden = !show;               /* with the three buttons on, drawControls() looks after the box */
+  etaEl.hidden = !show;
+  if (!show) return;
+  const left = Math.round((tripEndMs - Date.now()) / 1000);
+  etaEl.textContent = left > 0 ? 'Arrives in ' + fmt(left) : 'Arriving...';
+}
 
 /* the ship, if it is NOT docked (traveling, hopping or drifting) */
 const flyingShip = () => { const s = S.last && (S.last.ships || [])[0]; return s && s.state !== 'docked' ? s : null; };
@@ -44,6 +62,7 @@ function ensureThrust(maxG) {
     thrustIn.type = 'range'; thrustIn.min = '0'; thrustIn.step = '1';
     thrustIn.oninput = () => {
       thrustG = thrustStops[Number(thrustIn.value)] ?? thrustG;
+      thrustTouched = true;                                   /* the list now shows a proposal, not the real trip */
       /* in flight, moving the slider with nothing picked proposes the SAME destination at the new thrust */
       if (isFlying() && !selected && !mode && deps.dest) selected = deps.dest;
       if (isFlying() && mode && mode !== 'go') mode = null;
@@ -90,7 +109,7 @@ function drawControls() {
   ctlBtn.hold.disabled = !deps.dest;                          /* nothing to hold toward while drifting */
   Object.entries(ctlBtn).forEach(([m, b]) => b.className = mode === m ? 'on' : 'alt');
 }
-function drawAll() { drawThrust(); drawControls(); drawDeps(); map.need(); }
+function drawAll() { drawThrust(); drawControls(); drawDeps(); drawEta(); map.need(); }
 
 /* ---------- destination list (docked: departures; in flight: course options from where the ship is now) ---------- */
 async function loadDeps() {
@@ -100,7 +119,13 @@ async function loadDeps() {
   const fl = !!flyingShip();
   try {
     deps = await call(fl ? 'course_options' : 'departures', { g: asked }); depsAt = Date.now();
-    ensureThrust(deps.max_g || 3); ensureControls(); drawAll();
+    ensureThrust(deps.max_g || 3); ensureControls();
+    if (!fl) { tripEndMs = null; thrustTouched = false; }
+    else if (!thrustTouched && deps.dest) {                   /* the current destination's time, as the Confirm button would show it */
+      const cur = (deps.departures || []).find(x => x.id === deps.dest);
+      if (cur) tripEndMs = depsAt + Number(cur.eta_real_minutes) * 60000;
+    }
+    drawAll();
   }
   catch (e) {
     if (e.message === 'bad_thrust' && e.data && e.data.max_g) { ensureThrust(e.data.max_g); }   /* snaps the slider down to the highest allowed stop */
@@ -357,6 +382,7 @@ $('go').onclick = async () => {
         '. Trip takes ' + r.duration_real_minutes.toFixed(1) + ' real minutes.' +
         (r.sun_danger ? ' WARNING: passes close to the Sun.' : ''), 'ok');
     }
+    thrustTouched = false; tripEndMs = null;
     deps = null; selected = null; mode = null; depsOpen = false; showDeps(); drawAll();   /* a launched trip closes the list */
     await S.refresh();
   } catch (e) {
@@ -367,4 +393,6 @@ $('go').onclick = async () => {
 
 /* called by main.js */
 export function invalidateDeps() { deps = null; }                      /* ETAs changed (game speed): fetch them again */
-export function resetFly() { deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; }   /* log out */
+export function resetFly() { tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; }   /* log out */
+
+setInterval(drawEta, 1000);                                     /* the countdown ticks once a second (does nothing unless the ship is flying) */
