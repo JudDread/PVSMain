@@ -16,6 +16,24 @@ async function applyEffects(db, characterId, quest, event) {
   throw new Error('quest_effects_failed');
 }
 
+// Missions that refuse to start unless the flown ship has a weapon fitted (a rig of kind 'weapon' in a weapon slot).
+// To give another mission the same check, add its id here.
+const NEEDS_WEAPON = ['esc_1'];
+
+// true when the pilot's active ship has at least one fitted rig whose kind is 'weapon'.
+async function hasWeaponFitted(db, characterId) {
+  const { data: c, error: e1 } = await db.from('characters').select('active_ship_id').eq('id', characterId).maybeSingle();
+  if (e1) throw e1;
+  if (!c || !c.active_ship_id) return false;
+  const { data: fitted, error: e2 } = await db.from('ship_rigs').select('rig_id').eq('ship_id', c.active_ship_id);
+  if (e2) throw e2;
+  const ids = (fitted || []).map((r) => r.rig_id);
+  if (ids.length === 0) return false;
+  const { data: weapons, error: e3 } = await db.from('rigs').select('id').in('id', ids).eq('kind', 'weapon');
+  if (e3) throw e3;
+  return (weapons || []).length > 0;
+}
+
 // Everything the Missions screen needs (also starts any mission that is due).
 // chains = the open cards, quests = the pilot's missions (each has its chain), ready = rewards waiting, new = missions not looked at yet.
 export async function missionsView(db, user) {
@@ -45,6 +63,9 @@ export async function missionStep(db, user, body) {
 export async function missionAccept(db, user, body) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
+  if (NEEDS_WEAPON.includes(String(body.quest ?? '')) && !(await hasWeaponFitted(db, ch.id))) {
+    return json({ error: 'no_weapon', message: 'This mission needs a weapon. Fit one in a weapon slot on the Rigging screen, then come back.' }, 409);
+  }
   const { data, error } = await db.rpc('quest_accept', { p_character: ch.id, p_quest: String(body.quest ?? '') });
   if (error) throw error;
   if (!data.ok) return json({ error: data.error }, 409);
