@@ -93,6 +93,16 @@ async function act(action, q, btn, okText) {
     if (okText) say(okText, 'ok');
     if (S.refresh) await S.refresh();   /* credits, XP and the tab dot */
   } catch (e) {
+    if (/needs a weapon/i.test(e.message || '')) {   /* no weapon fitted: explain in a message box with an OK button (the red bar if the box cannot open) */
+      try {
+        const co = await import('coach');
+        co.modal({ kicker: 'Mission', title: 'Weapon needed', paras: [
+          'This mission is a combat mission, and your ship has no weapon fitted.',
+          'Fit one in a weapon slot on the Rigging screen, then come back and accept the mission.'
+        ], buttons: [{ label: 'OK', onClick: co.closeModal }] });
+        return;
+      } catch (e2) { /* fall through to the red bar */ }
+    }
     say(e.message === 'not_ready' ? 'That mission is not finished yet.' : e.message === 'not_offered' ? 'That mission is not waiting for you any more.' : 'Error: ' + e.message, 'err');
   } finally { busy = false; await load(); }
 }
