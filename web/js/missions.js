@@ -93,7 +93,7 @@ async function act(action, q, btn, okText) {
     if (okText) say(okText, 'ok');
     if (S.refresh) await S.refresh();   /* credits, XP and the tab dot */
   } catch (e) {
-    if (/needs a weapon/i.test(e.message || '')) {   /* no weapon fitted: explain in a message box with an OK button (the red bar if the box cannot open) */
+    if (/needs a weapon|no[ _]weapon/i.test(e.message || '')) {   /* no weapon fitted: explain in a message box with an OK button (the red bar if the box cannot open) */
       try {
         const co = await import('coach');
         co.modal({ kicker: 'Mission', title: 'Weapon needed', paras: [
