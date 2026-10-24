@@ -95,7 +95,7 @@ async function act(action, q, btn, okText) {
   } catch (e) {
     if (/needs a weapon|no[ _]weapon/i.test(e.message || '')) {   /* no weapon fitted: explain in a message box with an OK button (the red bar if the box cannot open) */
       try {
-        const co = await import('coach');
+        let co; try { co = await import('coach'); } catch (x) { co = await import('./coach.js'); }   /* the import-map name first, then the file next to this one */
         co.modal({ kicker: 'Mission', title: 'Weapon needed', paras: [
           'This mission is a combat mission, and your ship has no weapon fitted.',
           'Fit one in a weapon slot on the Rigging screen, then come back and accept the mission.'
