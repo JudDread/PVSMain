@@ -64,7 +64,7 @@ export async function missionAccept(db, user, body) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
   if (NEEDS_WEAPON.includes(String(body.quest ?? '')) && !(await hasWeaponFitted(db, ch.id))) {
-    return json({ error: 'no_weapon', message: 'This mission needs a weapon. Fit one in a weapon slot on the Rigging screen, then come back.' }, 409);
+    return json({ error: 'This mission needs a weapon. Fit one in a weapon slot on the Rigging screen, then come back.' }, 409);   // the page's red bar shows the 'error' text, so the sentence goes there
   }
   const { data, error } = await db.rpc('quest_accept', { p_character: ch.id, p_quest: String(body.quest ?? '') });
   if (error) throw error;
