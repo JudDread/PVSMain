@@ -52,8 +52,7 @@ export const DEFAULTS = {
   class_step_pts: 20,      // accuracy points lost per class step (shooter bigger than target)
   laser_mob_mult: 0.5,     // lasers take this share of the target's mobility penalty
   hold_factor: 0.98,       // 'attack at MAX range' holds this share of the max range
-  follow_km: 100000,       // distance kept by the FOLLOW order
-  g_cap: 12,               // no ship thrusts above this (PENDING 6 may change it)
+  follow_km: 50000,        // distance kept by the FOLLOW order
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -180,7 +179,7 @@ export function activeStats(base, on = null, offline = false, cfg = DEFAULTS) {
     armor_repair: S('armor_repair_per_s'),
     pd: clamp(S('pd_chance_pct'), 0, 100),
     mobility: Math.max(0, H.mobility + S('maneuver_pct') / 100 + S('mobility_add')),
-    max_g: Math.min(cfg.g_cap, (H.max_g + S('thrust_g')) * (1 + S('max_g_pct') / 100)),
+    max_g: (H.max_g + S('thrust_g')) * (1 + S('max_g_pct') / 100),   // NO thrust cap (developer, 2026-10-24)
     free_g: P.free_g + S('free_g_add'),
     use_mult: Math.max(0, 1 + S('endurance_use_pct') / 100),
     rec_mult: Math.max(0, 1 + S('endurance_recovery_pct') / 100),
