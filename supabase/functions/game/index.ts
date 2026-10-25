@@ -16,16 +16,12 @@ import { profileView } from './profile.ts';
 import { rigsView, rigFit, rigUnfit, rigUnfitAll, facilitiesView, shipyardView, rigTrade, hullBuy, hullSell } from './rigs.ts';
 import { courseOptions, courseChange } from './course.ts';
 import { kickBots } from './bot.ts';
-import { combatZone, combatEnter, combatOrder, combatStance, combatModule, inCombat } from './combat.ts';
 
 // ---------- server ----------
 // Actions that count as the pilot DOING something: they set characters.last_action_at (the 'Last active' time on a profile).
 const ACTIVE_ACTIONS = new Set(['queue_travel', 'course_change', 'trade_at', 'load', 'unload', 'unload_all', 'freight_post', 'freight_cancel',
   'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'skill_buy', 'mission_accept', 'mission_claim',
-  'rig_fit', 'rig_unfit', 'rig_unfit_all', 'rig_buy', 'rig_sell', 'hull_buy', 'hull_sell',
-  'combat_enter', 'combat_order', 'combat_stance', 'combat_module']);
-// Actions refused while the flown ship is inside a combat zone (it must fly out of the zone first).
-const BLOCKED_IN_COMBAT = new Set(['queue_travel', 'load', 'unload', 'unload_all', 'ship_leave', 'ship_board', 'rig_fit', 'rig_unfit', 'rig_unfit_all']);
+  'rig_fit', 'rig_unfit', 'rig_unfit_all', 'rig_buy', 'rig_sell', 'hull_buy', 'hull_sell']);
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
 
 
@@ -258,7 +254,6 @@ Deno.serve(async (req) => {
   try {
     await loadClock(db);
     if (ACTIVE_ACTIONS.has(body.action)) await db.from('characters').update({ last_action_at: new Date().toISOString() }).eq('account_id', user.id);
-    if (BLOCKED_IN_COMBAT.has(body.action) && await inCombat(db, user)) return json({ error: 'in_combat', message: 'Your ship is in a combat zone. Fly out of the zone first.' }, 409);
     switch (body.action) {
       case 'me': kickBots(db); return await me(db, user); // bots take a turn in the background (bot.ts)
       case 'create_character': return await createCharacter(db, user, body);
@@ -304,11 +299,6 @@ Deno.serve(async (req) => {
       case 'rig_sell': return await rigTrade(db, user, body, 'sell');
       case 'hull_buy': return await hullBuy(db, user, body);
       case 'hull_sell': return await hullSell(db, user, body);
-      case 'combat_zone': return await combatZone(db, user);
-      case 'combat_enter': return await combatEnter(db, user);
-      case 'combat_order': return await combatOrder(db, user, body);
-      case 'combat_stance': return await combatStance(db, user, body);
-      case 'combat_module': return await combatModule(db, user, body);
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
