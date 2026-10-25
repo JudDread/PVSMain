@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Combat core test</title>
+<style>
+  body { background:#0b0f14; color:#d6e2ee; font:14px/1.4 system-ui,sans-serif; margin:0; padding:12px; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  .sum { margin:8px 0 12px; font-weight:600; }
+  .row { padding:6px 8px; border-bottom:1px solid #1c2733; }
+  .ok { color:#6fd08c; } .bad { color:#ff7b7b; }
+  small { color:#7b8ea3; display:block; }
+</style>
+</head>
+<body>
+<h1>Combat core test (shared/combat.js)</h1>
+<small>Each line compares the code with a number worked out by hand. Send me the red lines if any.</small>
+<div class="sum" id="sum">Running...</div>
+<div id="out"></div>
+
+<script type="module">
+import {
+  resolveBase, activeStats, newShip, advance, rangeAccuracy, hitChance,
+  heatEffectiveness, drainPerRealSec, dpsAt, DEFAULTS, G_KMS2
+} from '../shared/combat.js';
+
+// ---- real numbers copied from the database (hulls and rigs) ----
+const H = {
+  courier: { id:'courier', class:'Light', shields:200, armor:300, hull_points:200, mobility:0, max_g:6, power:100 },
+  interceptor: { id:'interceptor', class:'Light', shields:275, armor:275, hull_points:250, mobility:0.1, max_g:8, power:150 },
+  hauler: { id:'hauler', class:'Medium', shields:500, armor:450, hull_points:400, mobility:0, max_g:4, power:200 },
+  elite_hauler: { id:'elite_hauler', class:'Medium', shields:700, armor:600, hull_points:500, mobility:0, max_g:5, power:250 },
+};
+const W = (id, fam, tier, damage, reuse, heat, optR, maxR, optAcc, maxAcc, ammo) => ({
+  id, kind:'weapon', family:fam, tier, damage, reuse_sec:reuse, heat_per_sec:heat,
+  optimal_range_km:optR, max_range_km:maxR, optimal_accuracy:optAcc, max_accuracy:maxAcc, ammo:ammo ?? null, effects:{},
+});
+const E = (id, kind, heat, effects) => ({ id, kind, heat_per_sec:heat, effects });
+const R = {
+  railgun: W('rig_railgun','railgun','Light',15,4,20,240000,480000,0.9,0.3),
+  elite_laser: W('rig_elite_laser','laser','Light',20,4,81,330000,650000,0.98,0.65),
+  medium_laser: W('rig_medium_laser','laser','Medium',30,4,90,400000,700000,0.9,0.6),
+  missile: W('rig_missile_launcher','missile','Light',46,8,35,240000,480000,0.7,0.7,20),
+  armor: E('rig_armor_plating','engineering',0,{ armor_add:100 }),
+  radar: E('rig_radar_tracking','utility',10,{ railgun_accuracy_pct:15 }),
+  thrusters: E('rig_maneuvering_thrusters','engineering',10,{ maneuver_pct:10 }),
+  pd: E('rig_point_defense','engineering',8,{ pd_chance_pct:30 }),
+  magazine: E('rig_missile_magazine','utility',0,{ missile_ammo:15 }),
+  power: E('rig_power_amplifier','engineering',0,{ power_output:25 }),
+};
+const PILOT = { free_g:3, endurance_max:100, refill_flight_hour:20, ref_g:4, burn_hours_ref:1.5, burn_keep:1 };
+const base = (hull, rigs) => resolveBase({ hull:H[hull], rigs, pilot:PILOT });
+const ship = (id, side, hull, rigs, extra = {}) => newShip({ id, side, base: base(hull, rigs), ...extra });
+
+// ---- tiny test harness ----
+const rows = []; let bad = 0;
+function eq(name, got, want, tol = 1e-6) {
+  const ok = typeof want === 'number' ? Math.abs(got - want) <= tol : got === want;
+  if (!ok) bad++;
+  rows.push({ ok, text: `${name}: got ${typeof got === 'number' ? +got.toFixed(6) : got}, want ${want}` });
+}
+
+try {
+  // 1 stat resolver: Courier + Railgun + Armor Plating + Power Amplifier
+  let st = activeStats(base('courier', [R.railgun, R.armor, R.power]), null);
+  eq('1 shield', st.shield_max, 200);
+  eq('1 armor (300 + 100)', st.armor_max, 400);
+  eq('1 hull', st.hull_max, 200);
+  eq('1 max g', st.max_g, 6);
+  eq('1 heat capacity (power 125 x 45)', st.heatCap, 5625);
+  eq('1 cooling (125 x 0.65)', st.cooling, 81.25);
+
+  // 2 range accuracy of the Railgun
+  const rw = activeStats(base('courier', [R.railgun]), null).weapons[0];
+  eq('2 at optimal range', rangeAccuracy(rw, 240000), 0.9);
+  eq('2 inside optimal range', rangeAccuracy(rw, 100000), 0.9);
+  eq('2 halfway', rangeAccuracy(rw, 360000), 0.6);
+  eq('2 at max range', rangeAccuracy(rw, 480000), 0.3);
+  eq('2 beyond max range', rangeAccuracy(rw, 480001), 0);
+
+  // 3 the notes example: Medium shooter, Railgun + Radar Tracking, at optimal range,
+  //   target = Interceptor with Maneuvering Thrusters (mobility 0.2). 90 + 15 - 20 - 20 = 65
+  const sh = ship('a', 'players', 'hauler', [R.railgun, R.radar]);
+  const tg = ship('b', 'drones', 'interceptor', [R.thrusters]);
+  const sw = activeStats(sh.base, sh.on).weapons[0];
+  const tmob = activeStats(tg.base, tg.on).mobility;
+  eq('3 target mobility (0.1 + 0.1)', tmob, 0.2);
+  eq('3 hit chance (90+15-20-20)', hitChance(sw, 240000, tmob, 1), 0.65);
+  // lasers take half the mobility penalty: 90 - 10 - 20 = 60
+  const sh2 = ship('c', 'players', 'hauler', [R.medium_laser]);
+  eq('3 laser hit chance (90-10-20)', hitChance(activeStats(sh2.base, sh2.on).weapons[0], 400000, tmob, 1), 0.6);
+
+  // 4 heat effectiveness: 1 up to 80%, 0.6 at 99%, 0.8 halfway (89.5%)
+  eq('4 at 80%', heatEffectiveness(3600, 4500), 1);
+  eq('4 at 99%', heatEffectiveness(4455, 4500), 0.6);
+  eq('4 at 89.5%', heatEffectiveness(4027.5, 4500), 0.8);
+
+  // 5 endurance: 90 real seconds from a full bar -> 100/90 per real second
+  eq('5 drain per real second', drainPerRealSec(6, 100, PILOT, 1, 60), 100 / 90);
+
+  // 6 damage per second
+  const c1 = ship('c1', 'players', 'courier', [R.railgun]);
+  const c2 = ship('c2', 'drones', 'courier', []);
+  eq('6 Railgun DPS (15/4 x 0.9)', dpsAt(c1, c2, 100000).total, 3.375);
+  const m1 = ship('m1', 'players', 'courier', [R.missile]);
+  const c3 = ship('c3', 'drones', 'courier', [R.pd]);
+  eq('6 Missile vs Point Defense (46/8 x 0.7 x 0.7)', dpsAt(m1, c3, 100000).total, 2.8175);
+  eq('6 missile ammo (20 + 15 magazine)', base('courier', [R.missile, R.magazine]).ammo, 35);
+
+  // 7 one 5-second step: 16.875 damage, all on the shield
+  { const a = ship('a', 'players', 'courier', [R.railgun], { x:0, y:0 });
+    const b = ship('b', 'drones', 'courier', [], { x:100000, y:0 });
+    const r = advance([a, b], 5);
+    eq('7 target shield after 5 s (200 - 16.875)', r.ships[1].shield, 183.125);
+    eq('7 shooter heat (100 gained, 325 cooled, never below 0)', r.ships[0].heat, 0);
+    eq('7 events (one damage row)', r.events.filter(e => e.kind === 'damage').length, 1);
+  }
+
+  // 8 heat shutdown: Elite Laser (81 heat/s) on a Courier: +80 per step -> trips at step 57 (285 s)
+  { const a = ship('a', 'players', 'courier', [R.elite_laser], { x:0, y:0 });
+    const b = ship('b', 'drones', 'elite_hauler', [], { x:100000, y:0 });
+    let r = advance([a, b], 285);
+    eq('8 tripped at 285 s', r.ships[0].tripped, true);
+    eq('8 heat at the cap', r.ships[0].heat, 4500);
+    eq('8 shutdown timer', r.ships[0].shutdown_left, 15);
+    eq('8 target still alive', r.ships[1].alive, true);
+    r = advance(r.ships, 30);
+    eq('8 back online at 315 s', r.ships[0].tripped, false);
+    eq('8 heat after 6 cooling steps (4500 - 6 x 325)', r.ships[0].heat, 2550);
+  }
+
+  // 9 flee across the zone: 6 g from rest crosses 700000 km in about 81 real seconds
+  { const a = ship('a', 'players', 'courier', [], { x:100, y:0, stance:'full', order:{ kind:'flee' } });
+    const zone = { exit_km: 700000 };
+    let r = advance([a], 80, { zone });
+    eq('9 still inside at 80 s', r.ships[0].left, false);
+    r = advance(r.ships, 5, { zone });
+    eq('9 outside at 85 s', r.ships[0].left, true);
+  }
+
+  // 10 an emptied bar: 3 units left, 6 g wanted -> 2.7 s at 6 g then 2.3 s at 3 g
+  //   average 4.62 g -> speed 4.62 x 0.00980665 x 300 = 13.592017 km/s
+  { const a = ship('a', 'players', 'courier', [], { x:100, y:0, stance:'full', order:{ kind:'flee' }, endurance:3 });
+    const r = advance([a], 5);
+    eq('10 speed after 5 s', r.ships[0].vx, 4.62 * G_KMS2 * 300, 1e-6);
+    eq('10 bar emptied flag', r.ships[0].drained, true);
+    eq('10 bar after (refill 2.3 s x 1/3 per s)', r.ships[0].endurance, 2.3 * 20 * 60 / 3600, 1e-6);
+  }
+} catch (e) {
+  bad++; rows.push({ ok:false, text:'ERROR: ' + (e && e.stack || e) });
+}
+
+document.getElementById('sum').textContent = bad === 0 ? 'ALL PASS (' + rows.length + ' checks)' : bad + ' FAILED of ' + rows.length;
+document.getElementById('sum').className = 'sum ' + (bad === 0 ? 'ok' : 'bad');
+document.getElementById('out').innerHTML = rows.map(r => '<div class="row ' + (r.ok ? 'ok' : 'bad') + '">' + (r.ok ? 'PASS ' : 'FAIL ') + r.text.replace(/</g, '&lt;') + '</div>').join('');
+</script>
+</body>
+</html>
