@@ -10,6 +10,7 @@
 import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse, stopPlan, segmentEnd } from 'physics';
 import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow } from 'core';
 import { createMap } from 'map';
+import { zoneIn, zoneEnter, zoneShow, zoneCheck } from 'zone';
 
 const SHOW_FLIGHT_BUTTONS = false;     /* Hold the bar / Stop / Coast: not in the MVP. Set to true to bring the three buttons back. */
 let reveal = false;                    /* true right after a line is tapped: scroll so the Launch button under it is in view */
@@ -338,12 +339,21 @@ function drawZone(ship) {
     zoneBox.style.cssText = 'position:absolute;left:10px;right:10px;top:10px;z-index:5;padding:12px;border:1px solid #3a5a78;border-radius:8px;background:rgba(8,14,22,.95);color:#d7e4f0;font-size:14px;line-height:1.4';
     wrap.appendChild(zoneBox);
   }
-  if (zoneDismissed === l.id) { zoneBox.hidden = true; return; }
+  zoneCheck();                                                 /* already inside from an earlier visit? then zone.js opens its screen by itself */
+  const inside = zoneIn();
+  if (zoneDismissed === l.id && !inside) { zoneBox.hidden = true; return; }
   const title = document.createElement('div'); title.style.cssText = 'font-weight:bold;margin-bottom:6px'; title.textContent = l.name;
   const text = document.createElement('div'); text.textContent = l.info || 'This is where combat will happen.';
-  const ok = document.createElement('button'); ok.textContent = 'OK'; ok.style.marginTop = '10px';
+  const enter = document.createElement('button'); enter.textContent = inside ? 'Return to the zone' : 'Enter the zone'; enter.style.marginTop = '10px';
+  enter.onclick = async () => {
+    enter.disabled = true;
+    try { if (inside) await zoneShow(); else await zoneEnter(); }
+    catch (e) { say('Error: ' + ((e.data && e.data.message) || e.message), 'err'); }
+    finally { enter.disabled = false; }
+  };
+  const ok = document.createElement('button'); ok.textContent = 'Not now'; ok.className = 'alt'; ok.style.marginTop = '10px';
   ok.onclick = () => { zoneDismissed = l.id; zoneBox.hidden = true; };
-  zoneBox.replaceChildren(title, text, ok);
+  zoneBox.replaceChildren(...(inside ? [title, text, enter] : [title, text, enter, ok]));
   zoneBox.hidden = false;
 }
 
