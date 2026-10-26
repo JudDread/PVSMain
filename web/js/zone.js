@@ -13,7 +13,7 @@ const POLL_MS = 5000;
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
 let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null;
-let cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
+let lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
@@ -125,6 +125,7 @@ function grouped(list) {                                // ['RAIL','RAIL','LAS']
   const n = new Map(); list.forEach(x => n.set(x, (n.get(x) || 0) + 1));
   return [...n].map(([k, c]) => c > 1 ? k + 'x' + c : k).join(' ') || 'none';
 }
+const ammoLabel = a => a < 0.05 ? 'no ammo' : 'ammo ' + Math.round(a);
 const ORDER_NAME = { attack_max: 'Attack: long range', attack_opt: 'Attack: best range', follow: 'Follow', stop: 'Stop', flee: 'Flee', heading: 'Thrust on a heading' };
 
 /* where a ship is drawn NOW: its last picture moved along speed and acceleration, plus the part of the last correction still fading out */
@@ -283,6 +284,8 @@ function apply(v) {
   view = v; recv = Date.now(); lastMe = v.me.id;
   trackMotion(v);
   newEvents(v);
+  if (lastAmmo !== null && lastAmmo >= 0.05 && v.me.ammo < 0.05 && (v.me.modules || []).some(x => x.family === 'missile')) toast('Out of missiles. The launchers are switched off.', true);
+  lastAmmo = v.me.ammo;
   if (zoomMode === 2 && !targetShip()) setZoom(1);
   if (bgZone !== v.zone.id) {                                   // a picture for this zone, if the files exist (a missing file simply shows nothing)
     bgZone = v.zone.id;
@@ -296,7 +299,7 @@ function apply(v) {
 }
 function closeZone(v) {
   const was = !!view;
-  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = '';
+  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = ''; lastAmmo = null;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
@@ -380,7 +383,7 @@ function heatInfo() {
   let gen = 0;
   (m.modules || []).forEach(mod => {
     if (!mod.on || !mod.heat) return;
-    const isW = mod.kind === 'weapon', firing = isW ? (m.dps_list || []).some(d => d.id === mod.id && d.dps > 0) : true;
+    const isW = mod.kind === 'weapon', firing = isW ? (m.dps_list || []).some(d => d.id === mod.id && d.dps > 0) && !(mod.family === 'missile' && m.ammo < 0.05) : true;
     list.push({ name: mod.name, heat: mod.heat, note: isW ? (firing ? 'firing now' : 'only while firing') : 'always on', active: firing });
     if (firing) gen += mod.heat;
   });
@@ -505,6 +508,7 @@ function modKeys(mods) { const seen = {}; return mods.map(m => { seen[m.id] = (s
 function renderModChips() {
   const mods = view.me.modules || [], keys = modKeys(mods), saved = loadOrder();
   const idx = mods.map((m, i) => i).sort((a, b) => { const A = saved.indexOf(keys[a]), B = saved.indexOf(keys[b]); return (A < 0 ? 999 + a : A) - (B < 0 ? 999 + b : B); });
+  R.bot.querySelectorAll('.zsq[data-fam="missile"] .zd').forEach(d => { d.textContent = ammoLabel(view.me.ammo); });      // the ammo number follows the fight
   const sig = idx.map(i => keys[i] + (mods[i].on ? '1' : '0')).join(',');
   if (sig === modSig) return;
   modSig = sig; R.bot.replaceChildren();
@@ -514,7 +518,8 @@ function renderModChips() {
 function makeModChip(m, key) {
   const b = el('button', 'zsq' + (m.on ? '' : ' off')); b.innerHTML = modIcon(m); b.dataset.key = key;
   b.style.color = FAM[m.family] || '#cfd8ea'; b.style.borderColor = m.on ? '#e8b64a' : '#445';
-  b.appendChild(el('div', 'zd', m.heat ? m.heat + '/s' : (m.on ? 'ON' : 'OFF')));
+  b.dataset.fam = m.family || '';
+  b.appendChild(el('div', 'zd', m.family === 'missile' ? ammoLabel(view.me.ammo) : (m.heat ? m.heat + '/s' : (m.on ? 'ON' : 'OFF'))));
   let timer = 0, long = false, dragging = false, x0 = 0;
   b.onpointerdown = ev => {
     ev.stopPropagation(); b.setPointerCapture(ev.pointerId); x0 = ev.clientX; long = false; dragging = false;
@@ -532,7 +537,10 @@ function makeModChip(m, key) {
       const place = sibs.filter(x => { const r = x.getBoundingClientRect(); return r.left + r.width / 2 > ev.clientX; }).length;   // how many chips are further right
       const keys = sibs.map(x => x.dataset.key); keys.splice(place, 0, key);
       saveOrder(keys); b.style.transform = ''; modSig = ''; renderModChips();
-    } else if (!long && ev.type === 'pointerup') send('combat_module', { index: m.i, on: !m.on });
+    } else if (!long && ev.type === 'pointerup') {
+      if (!m.on && m.family === 'missile' && view.me.ammo < 0.05) toast('No ammo.', true);
+      else send('combat_module', { index: m.i, on: !m.on });
+    }
     long = dragging = false;
   };
   b.onpointerup = done; b.onpointercancel = done;
