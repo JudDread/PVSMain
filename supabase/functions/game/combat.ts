@@ -111,6 +111,15 @@ function spawnAngle(R, others, seed) {
   return best;
 }
 
+// Out of missiles: switch the launchers off (nothing is spent and no heat is made while they are off)
+function missilesOff(s) {
+  if (!(s.base.ammo > 0) || s.ammo >= 0.01) return;
+  const mods = s.base.modules, on = Array.isArray(s.on) ? s.on.slice() : [];
+  while (on.length < mods.length) on.push(1);
+  mods.forEach((m, i) => { if (m.family === 'missile') on[i] = 0; });
+  s.on = on;
+}
+
 // ---------- working a zone forward ----------
 // Claims the zone (SQL combat_zone_claim), works every ship forward to now, stores the result, handles ships that
 // died or left. Returns {zone, cfg, pilotCfg}; null when the place has no zone.
@@ -169,6 +178,7 @@ async function advanceZone(db, ctx, nowMs) {
 
   for (const s of res.ships) {
     if (s.alive && !s.left) {
+      missilesOff(s);
       const { error: ue } = await db.from('combat_ships').update(rowPatch(s, nowMs)).eq('id', s.id);
       if (ue) throw ue;
       continue;
@@ -269,6 +279,8 @@ async function buildView(db, ctx, myShipId) {
       dist_km: Math.round(dist(me, s)),
       shield: r3(st.shield_max > 0 ? s.shield / st.shield_max : 0), armor: r3(st.armor_max > 0 ? s.armor / st.armor_max : 0), hull: r3(st.hull_max > 0 ? s.hull / st.hull_max : 0),
       sh: Math.round(s.shield), ar: Math.round(s.armor), hu: Math.round(s.hull),
+      weapons: st.weapons.map((w) => ({ fam: w.fam, opt_km: Math.round(w.optR), max_km: Math.round(w.maxR) })),
+      mods: s.base.modules.map((m) => ({ n: m.name, k: m.kind, f: m.family || null })),
       tripped: s.tripped,
     };
   }).sort((a, b) => a.dist_km - b.dist_km);
@@ -478,6 +490,7 @@ export async function combatModule(db, user, body) {
     const on = Array.isArray(row.modules) ? row.modules.slice() : [];
     const n = row.stats && Array.isArray(row.stats.modules) ? row.stats.modules.length : 0;
     if (index >= n) return { err: refuse('bad_module', 'No such module.') };
+    if (body.on && row.stats.modules[index].family === 'missile' && num(row.ammo) < 0.01) return { err: refuse('no_ammo', 'No ammo.') };
     while (on.length < n) on.push(1);
     on[index] = body.on ? 1 : 0;
     const { error } = await db.from('combat_ships').update({ modules: on }).eq('id', row.id);
