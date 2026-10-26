@@ -41,7 +41,7 @@ function fromRow(r) {
     shield: num(r.shield), armor: num(r.armor), hull: num(r.hull), heat: num(r.heat),
     tripped: !!r.tripped, shutdown_left: left, ammo: num(r.ammo), endurance: num(r.endurance), drained: !!r.drained,
     stance: r.burn_stance || 'economy', targetId: r.target_id || null,
-    order: { kind: r.order_kind || 'stop', hold_km: r.hold_km == null ? null : num(r.hold_km) },
+    order: { kind: r.order_kind || 'stop', hold_km: r.hold_km == null ? null : num(r.hold_km), dir_deg: r.order_dir == null ? null : num(r.order_dir) },
     alive: true, left: false, ship_id: r.ship_id || null, drone_type: r.drone_type || null,
   };
 }
@@ -50,7 +50,7 @@ function rowPatch(s, snapMs) {
     x_km: s.x, y_km: s.y, vx_kms: s.vx, vy_kms: s.vy,
     shield: s.shield, armor: s.armor, hull: s.hull, heat: s.heat,
     tripped: s.tripped, shutdown_until: s.tripped ? new Date(snapMs + s.shutdown_left * 1000).toISOString() : null,
-    ammo: s.ammo, target_id: s.targetId, order_kind: s.order.kind, hold_km: s.order.hold_km ?? null,
+    ammo: s.ammo, target_id: s.targetId, order_kind: s.order.kind, hold_km: s.order.hold_km ?? null, order_dir: s.order.dir_deg ?? null,
     burn_stance: s.stance, modules: s.on, endurance: s.endurance, drained: s.drained,
     snap_at: new Date(snapMs).toISOString(),
   };
@@ -268,6 +268,7 @@ async function buildView(db, ctx, myShipId) {
       x: Math.round(s.x), y: Math.round(s.y), vx: r3(s.vx), vy: r3(s.vy),
       dist_km: Math.round(dist(me, s)),
       shield: r3(st.shield_max > 0 ? s.shield / st.shield_max : 0), armor: r3(st.armor_max > 0 ? s.armor / st.armor_max : 0), hull: r3(st.hull_max > 0 ? s.hull / st.hull_max : 0),
+      sh: Math.round(s.shield), ar: Math.round(s.armor), hu: Math.round(s.hull),
       tripped: s.tripped,
     };
   }).sort((a, b) => a.dist_km - b.dist_km);
@@ -281,7 +282,8 @@ async function buildView(db, ctx, myShipId) {
       id: me.id, side: me.side, x: Math.round(me.x), y: Math.round(me.y), vx: r3(me.vx), vy: r3(me.vy),
       shield: Math.round(me.shield), shield_max: Math.round(ss.shield_max), armor: Math.round(me.armor), armor_max: Math.round(ss.armor_max),
       hull: Math.round(me.hull), hull_max: Math.round(ss.hull_max),
-      heat: r1(me.heat), heat_cap: r1(ss.heatCap), tripped: me.tripped, shutdown_left: r1(me.shutdown_left),
+      heat: r1(me.heat), heat_cap: r1(ss.heatCap), heat_cool: r1(ss.cooling), heat_warn: cfg.heat_eff_start, heat_resume: cfg.resume_frac,
+      eng_k: r3(cfg.heat_g_per_power * ss.power), eng_thr: r1(Math.max(cfg.heat_thrust_g, ss.free_g)), tripped: me.tripped, shutdown_left: r1(me.shutdown_left),
       ammo: r1(me.ammo), endurance: r1(me.endurance), endurance_max: me.base.pilot.endurance_max, drained: me.drained,
       stance: me.stance, order: me.order, target_id: me.targetId, max_g: r1(ss.max_g), free_g: r1(ss.free_g),
       hps: r1(hpsOf(me, cfg)), dps: r1(dps.total), dps_list: dps.list.map((d) => ({ id: d.id, acc: r3(d.acc), dps: r1(d.dps) })),
@@ -381,7 +383,7 @@ export async function combatEnter(db, user) {
   const players = (existing ?? []).filter((r) => r.ship_id).map((r) => ({ x: num(r.x_km), y: num(r.y_km) }));
   const ang = spawnAngle(R, players, ship.id);
   const id = crypto.randomUUID();
-  const me = newShip({ id, side: 'players', base, x: R * Math.cos(ang), y: R * Math.sin(ang), endurance: pilot.bar, stance: 'economy', order: { kind: 'stop' }, cfg });
+  const me = newShip({ id, side: 'players', base, x: R * Math.cos(ang), y: R * Math.sin(ang), endurance: pilot.bar, stance: 'full', order: { kind: 'stop' }, cfg });
   const nowIso = new Date(nowMs).toISOString();
   const toInsert = (s, extra) => ({
     id: s.id, zone_id: zone.location_id, side: s.side, entered_at: nowIso, snap_at: nowIso,
@@ -435,15 +437,24 @@ export async function combatOrder(db, user, body) {
     hold = Number(body.hold_km);
     if (!Number.isFinite(hold) || hold < 1) return json({ error: 'bad_request' }, 400);
   }
+  let dir = null;
+  if (kind === 'heading') {                                   // thrust on a heading in degrees (0 = right on the map, 90 = down, as drawn)
+    dir = Number(body.dir_deg);
+    if (!Number.isFinite(dir)) return json({ error: 'bad_request' }, 400);
+    dir = ((dir % 360) + 360) % 360;
+  }
   const target = body.target ? String(body.target) : null;
   if (target && !UUID_RE.test(target)) return json({ error: 'bad_request' }, 400);
   return await command(db, user, async (row, ctx) => {
-    const patch = { order_kind: kind, order_at: new Date().toISOString(), hold_km: kind === 'stop' || kind === 'flee' ? null : hold };
+    const own = kind === 'stop' || kind === 'flee' || kind === 'heading';
+    const patch = { order_kind: kind, order_at: new Date().toISOString(), hold_km: own ? null : hold, order_dir: kind === 'heading' ? dir : null };
     if (hold != null && hold > num(ctx.zone.exit_radius_km)) return { err: refuse('bad_distance', 'That distance is larger than the zone.') };
-    if (target) {
+    if (target && !own) {
       const { data: t, error } = await db.from('combat_ships').select('id,side,zone_id').eq('id', target).maybeSingle();
       if (error) throw error;
       if (!t || t.zone_id !== row.zone_id || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
+      if (kind === 'follow' && t.side !== row.side) return { err: refuse('bad_target', 'You can only follow a friendly ship.') };
+      if (kind !== 'follow' && t.side === row.side) return { err: refuse('bad_target', 'You cannot attack a friendly ship.') };
       patch.target_id = t.id;
     }
     const { error } = await db.from('combat_ships').update(patch).eq('id', row.id);
