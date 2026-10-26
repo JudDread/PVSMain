@@ -32,7 +32,7 @@
 
 export const G_KMS2 = 9.80665 / 1000;             // km/s^2 per g
 export const CLASS_RANK = { Pod: 0, Light: 1, Medium: 2, Heavy: 3, Super: 4 };
-export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee'];
+export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee', 'heading'];
 export const STANCES = ['free', 'economy', 'full'];
 
 // Effect keys that always apply (they are not switched with a module).
@@ -324,6 +324,10 @@ function guide(s, tgt, ss, cfg, dtG) {
     if (n > 1) { ex = s.x / n; ey = s.y / n; }
     else if (tgt) { const d = dist(s, tgt) || 1; ex = (s.x - tgt.x) / d; ey = (s.y - tgt.y) / d; }
     return { dx: ex, dy: ey, gCmd: ss.max_g, closing: false };
+  }
+  if (kind === 'heading') {            // step 4: thrust on a compass heading (order.dir_deg), no braking, until another order replaces it
+    const ang = ((s.order && s.order.dir_deg) || 0) * Math.PI / 180;
+    return { dx: Math.cos(ang), dy: Math.sin(ang), gCmd: ss.max_g, closing: true };
   }
   let ux = 0, uy = 0, closing = false;
   if (kind !== 'stop' && tgt) {
