@@ -13,7 +13,7 @@ const POLL_MS = 5000;
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
 let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null;
-let cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null;
+let cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
@@ -273,6 +273,11 @@ function apply(v) {
   trackMotion(v);
   newEvents(v);
   if (zoomMode === 2 && !targetShip()) setZoom(1);
+  if (bgZone !== v.zone.id) {                                   // a picture for this zone, if the files exist (a missing file simply shows nothing)
+    bgZone = v.zone.id;
+    root.style.backgroundImage = "url('img/zone_" + v.zone.id + ".webp'), url('img/zone_bg.webp')";
+    root.style.backgroundSize = 'cover'; root.style.backgroundPosition = 'center';
+  }
   if (!cam) fitCam();
   if (pending && orderActive(pending.kind, pending.id)) { R.menu.hidden = true; menuFor = null; pending = null; }     // the order is active: the menu goes
   if (!root.hidden || !away) { root.hidden = false; if (!pollT) startTimers(); }
@@ -280,7 +285,7 @@ function apply(v) {
 }
 function closeZone(v) {
   const was = !!view;
-  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0;
+  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = '';
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
@@ -451,7 +456,7 @@ function menuItems(id) {
 }
 function buildMenu() {
   const d = view && menuFor && menuItems(menuFor);
-  if (!d) { R.menu.hidden = true; menuFor = null; return; }
+  if (!d) { R.menu.hidden = true; menuFor = null; return false; }
   const rows = [el('div', 'zh', d.title)];
   d.items.forEach(([k, label]) => {
     const wait = pending && pending.kind === k && pending.id === menuFor;
@@ -460,6 +465,7 @@ function buildMenu() {
     rows.push(b);
   });
   R.menu.replaceChildren(...rows);
+  return true;
 }
 function pickShip(id, px, py) {                                 // a tap on a chip or on a ship on the map
   if (!view) return;
@@ -467,7 +473,7 @@ function pickShip(id, px, py) {                                 // a tap on a ch
   closeMenus();
   const isMe = id === view.me.id;
   if (!isMe) sel = id;
-  menuFor = id; buildMenu(); if (R.menu.hidden) return;
+  menuFor = id; if (!buildMenu()) return;
   R.menu.hidden = false;
   if (isMe) placeAt(R.menu, px, py); else placeBelow(R.menu, chips.get(id).w);
   frame(true);
@@ -613,6 +619,24 @@ function frame(full) {
   drawMap();
 }
 
+/* a drawn background: soft colored clouds and stars, made once per screen size (25% larger than the screen so it can drift) */
+function makeBg(W, H) {
+  const w = Math.round(W * 1.25), h = Math.round(H * 1.25), c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  let seed = 20261026; const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  [['70,50,150', 0.20], ['30,90,150', 0.16], ['120,40,110', 0.12], ['40,120,120', 0.10], ['90,60,160', 0.12]].forEach(([rgb, a]) => {
+    const x = rnd() * w, y = rnd() * h, r = (0.25 + rnd() * 0.3) * Math.max(w, h), gr = g.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, 'rgba(' + rgb + ',' + a + ')'); gr.addColorStop(1, 'rgba(' + rgb + ',0)');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  });
+  const tints = ['255,255,255', '200,220,255', '255,240,210'];
+  for (let i = 0; i < 260; i++) {
+    g.fillStyle = 'rgba(' + tints[Math.floor(rnd() * 3)] + ',' + (0.25 + rnd() * 0.65).toFixed(2) + ')';
+    g.beginPath(); g.arc(rnd() * w, rnd() * h, 0.4 + rnd() * rnd() * 1.6, 0, 7); g.fill();
+  }
+  return c;
+}
+
 function drawMap() {
   if (!view || !R.cv) return;
   const cv = R.cv, dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
@@ -623,6 +647,9 @@ function drawMap() {
   if (zoomMode === 1) { const p = P(view.me); cam.cx = p.x; cam.cy = p.y; }               // 'Me' and 'Target' follow their ship
   else if (zoomMode === 2) { const t = targetShip(); if (t) { const p = P(t); cam.cx = p.x; cam.cy = p.y; } else setZoom(1); }
   const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
+  if (!bgc || bgW !== W || bgH !== H) { bgc = makeBg(W, H); bgW = W; bgH = H; }
+  const lim = (v, a) => Math.max(-a, Math.min(a, v));
+  c.drawImage(bgc, -W * 0.125 - lim(cam.cx * cam.k * 0.04, W * 0.12), -H * 0.125 - lim(cam.cy * cam.k * 0.04, H * 0.12));     // the star field drifts slowly when the map moves
   const m = view.me, mp = P(m), exit = view.zone.exit_km, k = cam.k;
   // the zone edge (red when close to it)
   const near = Math.hypot(mp.x, mp.y) > 0.9 * exit, o = toScr(0, 0);
