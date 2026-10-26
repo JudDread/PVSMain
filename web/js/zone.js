@@ -1,68 +1,79 @@
-// zone.js - the combat zone screen (COMBAT MVP step 4b, second version).
+// zone.js - the combat zone screen (COMBAT MVP step 4b, third version).
 // One frame that fills the screen. The MAP fills all of it; everything else sits on top of the map:
-//   top left   = settings button          left edge = your shield / armor / hull (+ heat, endurance) as thin vertical bars
-//   top right  = the other ships as square chips (nearest at the right edge), 3 small bars under each
-//   bottom     = your modules as square chips (first at the right edge): tap = on/off, hold = info, hold and slide = reorder
-// Touch the map: one finger moves it, two fingers zoom it, a tap on a ship opens that ship's order menu.
-// The page only DISPLAYS what the server says and REQUESTS orders. Between answers the dots move along their speed (display only).
+//   top left     = settings (gear)            left edge, low = your shield / armor / hull as thin vertical bars
+//   top right    = the other ships as square chips (nearest at the right edge), 3 small bars under each
+//   right middle = zoom chip, endurance chip, heat chip      bottom right = your modules as square chips
+// Touch the map: one finger moves it, two fingers zoom it, a tap on a ship opens its menu, a DOUBLE tap on empty map thrusts that way.
+// The page only DISPLAYS what the server says and REQUESTS orders. Between answers every ship is moved along its speed AND its estimated
+// acceleration, and each new answer is blended in over a moment, so the motion stays smooth at the screen's full speed.
 // Server actions used: combat_zone, combat_enter, combat_order, combat_stance, combat_module.
 import { S, call, whole, el, say } from 'core';
 
 const POLL_MS = 5000;
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
-let view = null, recv = 0, root = null, pollT = 0, animT = 0, busy = false, tick = 0;
-let sel = null, menuFor = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null;
-let cam = null, cw = 0, ch = 0, modSig = '';
+let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
+let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null;
+let cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null;
 const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
-const prevV = new Map(), acc = new Map(), head = new Map();   // per ship: last velocity, estimated acceleration, last heading
+const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
 let pops = [];                                 // damage numbers { id, text, born }
 const ptrs = new Map();                        // fingers on the map
 
 const REL = { hos: '#ff5a4a', ally: '#4cd37a', neu: '#f2c744' };
 const FAM = { laser: '#ff5a4a', railgun: '#6bb8ff', plasma: '#c58bff', missile: '#6be08f', torpedo: '#6be08f', drone: '#e8b64a' };
+const ZOOM_NAME = ['Zone', 'Me', 'Target', 'Free'];
 
 const CSS = `
 .zn{position:fixed;inset:0;z-index:40;background:#070a12;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;--c:56px;font-family:system-ui,sans-serif;color:#e3e9f7}
 .zn canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .zn button{margin:0}
-.zset{position:absolute;left:6px;top:calc(6px + env(safe-area-inset-top,0px));width:44px;height:44px;padding:8px;background:#131a2a;border:1px solid #3a4a6a;border-radius:8px;color:#e3e9f7}
+.zset{position:absolute;left:6px;top:calc(6px + env(safe-area-inset-top,0px));width:44px;height:44px;padding:7px;background:#131a2a;border:1px solid #3a4a6a;border-radius:8px;color:#e3e9f7}
 .zset svg,.zsq svg{width:100%;height:100%;display:block}
 .ztop{position:absolute;left:56px;right:6px;top:calc(6px + env(safe-area-inset-top,0px));display:flex;flex-direction:row-reverse;gap:6px;align-items:flex-start;pointer-events:none}
 .zbot{position:absolute;left:56px;right:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:row-reverse;gap:6px;align-items:flex-end;pointer-events:none}
+.zside{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:6px;align-items:flex-end;pointer-events:none}
 .zc{display:flex;flex-direction:column;gap:2px;width:var(--c);pointer-events:auto}
-.zsq{position:relative;width:var(--c);height:var(--c);padding:6px 6px 14px;border:2px solid #667;border-radius:8px;background:rgba(19,26,42,.88);color:#e3e9f7;pointer-events:auto;touch-action:none;box-sizing:border-box}
-.zsq .zd{position:absolute;left:0;right:0;bottom:1px;font-size:10px;line-height:12px;text-align:center;color:#c8d2ea}
+.zsq{position:relative;width:var(--c);height:var(--c);padding:6px 6px 14px;border:2px solid #667;border-radius:8px;background:rgba(19,26,42,.88);color:#e3e9f7;pointer-events:auto;touch-action:none;box-sizing:border-box;overflow:hidden}
+.zsq .zd{position:absolute;left:0;right:0;bottom:1px;font-size:10px;line-height:12px;text-align:center;color:#c8d2ea;text-shadow:0 0 3px #000}
 .zsq.sel{box-shadow:0 0 0 2px #fff}
-.zsq.off{opacity:.38}
+.zsq.off{opacity:.45}
 .zsq.drag{box-shadow:0 0 0 2px #e8b64a;z-index:5}
+.zsq.bar{padding:0}
+.zsq.tall{height:calc(var(--c) * 2)}
+.zsq .zf{position:absolute;left:0;right:0;bottom:0;height:0;opacity:.8}
+.zsq .zt{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-weight:700;font-size:14px;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000}
+.zsq.tall .zt{top:42%}
+@keyframes zflash{0%,100%{background:rgba(255,40,30,.9)}50%{background:rgba(19,26,42,.9)}}
+.zsq.flash{animation:zflash .6s infinite}
 .zsb{position:relative;height:11px;background:#1c2438;border-radius:3px;overflow:hidden}
 .zsb i{position:absolute;left:0;top:0;bottom:0;width:0}
 .zsb span{position:relative;display:block;font-size:9px;line-height:11px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000}
-.zbars{position:absolute;left:6px;top:calc(56px + env(safe-area-inset-top,0px));bottom:calc(6px + env(safe-area-inset-bottom,0px));display:flex;gap:3px;pointer-events:none}
-.zvb{position:relative;width:17px;background:rgba(28,36,56,.9);border-radius:4px;overflow:hidden}
+.zbars{position:absolute;left:6px;bottom:calc(var(--c) + 16px + env(safe-area-inset-bottom,0px));height:calc((100% - 62px) / 2);display:flex;gap:3px;pointer-events:none}
+.zvb{position:relative;width:18px;background:rgba(28,36,56,.9);border-radius:4px;overflow:hidden}
 .zvb i{position:absolute;left:0;right:0;bottom:0;height:0}
 .zvb b{position:absolute;left:0;right:0;top:2px;font-size:10px;text-align:center;color:#fff;text-shadow:0 0 2px #000}
 .zvb span{position:absolute;left:0;right:0;bottom:3px;top:16px;writing-mode:vertical-rl;transform:rotate(180deg);font-size:10px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000;white-space:nowrap}
-.zmenu{position:absolute;z-index:6;background:#131a2a;border:1px solid #3a5a78;border-radius:8px;padding:6px;display:flex;flex-direction:column;gap:5px;min-width:150px;max-width:260px}
+.zmenu{position:absolute;z-index:6;background:#131a2a;border:1px solid #3a5a78;border-radius:8px;padding:6px;display:flex;flex-direction:column;gap:5px;min-width:150px;max-width:270px}
 .zmenu button{padding:10px 8px;font-size:14px;text-align:left}
+.zmenu button.pend{opacity:.55;background:#2a3350;color:#9aa6c4;pointer-events:none}
 .zmenu .zh{font-size:12px;color:#aab4cc;padding:0 2px 2px}
-.zmenu .zr{display:flex;gap:5px}.zmenu .zr button{flex:1;padding:8px 4px;text-align:center;font-size:13px}
+.zmenu .zl{font-size:12px;line-height:1.5;color:#d7e0f2;padding:0 2px}
 .zmenu input{width:100%;box-sizing:border-box}
 .zinfo{position:absolute;z-index:7;right:6px;background:#131a2a;border:1px solid #3a5a78;border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5;max-width:250px;pointer-events:none}
 .zstat{position:absolute;left:56px;right:6px;font-size:11px;color:#aab4cc;text-shadow:0 0 3px #000,0 0 3px #000;pointer-events:none;text-align:right}
 .zwarn{position:absolute;left:60px;right:60px;text-align:center;color:#ff7b6b;font-weight:700;font-size:14px;text-shadow:0 0 4px #000,0 0 4px #000;pointer-events:none}
-.ztoast{position:absolute;left:60px;right:10px;text-align:center;font-size:13px;color:#fff;background:rgba(19,26,42,.92);border:1px solid #3a5a78;border-radius:8px;padding:6px 8px;pointer-events:none;z-index:8}
+.ztoast{position:absolute;left:60px;right:10px;bottom:calc(var(--c) + 44px);text-align:center;font-size:13px;color:#fff;background:rgba(19,26,42,.92);border:1px solid #3a5a78;border-radius:8px;padding:6px 8px;pointer-events:none;z-index:8}
 .ztoast.err{border-color:#ff7b6b;color:#ffb0a6}
-.zlog{position:absolute;z-index:6;left:56px;right:6px;font-size:12px;line-height:1.55;background:rgba(19,26,42,.94);border:1px solid #3a5a78;border-radius:8px;padding:8px}
+.zlog{position:absolute;z-index:6;left:56px;right:6px;top:64px;font-size:12px;line-height:1.55;background:rgba(19,26,42,.94);border:1px solid #3a5a78;border-radius:8px;padding:8px}
 `;
 
-const IC = (d, extra) => '<svg viewBox="0 0 24 24" fill="currentColor"' + (extra || '') + '>' + d + '</svg>';
+const IC = d => '<svg viewBox="0 0 24 24" fill="currentColor">' + d + '</svg>';
 const ICON = {
   ship: IC('<path d="M12 2.5 20 21l-8-4.2L4 21z"/>'),
   drone: IC('<path d="M12 3 21 12 12 21 3 12z"/><circle cx="12" cy="12" r="3" fill="#0b0f19"/>'),
   railgun: IC('<rect x="2" y="9" width="15" height="2.4"/><rect x="2" y="13" width="15" height="2.4"/><path d="M17 7.5 23 12.2 17 17z"/>'),
-  laser: IC('<path d="M2 12h13" stroke="currentColor" stroke-width="3"/><circle cx="18.5" cy="12" r="3.5"/><path d="M18.5 4v3M18.5 17v3M11 12" stroke="currentColor" stroke-width="2"/>'),
+  laser: IC('<path d="M2 12h13" stroke="currentColor" stroke-width="3"/><circle cx="18.5" cy="12" r="3.5"/><path d="M18.5 4v3M18.5 17v3" stroke="currentColor" stroke-width="2"/>'),
   plasma: IC('<circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>'),
   missile: IC('<path d="M3 8l5 3v2l-5 3 2-4z"/><rect x="7" y="9.5" width="10" height="5" rx="2.5"/><path d="M17 9.5 23 12 17 14.5z"/>'),
   weapon: IC('<circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6" stroke="currentColor" stroke-width="2"/>'),
@@ -71,8 +82,20 @@ const ICON = {
   engine: IC('<path d="M12 22c-4-3-6-6-6-9 0-2.4 1.5-4.2 3-5.5.2 2 1 3 2 3.6C11 8 12 5 12 2c3.5 3 6 6.5 6 11 0 3-2 6-6 9z"/>'),
   power: IC('<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>'),
   other: IC('<rect x="5" y="5" width="14" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3"/>'),
+  zone: IC('<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 3"/><circle cx="12" cy="12" r="1.8"/>'),
+  me: IC('<path d="M12 6.5 16.5 17 12 14.8 7.5 17z"/><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5" fill="none" stroke="currentColor" stroke-width="1.8"/>'),
+  target: IC('<circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.2"/><path d="M12 1.5v5M12 17.5v5M1.5 12h5M17.5 12h5" stroke="currentColor" stroke-width="2"/>'),
+  free: IC('<path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3" fill="none" stroke="currentColor" stroke-width="1.8"/>'),
 };
-const gear = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/></svg>';
+function gearSvg() {                            // a real gear: 8 teeth round a hub with a hole
+  const n = 8, ro = 11, ri = 8.4, cx = 12, cy = 12; let d = '';
+  for (let i = 0; i < n; i++) {
+    const a = i * 2 * Math.PI / n, w1 = 0.2, w2 = 0.34;
+    [[ri, a - w2], [ro, a - w1], [ro, a + w1], [ri, a + w2]].forEach(([r, t], j) => { d += (i === 0 && j === 0 ? 'M' : 'L') + (cx + r * Math.cos(t)).toFixed(2) + ' ' + (cy + r * Math.sin(t)).toFixed(2); });
+  }
+  d += 'Z M12 8.6a3.4 3.4 0 1 0 0.01 0Z';
+  return '<svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd"><path d="' + d + '"/></svg>';
+}
 function modIcon(m) {
   if (m.family && ICON[m.family]) return ICON[m.family];
   if (m.kind === 'weapon') return ICON.weapon;
@@ -85,30 +108,48 @@ function modIcon(m) {
 }
 
 /* ---------- small helpers ---------- */
-const dg = () => (Date.now() - recv) / 1000 * ((view && view.scale) || 60);                  // game seconds since the picture was taken
-const at = s => { const g = dg(); return { x: s.x + s.vx * g, y: s.y + s.vy * g }; };         // where a ship is NOW (display only)
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const km = n => whole(n) + ' km';
 const kshort = n => n >= 100000 ? Math.round(n / 1000) + 'k' : n >= 10000 ? (n / 1000).toFixed(0) + 'k' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.round(n) + '';
+const n0 = n => n >= 10000 ? Math.round(n / 1000) + 'k' : String(Math.round(n));
 const pct = f => Math.round(Math.max(0, f) * 100);
 const errText = e => (e && e.data && e.data.message) || (e && e.message) || 'error';
 const rel = s => s.hostile ? 'hos' : (view && s.side === view.me.side ? 'ally' : 'neu');
-const ORDER_NAME = { attack_max: 'Attack: long range', attack_opt: 'Attack: best range', follow: 'Follow', stop: 'Stop', flee: 'Flee' };
+const ORDER_NAME = { attack_max: 'Attack: long range', attack_opt: 'Attack: best range', follow: 'Follow', stop: 'Stop', flee: 'Flee', heading: 'Thrust on a heading' };
+
+/* where a ship is drawn NOW: its last picture moved along speed and acceleration, plus the part of the last correction still fading out */
+function posOf(id) {
+  const p = pst.get(id); if (!p || !view) return null;
+  const ts = Math.min(12, (Date.now() - p.t) / 1000), g = ts * (view.scale || 60), k = Math.exp(-ts / 0.7);
+  return { x: p.x + p.vx * g + 0.5 * p.ax * g * g + p.ox * k, y: p.y + p.vy * g + 0.5 * p.ay * g * g + p.oy * k };
+}
+const P = s => posOf(s.id) || { x: s.x, y: s.y };
+function headOf(s) {
+  const p = pst.get(s.id); if (!p || !view) return head.get(s.id) || 0;
+  const g = Math.min(12, (Date.now() - p.t) / 1000) * (view.scale || 60), vx = p.vx + p.ax * g, vy = p.vy + p.ay * g;
+  if (Math.hypot(vx, vy) > 0.2) { const h = Math.atan2(vy, vx); head.set(s.id, h); return h; }
+  return head.get(s.id) || 0;
+}
 
 function mkSBar(color) {                       // the 3 small bars under a ship chip
   const w = el('div', 'zsb'), f = document.createElement('i'), t = document.createElement('span');
   f.style.background = color; w.append(f, t);
-  return { w, set(frac) { f.style.width = Math.max(0, Math.min(100, frac * 100)) + '%'; t.textContent = pct(frac); } };
+  return { w, set(frac, text) { f.style.width = Math.max(0, Math.min(100, frac * 100)) + '%'; t.textContent = text; } };
 }
 function mkVBar(letter, color) {               // the vertical bars on the left edge
   const w = el('div', 'zvb'), f = document.createElement('i'), l = document.createElement('b'), t = document.createElement('span');
   f.style.background = color; l.textContent = letter; w.append(f, l, t);
   return { w, set(cur, max) { f.style.height = (max > 0 ? Math.max(0, Math.min(100, cur / max * 100)) : 0) + '%'; t.textContent = whole(cur); } };
 }
+function mkBarChip(color, tall) {              // a chip that fills like a bar
+  const b = el('button', 'zsq bar' + (tall ? ' tall' : '')), f = el('div', 'zf'), t = el('div', 'zt'), d = el('div', 'zd');
+  f.style.background = color; b.append(f, t, d);
+  return { b, f, t, d };
+}
 function toast(text, bad) {
   if (!root) return;
   R.toast.textContent = text; R.toast.className = 'ztoast' + (bad ? ' err' : ''); R.toast.hidden = false;
-  clearTimeout(R.toastT); R.toastT = setTimeout(() => { R.toast.hidden = true; }, bad ? 6000 : 3500);
+  clearTimeout(R.toastT); R.toastT = setTimeout(() => { R.toast.hidden = true; }, bad ? 6000 : 3000);
 }
 
 /* ---------- building the frame (once) ---------- */
@@ -117,71 +158,80 @@ function ui() {
   const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
   root = el('div', 'zn'); root.hidden = true;
   R.cv = document.createElement('canvas');
-  R.set = el('button', 'zset'); R.set.innerHTML = gear;
+  R.set = el('button', 'zset'); R.set.innerHTML = gearSvg();
   R.top = el('div', 'ztop'); R.bot = el('div', 'zbot');
   R.bars = el('div', 'zbars');
-  R.bSh = mkVBar('S', '#3f8cff'); R.bAr = mkVBar('A', '#c9a24a'); R.bHu = mkVBar('H', '#4cd37a'); R.bHe = mkVBar('T', '#ff8a3a'); R.bEn = mkVBar('E', '#9a7bff');
-  R.bars.append(R.bSh.w, R.bAr.w, R.bHu.w, R.bHe.w, R.bEn.w);
+  R.bSh = mkVBar('S', '#3f8cff'); R.bAr = mkVBar('A', '#c9a24a'); R.bHu = mkVBar('H', '#4cd37a');
+  R.bars.append(R.bSh.w, R.bAr.w, R.bHu.w);
+  // right edge, middle: zoom, endurance, heat
+  R.side = el('div', 'zside');
+  R.zoomB = el('button', 'zsq'); R.zoomD = el('div', 'zd'); R.zoomB.append(R.zoomD);
+  R.end = mkBarChip('#9a7bff', false); R.heat = mkBarChip('#4cd37a', true);
+  R.side.append(R.zoomB, R.end.b, R.heat.b);
   R.stat = el('div', 'zstat'); R.warn = el('div', 'zwarn'); R.warn.hidden = true;
   R.toast = el('div', 'ztoast'); R.toast.hidden = true;
   R.menu = el('div', 'zmenu'); R.menu.hidden = true;
   R.sets = el('div', 'zmenu'); R.sets.hidden = true;
+  R.pop = el('div', 'zmenu'); R.pop.hidden = true;
   R.info = el('div', 'zinfo'); R.info.hidden = true;
   R.log = el('div', 'zlog'); R.log.hidden = true;
-  root.append(R.cv, R.bars, R.top, R.bot, R.stat, R.warn, R.toast, R.set, R.sets, R.menu, R.info, R.log);
+  root.append(R.cv, R.bars, R.top, R.bot, R.side, R.stat, R.warn, R.toast, R.set, R.sets, R.menu, R.pop, R.info, R.log);
   document.body.appendChild(root);
   buildSettings();
+  setZoomChip();
   R.set.onclick = ev => { ev.stopPropagation(); const open = R.sets.hidden; closeMenus(); R.sets.hidden = !open; if (open) placeBelow(R.sets, R.set); };
-  root.addEventListener('pointerdown', ev => { if (!R.menu.contains(ev.target) && !R.sets.contains(ev.target) && ev.target !== R.set && !R.set.contains(ev.target) && !(ev.target.closest && ev.target.closest('.zc'))) closeMenus(true); }, true);
+  R.zoomB.onclick = ev => { ev.stopPropagation(); cycleZoom(); };
+  R.end.b.onclick = ev => { ev.stopPropagation(); if (view) send('combat_stance', { stance: view.me.stance === 'free' ? 'full' : 'free' }); };
+  R.heat.b.onclick = ev => { ev.stopPropagation(); const open = R.pop.hidden; closeMenus(); if (open) { heatOpen = true; fillHeat(); R.pop.hidden = false; placeLeft(R.pop, R.heat.b); } };
+  root.addEventListener('pointerdown', ev => {
+    const t = ev.target, inside = x => x && x.contains(t);
+    if (inside(R.menu) || inside(R.sets) || inside(R.pop) || inside(R.set) || inside(R.heat.b) || (t.closest && t.closest('.zc'))) return;
+    closeMenus();
+  }, true);
   bindMap();
   window.addEventListener('resize', () => { if (root && !root.hidden) { sizeChips(); frame(true); } });
 }
-function closeMenus(keepSel) { R.menu.hidden = true; R.sets.hidden = true; R.log.hidden = true; menuFor = null; }
+function closeMenus() { R.menu.hidden = true; R.sets.hidden = true; R.pop.hidden = true; R.log.hidden = true; menuFor = null; pending = null; logOpen = false; heatOpen = false; }
 function placeBelow(menu, anchor) {
-  const a = anchor.getBoundingClientRect(), W = root.clientWidth;
-  menu.style.top = Math.round(a.bottom + 6) + 'px';
-  const w = menu.offsetWidth || 160;
+  const a = anchor.getBoundingClientRect(), W = root.clientWidth, w = menu.offsetWidth || 160;
+  menu.style.right = 'auto'; menu.style.top = Math.round(a.bottom + 6) + 'px';
   menu.style.left = Math.max(6, Math.min(W - w - 6, Math.round(a.left))) + 'px';
 }
+function placeAt(menu, px, py) {                // below a point on the map (the player's own ship)
+  const W = root.clientWidth, w = menu.offsetWidth || 160;
+  menu.style.right = 'auto'; menu.style.top = Math.round(py + 22) + 'px';
+  menu.style.left = Math.max(6, Math.min(W - w - 6, Math.round(px - w / 2))) + 'px';
+}
+function placeLeft(menu, anchor) {              // to the left of a chip on the right edge
+  const a = anchor.getBoundingClientRect(), W = root.clientWidth;
+  menu.style.left = 'auto'; menu.style.right = Math.round(W - a.left + 8) + 'px';
+  menu.style.top = Math.max(6, Math.round(a.top)) + 'px';
+}
 
-/* the settings menu: everything that has no place of its own */
+/* the settings menu: only what has no place of its own */
 function buildSettings() {
   const m = R.sets; m.replaceChildren();
   const mk = (label, fn, cls) => { const b = el('button', cls || 'alt', label); b.onclick = ev => { ev.stopPropagation(); fn(b); }; return b; };
   R.setRange = mk('', () => { showRanges = !showRanges; syncSettings(); drawMap(); });
-  const burn = el('div', 'zr'); R.burnB = {};
-  [['free', 'Free'], ['economy', 'Economy'], ['full', 'Full']].forEach(([k, label]) => { const b = mk(label, () => send('combat_stance', { stance: k })); R.burnB[k] = b; burn.appendChild(b); });
-  const ord = el('div', 'zr'); R.ordB = {};
-  [['follow', 'Follow'], ['stop', 'Stop']].forEach(([k, label]) => { const b = mk(label, () => { order(k, null); closeMenus(); }); R.ordB[k] = b; ord.appendChild(b); });
   R.hold = document.createElement('input'); R.hold.type = 'number'; R.hold.inputMode = 'numeric'; R.hold.placeholder = 'Distance to keep, km (empty = automatic)';
-  m.append(el('div', 'zh', 'Burn (engine power)'), burn,
-    R.setRange,
-    mk('Show the whole zone', () => { fitCam(); closeMenus(); drawMap(); }),
-    mk('Center on my ship', () => { centerCam(); closeMenus(); drawMap(); }),
-    el('div', 'zh', 'Orders without a menu'), ord,
-    el('div', 'zh', 'Distance for the next attack / follow order'), R.hold,
-    mk('Event log', () => { closeMenus(); showLog(); }),
+  m.append(R.setRange,
+    el('div', 'zh', 'Distance for the next attack order'), R.hold,
+    mk('Event log', () => { closeMenus(); logOpen = true; fillLog(); R.log.hidden = false; }),
     mk('Hide this screen', () => { closeMenus(); root.hidden = true; away = true; stopTimers(); }));
 }
-function syncSettings() {
-  if (!view) return;
-  R.setRange.textContent = 'Weapon ranges: ' + (showRanges ? 'ON' : 'OFF');
-  Object.entries(R.burnB).forEach(([k, b]) => b.className = view.me.stance === k ? '' : 'alt');
-  Object.entries(R.ordB).forEach(([k, b]) => b.className = view.me.order && view.me.order.kind === k ? '' : 'alt');
-}
-function showLog() {
+function syncSettings() { R.setRange.textContent = 'Weapon ranges: ' + (showRanges ? 'ON' : 'OFF'); }
+function fillLog() {
   R.log.replaceChildren(...(view ? view.events.slice(-8).map(e => el('div', '', evText(e))) : []));
   if (!R.log.childNodes.length) R.log.textContent = 'Nothing has happened yet.';
-  R.log.style.top = '64px'; R.log.hidden = false;
-  clearTimeout(R.logT); R.logT = setTimeout(() => { R.log.hidden = true; }, 9000);
 }
 
 function startTimers() {
   stopTimers();
   pollT = setInterval(() => { if (!document.hidden) poll(); }, POLL_MS);
-  animT = setInterval(() => { tick++; frame(tick % 4 === 0); }, 100);
+  const loop = () => { tick++; frame(tick % 15 === 0); raf = requestAnimationFrame(loop); };       // the screen's own speed; the text parts update ~4 times a second
+  raf = requestAnimationFrame(loop);
 }
-function stopTimers() { clearInterval(pollT); clearInterval(animT); pollT = animT = 0; }
+function stopTimers() { clearInterval(pollT); cancelAnimationFrame(raf); pollT = 0; raf = 0; }
 
 /* ---------- talking to the server ---------- */
 async function poll() {
@@ -192,21 +242,26 @@ async function poll() {
   finally { busy = false; }
 }
 async function send(action, body) {
-  if (busy) { toast('One moment...'); return; }
+  if (busy) { toast('One moment...'); return false; }
   busy = true;
-  try { apply(await call(action, body)); }
-  catch (e) { toast(errText(e), true); }
+  try { apply(await call(action, body)); return true; }
+  catch (e) { toast(errText(e), true); pending = null; if (!R.menu.hidden) buildMenu(); return false; }
   finally { busy = false; }
 }
-function order(kind, targetId) {
+function order(kind, targetId, deg) {
   const body = { kind };
-  if (kind !== 'stop' && kind !== 'flee') {
+  if (kind === 'heading') body.dir_deg = deg;
+  else if (kind !== 'stop' && kind !== 'flee') {
     const tgt = targetId || sel || (view && view.me.target_id);
     if (tgt) body.target = tgt;
     const h = R.hold.value.trim();
-    if (h !== '') { const n = Number(h); if (!Number.isFinite(n) || n < 1) { toast('The distance must be a number of km, 1 or more.', true); return; } body.hold_km = n; }
+    if (h !== '' && kind !== 'follow') { const n = Number(h); if (!Number.isFinite(n) || n < 1) { toast('The distance must be a number of km, 1 or more.', true); pending = null; if (!R.menu.hidden) buildMenu(); return; } body.hold_km = n; }
   }
   send('combat_order', body);
+}
+function orderActive(kind, id) {
+  const o = view && view.me.order; if (!o || o.kind !== kind) return false;
+  return (kind === 'attack_max' || kind === 'attack_opt' || kind === 'follow') ? view.me.target_id === id : true;
 }
 
 /* a picture from the server */
@@ -217,15 +272,17 @@ function apply(v) {
   view = v; recv = Date.now(); lastMe = v.me.id;
   trackMotion(v);
   newEvents(v);
+  if (zoomMode === 2 && !targetShip()) setZoom(1);
   if (!cam) fitCam();
+  if (pending && orderActive(pending.kind, pending.id)) { R.menu.hidden = true; menuFor = null; pending = null; }     // the order is active: the menu goes
   if (!root.hidden || !away) { root.hidden = false; if (!pollT) startTimers(); }
   render();
 }
 function closeZone(v) {
   const was = !!view;
-  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = [];
-  prevV.clear(); acc.clear(); head.clear(); stopTimers(); chips.clear();
-  if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); }
+  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0;
+  prevV.clear(); acc.clear(); head.clear(); pst.clear(); stopTimers(); chips.clear();
+  if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
     if (v.ship_state === 'drifting') say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
     else if (v.ended === 'cleared') say('Zone cleared. Your ship is docked at the range.', 'ok');
@@ -235,17 +292,19 @@ function closeZone(v) {
   }
 }
 
-/* what the page remembers between pictures: speed changes (for the thrust lines) and new damage (for the numbers) */
+/* what the page remembers between pictures: acceleration (thrust lines and smooth motion) and new damage (the numbers) */
 function trackMotion(v) {
   const all = [v.me, ...v.ships];
   all.forEach(s => {
     const p = prevV.get(s.id);
     if (p) { const dtG = (recv - p.t) / 1000 * (v.scale || 60); if (dtG > 1) acc.set(s.id, { ax: (s.vx - p.vx) / dtG, ay: (s.vy - p.vy) / dtG }); }
     prevV.set(s.id, { vx: s.vx, vy: s.vy, t: recv });
-    if (Math.hypot(s.vx, s.vy) > 0.2) head.set(s.id, Math.atan2(s.vy, s.vx));
+    const old = pst.has(s.id) ? posOf(s.id) : null;            // where it was drawn a moment ago: the new picture is blended in from there
+    const a = acc.get(s.id) || { ax: 0, ay: 0 };
+    pst.set(s.id, { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: a.ax, ay: a.ay, t: recv, ox: old ? old.x - s.x : 0, oy: old ? old.y - s.y : 0 });
   });
   const ids = new Set(all.map(s => s.id));
-  for (const k of [...prevV.keys()]) if (!ids.has(k)) { prevV.delete(k); acc.delete(k); head.delete(k); }
+  for (const k of [...pst.keys()]) if (!ids.has(k)) { pst.delete(k); prevV.delete(k); acc.delete(k); head.delete(k); }
 }
 function newEvents(v) {
   const evs = v.events || [];
@@ -273,9 +332,9 @@ export async function zoneCheck() {                       // fly.js asks now and
   finally { busy = false; }
 }
 export function resetZone() {
-  view = null; sel = null; away = false; lastCheck = 0; cam = null; modSig = ''; lastEv = null; lastMe = null; pops = [];
-  prevV.clear(); acc.clear(); head.clear(); stopTimers(); chips.clear();
-  if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); }
+  view = null; sel = null; away = false; lastCheck = 0; cam = null; modSig = ''; lastEv = null; lastMe = null; pops = []; zoomMode = 0;
+  prevV.clear(); acc.clear(); head.clear(); pst.clear(); stopTimers(); chips.clear();
+  if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
 }
 
 /* ---------- text for events ---------- */
@@ -299,6 +358,31 @@ function evText(e) {
   }
 }
 
+/* ---------- heat ---------- */
+function heatInfo() {
+  const m = view.me, list = [];
+  let gen = 0;
+  (m.modules || []).forEach(mod => {
+    if (!mod.on || !mod.heat) return;
+    const isW = mod.kind === 'weapon', firing = isW ? (m.dps_list || []).some(d => d.id === mod.id && d.dps > 0) : true;
+    list.push({ name: mod.name, heat: mod.heat, note: isW ? (firing ? 'firing now' : 'only while firing') : 'always on', active: firing });
+    if (firing) gen += mod.heat;
+  });
+  const a = acc.get(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0, eng = (m.eng_k || 0) * Math.max(0, g - (m.eng_thr || 3));
+  gen += eng;
+  return { list, gen, eng, g, cool: m.heat_cool || 0, net: gen - (m.heat_cool || 0) };
+}
+function fillHeat() {
+  const m = view.me, h = heatInfo(), f = m.heat_cap > 0 ? m.heat / m.heat_cap : 0;
+  const rows = [el('div', 'zh', 'Heat ' + m.heat + ' of ' + m.heat_cap + ' (' + pct(f) + '%)')];
+  h.list.forEach(x => rows.push(el('div', 'zl', x.name + ': +' + x.heat + '/s  (' + x.note + ')')));
+  rows.push(el('div', 'zl', 'Engine: +' + h.eng.toFixed(1) + '/s' + (h.eng > 0 ? '' : '  (heat starts above ' + (m.eng_thr || 3) + ' g)')));
+  rows.push(el('div', 'zl', 'Cooling: -' + h.cool + '/s'));
+  rows.push(el('div', 'zl', 'Now: ' + (h.net >= 0 ? '+' : '') + h.net.toFixed(1) + '/s'));
+  rows.push(el('div', 'zh', 'Weapons weaken above ' + pct(m.heat_warn || 0.8) + '%, and the ship shuts down at 100% until it cools below ' + pct(m.heat_resume || 0.6) + '%.'));
+  R.pop.replaceChildren(...rows);
+}
+
 /* ---------- rendering the chips and bars (after each picture) ---------- */
 function sizeChips() {
   const n = Math.max(4, chips.size, view ? (view.me.modules || []).length : 0);
@@ -308,7 +392,19 @@ function sizeChips() {
 function render() {
   const v = view, m = v.me;
   R.bSh.set(m.shield, m.shield_max); R.bAr.set(m.armor, m.armor_max); R.bHu.set(m.hull, m.hull_max);
-  R.bHe.set(m.heat, m.heat_cap); R.bEn.set(m.endurance, m.endurance_max);
+  // endurance chip: fills like a bar, tap = all or none (ON = full burn, OFF = free burn only)
+  const ef = m.endurance_max > 0 ? m.endurance / m.endurance_max : 0, eon = m.stance !== 'free';
+  R.end.f.style.height = pct(ef) + '%'; R.end.f.style.background = eon ? '#9a7bff' : '#667';
+  R.end.t.textContent = pct(ef) + '%'; R.end.d.textContent = eon ? 'END ON' : 'END OFF';
+  R.end.b.style.borderColor = m.drained ? '#ff5a4a' : (eon ? '#9a7bff' : '#667');
+  // heat chip: green to 40%, yellow to the first penalty, red above, flashing while shut down
+  const hf = m.heat_cap > 0 ? m.heat / m.heat_cap : 0, hw = m.heat_warn || 0.8, hcol = hf <= 0.4 ? '#4cd37a' : hf <= hw ? '#f2c744' : '#ff5a4a', hi = heatInfo();
+  R.heat.f.style.height = pct(hf) + '%'; R.heat.f.style.background = hcol;
+  R.heat.t.textContent = m.tripped ? 'HOT' : pct(hf) + '%';
+  R.heat.d.textContent = (hi.gen >= 0 ? '+' : '') + hi.gen.toFixed(1) + '/s';
+  R.heat.b.style.borderColor = hcol; R.heat.b.classList.toggle('flash', !!m.tripped);
+  if (heatOpen) fillHeat();
+  if (logOpen) fillLog();
   R.warn.hidden = !(m.tripped || m.drained);
   R.warn.textContent = m.tripped ? 'OVERHEATED: systems off for ' + Math.ceil(m.shutdown_left) + ' s' : m.drained ? 'Endurance spent: thrust limited' : '';
   R.warn.style.top = 'calc(70px + env(safe-area-inset-top,0px))';
@@ -316,6 +412,7 @@ function render() {
   renderShipChips();
   renderModChips();
   sizeChips();
+  if (!R.menu.hidden && menuFor) buildMenu();
   frame(true);
 }
 function renderShipChips() {
@@ -325,43 +422,60 @@ function renderShipChips() {
     let c = chips.get(s.id);
     if (!c) c = makeShipChip(s);
     c.ship = s;
-    c.b.style.borderColor = REL[rel(s)];
-    c.b.style.color = REL[rel(s)];
-    c.bars[0].set(s.shield); c.bars[1].set(s.armor); c.bars[2].set(s.hull);
+    c.b.style.borderColor = REL[rel(s)]; c.b.style.color = REL[rel(s)];
+    c.bars[0].set(s.shield, n0(s.sh)); c.bars[1].set(s.armor, n0(s.ar)); c.bars[2].set(s.hull, n0(s.hu));
     c.b.title = s.name;
   });
   if (sel && !ids.has(sel)) sel = null;
-  const mp = at(v.me);
-  const sorted = [...chips.values()].sort((a, b) => dist(mp, at(a.ship)) - dist(mp, at(b.ship)));
-  sorted.forEach(c => R.top.appendChild(c.w));                 // nearest first = right-most (the bar is right-to-left)
+  const mp = P(v.me);
+  const sorted = [...chips.values()].sort((a, b) => dist(mp, P(a.ship)) - dist(mp, P(b.ship)));
+  sorted.forEach(c => R.top.appendChild(c.w));                 // nearest first = right-most (the bar runs right to left)
 }
 function makeShipChip(s) {
   const w = el('div', 'zc'), b = el('button', 'zsq'), d = el('div', 'zd');
   b.innerHTML = s.side === 'drones' ? ICON.drone : ICON.ship; b.appendChild(d);
   const bars = [mkSBar('#3f8cff'), mkSBar('#c9a24a'), mkSBar('#4cd37a')];
   w.append(b, ...bars.map(x => x.w));
-  b.onclick = ev => { ev.stopPropagation(); pickShip(chips.get(s.id).ship.id); };
+  b.onclick = ev => { ev.stopPropagation(); pickShip(s.id); };
   const c = { w, b, dist: d, bars, ship: s };
   chips.set(s.id, c);
   return c;
 }
-function pickShip(id) {                                         // tap on a chip or on a ship on the map
-  const c = chips.get(id); if (!c) return;
-  if (menuFor === id) { closeMenus(); return; }
-  closeMenus(); sel = id; menuFor = id;
-  R.menu.replaceChildren(el('div', 'zh', c.ship.name + (c.ship.hostile ? ' (hostile)' : '')));
-  [['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']].forEach(([k, label]) => {
-    const b = el('button', view.me.order && view.me.order.kind === k && view.me.target_id === id ? '' : 'alt', label);
-    b.onclick = ev => { ev.stopPropagation(); closeMenus(); order(k, id); };
-    R.menu.appendChild(b);
+
+/* the order menu of a ship: enemies = attack / flee, friends = follow, your own ship = stop */
+function menuItems(id) {
+  if (id === view.me.id) return { title: 'Your ship', items: [['stop', 'Stop']] };
+  const s = view.ships.find(x => x.id === id); if (!s) return null;
+  return s.hostile ? { title: s.name + ' (hostile)', items: [['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']] }
+                   : { title: s.name + ' (friendly)', items: [['follow', 'Follow']] };
+}
+function buildMenu() {
+  const d = view && menuFor && menuItems(menuFor);
+  if (!d) { R.menu.hidden = true; menuFor = null; return; }
+  const rows = [el('div', 'zh', d.title)];
+  d.items.forEach(([k, label]) => {
+    const wait = pending && pending.kind === k && pending.id === menuFor;
+    const b = el('button', wait ? 'pend' : (orderActive(k, menuFor) ? '' : 'alt'), wait ? label + ' ...' : label);
+    b.onclick = ev => { ev.stopPropagation(); pending = { kind: k, id: menuFor }; buildMenu(); order(k, menuFor === view.me.id ? null : menuFor); };
+    rows.push(b);
   });
-  R.menu.hidden = false; placeBelow(R.menu, c.w);
+  R.menu.replaceChildren(...rows);
+}
+function pickShip(id, px, py) {                                 // a tap on a chip or on a ship on the map
+  if (!view) return;
+  if (menuFor === id && !R.menu.hidden) { closeMenus(); return; }
+  closeMenus();
+  const isMe = id === view.me.id;
+  if (!isMe) sel = id;
+  menuFor = id; buildMenu(); if (R.menu.hidden) return;
+  R.menu.hidden = false;
+  if (isMe) placeAt(R.menu, px, py); else placeBelow(R.menu, chips.get(id).w);
   frame(true);
 }
 
 /* modules at the bottom: tap = on/off, hold = info, hold and slide = new place */
 function loadOrder() { try { return JSON.parse(localStorage.getItem('zone_mods') || '[]'); } catch (e) { return []; } }
-function saveOrder(a) { try { localStorage.setItem('zone_mods', JSON.stringify(a)); } catch (e) { /* private mode: order is not kept */ } }
+function saveOrder(a) { try { localStorage.setItem('zone_mods', JSON.stringify(a)); } catch (e) { /* private mode: the order is not kept */ } }
 function modKeys(mods) { const seen = {}; return mods.map(m => { seen[m.id] = (seen[m.id] || 0) + 1; return m.id + '#' + seen[m.id]; }); }
 function renderModChips() {
   const mods = view.me.modules || [], keys = modKeys(mods), saved = loadOrder();
@@ -370,12 +484,12 @@ function renderModChips() {
   if (sig === modSig) return;
   modSig = sig; R.bot.replaceChildren();
   if (!mods.length) { const n = el('div', '', 'No weapons or rigs fitted.'); n.style.cssText = 'font-size:12px;color:#aab4cc;padding:8px;pointer-events:none'; R.bot.appendChild(n); return; }
-  idx.forEach(i => { const m = mods[i]; R.bot.appendChild(makeModChip(m, keys[i])); });
+  idx.forEach(i => R.bot.appendChild(makeModChip(mods[i], keys[i])));
 }
 function makeModChip(m, key) {
   const b = el('button', 'zsq' + (m.on ? '' : ' off')); b.innerHTML = modIcon(m); b.dataset.key = key;
   b.style.color = FAM[m.family] || '#cfd8ea'; b.style.borderColor = m.on ? '#e8b64a' : '#445';
-  const d = el('div', 'zd', m.heat ? m.heat + '/s' : (m.on ? 'ON' : 'OFF')); b.appendChild(d);
+  b.appendChild(el('div', 'zd', m.heat ? m.heat + '/s' : (m.on ? 'ON' : 'OFF')));
   let timer = 0, long = false, dragging = false, x0 = 0;
   b.onpointerdown = ev => {
     ev.stopPropagation(); b.setPointerCapture(ev.pointerId); x0 = ev.clientX; long = false; dragging = false;
@@ -410,18 +524,31 @@ function showInfo(m, anchor) {
   R.info.style.bottom = Math.round(root.clientHeight - anchor.getBoundingClientRect().top + 8) + 'px';
 }
 
-/* ---------- the map: camera, touch, drawing ---------- */
-function fitCam() { if (!view || !cw) { cam = cam || { cx: 0, cy: 0, k: 0 }; cam.fit = true; return; } cam = { cx: 0, cy: 0, k: Math.min(cw, ch) / 2 / (view.zone.exit_km * 1.08) }; }
-function centerCam() {
-  if (!view) return; const mp = at(view.me), far = Math.max(60000, ...(view.me.weapons || []).map(w => w.max_km));
-  cam = { cx: mp.x, cy: mp.y, k: Math.min(cw, ch) / 2 / (far * 1.25) };
+/* ---------- the map: camera, zoom chip, touch, drawing ---------- */
+const targetShip = () => { const id = sel || (view && view.me.target_id); return id && view ? view.ships.find(s => s.id === id) : null; };
+function setZoomChip() {
+  if (!R.zoomB) return;
+  const k = ['zone', 'me', 'target', 'free'][zoomMode];
+  R.zoomB.innerHTML = ICON[k]; R.zoomD.textContent = ZOOM_NAME[zoomMode]; R.zoomB.appendChild(R.zoomD);
+  R.zoomB.style.borderColor = zoomMode === 3 ? '#667' : '#e8b64a'; R.zoomB.style.color = '#e3e9f7';
 }
+function setZoom(mode) {
+  zoomMode = mode;
+  if (view && cw) {
+    if (mode === 0) fitCam();
+    else if (mode === 1) { const p = P(view.me), far = Math.max(60000, ...(view.me.weapons || []).map(w => w.max_km)); cam = { cx: p.x, cy: p.y, k: Math.min(cw, ch) / 2 / (far * 1.25) }; }
+    else if (mode === 2) { const t = targetShip(); if (t) { const p = P(t), rad = Math.max(40000, dist(P(view.me), p) * 1.6); cam = { cx: p.x, cy: p.y, k: Math.min(cw, ch) / 2 / rad }; } else { zoomMode = 0; fitCam(); } }
+  }
+  setZoomChip();
+}
+function cycleZoom() { let next = zoomMode === 3 ? 0 : (zoomMode + 1) % 3; if (next === 2 && !targetShip()) next = 0; setZoom(next); }
+function fitCam() { if (!view || !cw) { cam = cam || { cx: 0, cy: 0, k: 0 }; cam.fit = true; return; } cam = { cx: 0, cy: 0, k: Math.min(cw, ch) / 2 / (view.zone.exit_km * 1.08) }; }
 const toScr = (x, y) => ({ x: (x - cam.cx) * cam.k + cw / 2, y: (y - cam.cy) * cam.k + ch / 2 });
 const toWorld = (px, py) => ({ x: (px - cw / 2) / cam.k + cam.cx, y: (py - ch / 2) / cam.k + cam.cy });
 function clampCam() {
   if (!view) return;
   const base = Math.min(cw, ch) / 2 / (view.zone.exit_km * 1.08);
-  cam.k = Math.max(base / 3, Math.min(base * 200, cam.k));
+  cam.k = Math.max(base / 3, Math.min(base * 400, cam.k));
 }
 function bindMap() {
   const cv = R.cv; let tapT = 0, moved = 0, last = null, pinch = 0;
@@ -435,15 +562,16 @@ function bindMap() {
     ptrs.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     if (ptrs.size === 1 && last) {
       const dx = ev.clientX - last.x, dy = ev.clientY - last.y; moved += Math.abs(dx) + Math.abs(dy);
-      cam.cx -= dx / cam.k; cam.cy -= dy / cam.k; last = { x: ev.clientX, y: ev.clientY }; drawMap();
+      if (moved > 10) { if (zoomMode !== 3) { zoomMode = 3; setZoomChip(); } cam.cx -= dx / cam.k; cam.cy -= dy / cam.k; }   // moving the map by hand ends 'follow'
+      last = { x: ev.clientX, y: ev.clientY };
     } else if (ptrs.size === 2) {
       const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
       if (pinch > 0 && d > 0) {
         const r = cv.getBoundingClientRect(), mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top, w0 = toWorld(mx, my);
         cam.k *= d / pinch; clampCam();
-        cam.cx = w0.x - (mx - cw / 2) / cam.k; cam.cy = w0.y - (my - ch / 2) / cam.k;   // the point under the fingers stays there
+        if (zoomMode === 3 || zoomMode === 0) { cam.cx = w0.x - (mx - cw / 2) / cam.k; cam.cy = w0.y - (my - ch / 2) / cam.k; if (zoomMode === 0) { zoomMode = 3; setZoomChip(); } }   // the point under the fingers stays; follow modes keep following
       }
-      pinch = d; drawMap();
+      pinch = d;
     }
   };
   const up = ev => {
@@ -453,23 +581,33 @@ function bindMap() {
   };
   cv.onpointerup = up; cv.onpointercancel = up;
 }
-function tapMap(cx, cy) {                                       // a tap on a ship opens its menu (from its chip)
+function tapMap(cx, cy) {
   if (!view || !cam) return;
   const r = R.cv.getBoundingClientRect(), px = cx - r.left, py = cy - r.top;
-  let best = null, bd = 28;
-  view.ships.forEach(s => { const p = at(s), q = toScr(p.x, p.y), d = Math.hypot(q.x - px, q.y - py); if (d < bd) { bd = d; best = s; } });
-  if (best) pickShip(best.id); else closeMenus();
+  let best = null, bd = 30;
+  [view.me, ...view.ships].forEach(s => { const p = P(s), q = toScr(p.x, p.y), d = Math.hypot(q.x - px, q.y - py); if (d < bd) { bd = d; best = s; } });
+  if (best) { lastTap = null; pickShip(best.id, px, py); return; }       // a tap on a ship: its order menu
+  const now = Date.now();
+  if (lastTap && now - lastTap.t < 350 && Math.hypot(px - lastTap.x, py - lastTap.y) < 40) { lastTap = null; headingTo(px, py); return; }    // double tap: thrust that way
+  lastTap = { t: now, x: px, y: py }; closeMenus();
+}
+function headingTo(px, py) {
+  const q = toScr(P(view.me).x, P(view.me).y);
+  let deg = Math.atan2(py - q.y, px - q.x) * 180 / Math.PI; if (deg < 0) deg += 360;
+  toast('Thrust on heading ' + Math.round(deg) + ' degrees. Use Stop (touch your ship) to brake.');
+  order('heading', null, deg);
 }
 
 /* things that change every moment */
 function frame(full) {
   if (!view || !root || root.hidden) return;
-  const m = view.me, mp = at(m);
+  const m = view.me, mp = P(m);
   if (full) {
-    chips.forEach(c => { c.dist.textContent = kshort(dist(mp, at(c.ship))); c.b.classList.toggle('sel', c.ship.id === sel); });
-    const ord = m.order || { kind: 'stop' }, tgt = m.target_id && view.ships.find(s => s.id === m.target_id);
-    R.stat.textContent = (ORDER_NAME[ord.kind] || ord.kind) + (tgt && ord.kind !== 'stop' && ord.kind !== 'flee' ? ': ' + tgt.name : '') + (ord.hold_km ? ' at ' + km(ord.hold_km) : '') +
-      '  |  burn ' + m.stance + '  |  speed ' + Math.hypot(m.vx, m.vy).toFixed(1) + ' km/s  |  ' + kshort(Math.hypot(mp.x, mp.y)) + ' km from center';
+    chips.forEach(c => { c.dist.textContent = kshort(dist(mp, P(c.ship))); c.b.classList.toggle('sel', c.ship.id === sel); });
+    const ord = m.order || { kind: 'stop' }, tgt = m.target_id && view.ships.find(s => s.id === m.target_id), a = acc.get(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0;
+    R.stat.textContent = (ORDER_NAME[ord.kind] || ord.kind) + (ord.kind === 'heading' && ord.dir_deg != null ? ' ' + Math.round(ord.dir_deg) + '°' : '') +
+      (tgt && ['attack_max', 'attack_opt', 'follow'].includes(ord.kind) ? ': ' + tgt.name : '') + (ord.hold_km ? ' at ' + km(ord.hold_km) : '') +
+      '  |  speed ' + Math.hypot(m.vx, m.vy).toFixed(1) + ' km/s  |  thrust ' + g.toFixed(1) + ' g';
     R.stat.style.bottom = 'calc(' + (parseInt(getComputedStyle(root).getPropertyValue('--c')) + 14) + 'px + env(safe-area-inset-bottom,0px))';
   }
   drawMap();
@@ -481,9 +619,11 @@ function drawMap() {
   if (!W || !H) return;
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
   const first = !cw; cw = W; ch = H;
-  if (!cam || cam.fit || first) { fitCam(); cam.fit = false; }
+  if (!cam || cam.fit || first) { const keep = zoomMode; fitCam(); cam.fit = false; if (keep !== 0 && keep !== 3) setZoom(keep); }
+  if (zoomMode === 1) { const p = P(view.me); cam.cx = p.x; cam.cy = p.y; }               // 'Me' and 'Target' follow their ship
+  else if (zoomMode === 2) { const t = targetShip(); if (t) { const p = P(t); cam.cx = p.x; cam.cy = p.y; } else setZoom(1); }
   const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
-  const m = view.me, mp = at(m), exit = view.zone.exit_km, k = cam.k;
+  const m = view.me, mp = P(m), exit = view.zone.exit_km, k = cam.k;
   // the zone edge (red when close to it)
   const near = Math.hypot(mp.x, mp.y) > 0.9 * exit, o = toScr(0, 0);
   c.lineWidth = 1.5; c.setLineDash([6, 6]); c.strokeStyle = near ? '#ff5a4a' : '#6b7794';
@@ -500,15 +640,13 @@ function drawMap() {
   }
   const tid = sel || m.target_id;
   const ship = (s, p, col, isMe) => {
-    const q = toScr(p.x, p.y);
-    const a = acc.get(s.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0;
-    const h = head.get(s.id) || 0;
+    const q = toScr(p.x, p.y), a = acc.get(s.id), am = a ? Math.hypot(a.ax, a.ay) : 0, g = am / G_KMS2;
     if (a && g > 0.05) {                                          // thrust: a red line pointing AWAY from the push
-      const len = Math.min(34, 10 + 22 * g), ux = -a.ax / Math.hypot(a.ax, a.ay), uy = -a.ay / Math.hypot(a.ax, a.ay);
+      const len = Math.min(34, 10 + 22 * g), ux = -a.ax / am, uy = -a.ay / am;
       c.strokeStyle = '#ff3b30'; c.lineWidth = 3; c.lineCap = 'round';
       c.beginPath(); c.moveTo(q.x + ux * 6, q.y + uy * 6); c.lineTo(q.x + ux * (6 + len), q.y + uy * (6 + len)); c.stroke(); c.lineCap = 'butt';
     }
-    c.save(); c.translate(q.x, q.y); c.rotate(h);                 // the ship: a triangle pointing the way it travels
+    c.save(); c.translate(q.x, q.y); c.rotate(headOf(s));          // the ship: a triangle pointing the way it travels
     c.fillStyle = col; c.beginPath(); c.moveTo(9, 0); c.lineTo(-6, 6); c.lineTo(-3, 0); c.lineTo(-6, -6); c.closePath(); c.fill();
     if (isMe) { c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.stroke(); }
     c.restore();
@@ -516,7 +654,7 @@ function drawMap() {
     return q;
   };
   const pos = new Map();
-  view.ships.forEach(s => { const p = at(s); pos.set(s.id, ship(s, p, REL[rel(s)], false)); });
+  view.ships.forEach(s => pos.set(s.id, ship(s, P(s), REL[rel(s)], false)));
   pos.set(m.id, ship(m, mp, REL.ally, true));
   // damage numbers: red, rising and fading
   const now = Date.now(); pops = pops.filter(p => now - p.born < 1500);
