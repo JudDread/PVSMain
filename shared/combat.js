@@ -1,5 +1,5 @@
 // =====================================================================
-// Vacuum State - combat core (COMBAT MVP step 3)
+// Vacuum State - combat core (COMBAT MVP steps 3-4)
 // PURE FUNCTIONS ONLY (same rule as physics.js):
 //   - no DOM, no Date.now(), no random numbers, no global state
 //   - everything is passed in and returned; the SAME file runs in the
@@ -25,7 +25,7 @@
 
 export const G_KMS2 = 9.80665 / 1000;             // km/s^2 per g
 export const CLASS_RANK = { Pod: 0, Light: 1, Medium: 2, Heavy: 3, Super: 4 };
-export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee'];
+export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee', 'heading'];
 export const STANCES = ['free', 'economy', 'full'];
 
 // Effect keys that always apply (they are not switched with a module).
@@ -295,7 +295,9 @@ function nearestHostile(s, ships) {
 }
 
 // distance the ship wants to hold, from its ORDER and the weapons that are on
-function holdRange(kind, ss, cfg) {
+function holdRange(kind, ss, cfg, override) {
+  // step 4: the pilot may set his own station-keeping distance on an order (order.hold_km); it replaces the worked-out one
+  if (override > 0 && kind !== 'stop') return override;
   if (kind === 'follow' || ss.weapons.length === 0) return cfg.follow_km;
   let wsum = 0, rsum = 0;
   for (const w of ss.weapons) {
@@ -316,12 +318,16 @@ function guide(s, tgt, ss, cfg, dtG) {
     else if (tgt) { const d = dist(s, tgt) || 1; ex = (s.x - tgt.x) / d; ey = (s.y - tgt.y) / d; }
     return { dx: ex, dy: ey, gCmd: ss.max_g, closing: false };
   }
+  if (kind === 'heading') {            // step 4: thrust on a compass heading (order.dir_deg), no braking, until another order replaces it
+    const ang = ((s.order && s.order.dir_deg) || 0) * Math.PI / 180;
+    return { dx: Math.cos(ang), dy: Math.sin(ang), gCmd: ss.max_g, closing: true };
+  }
   let ux = 0, uy = 0, closing = false;
   if (kind !== 'stop' && tgt) {
     const rx = tgt.x - s.x, ry = tgt.y - s.y;
     const d0 = Math.hypot(rx, ry) || 1;
     const ex = rx / d0, ey = ry / d0;
-    const R = holdRange(kind, ss, cfg);
+    const R = holdRange(kind, ss, cfg, s.order && s.order.hold_km);
     const d = d0 - R;
     const tol = Math.max(1000, 0.01 * R);
     closing = d > tol;
