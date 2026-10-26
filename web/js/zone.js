@@ -242,7 +242,8 @@ async function poll() {
   finally { busy = false; }
 }
 async function send(action, body) {
-  if (busy) { toast('One moment...'); return false; }
+  for (let i = 0; busy && i < 60; i++) await new Promise(r => setTimeout(r, 100));          // an update is in flight: wait for it (up to 6 s) instead of dropping the order
+  if (busy) { toast('The server is slow to answer. Please try again.', true); pending = null; if (!R.menu.hidden) buildMenu(); return false; }
   busy = true;
   try { apply(await call(action, body)); return true; }
   catch (e) { toast(errText(e), true); pending = null; if (!R.menu.hidden) buildMenu(); return false; }
