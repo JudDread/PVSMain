@@ -314,7 +314,7 @@ Deno.serve(async (req) => {
       case 'rig_sell': return await rigTrade(db, user, body, 'sell');
       case 'hull_buy': return await hullBuy(db, user, body);
       case 'hull_sell': return await hullSell(db, user, body);
-      case 'combat_zone': return await combatCall('combatZone', db, user);
+      case 'combat_zone': return await combatCall('combatZone', db, user, body);
       case 'combat_enter': return await combatCall('combatEnter', db, user);
       case 'combat_order': return await combatCall('combatOrder', db, user, body);
       case 'combat_stance': return await combatCall('combatStance', db, user, body);
