@@ -18,7 +18,7 @@ const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
 let pops = [];                                 // damage numbers { id, text, born }
-const ptrs = new Map();                        // fingers on the map
+const ptrs = new Map(); const rangeOn = new Set();      // ships whose weapon ranges are shown on the map                        // fingers on the map
 
 const REL = { hos: '#ff5a4a', ally: '#4cd37a', neu: '#f2c744' };
 const FAM = { laser: '#ff5a4a', railgun: '#6bb8ff', plasma: '#c58bff', missile: '#6be08f', torpedo: '#6be08f', drone: '#e8b64a' };
@@ -55,7 +55,7 @@ const CSS = `
 .zvb b{position:absolute;left:0;right:0;top:2px;font-size:10px;text-align:center;color:#fff;text-shadow:0 0 2px #000}
 .zvb span{position:absolute;left:0;right:0;bottom:3px;top:16px;writing-mode:vertical-rl;transform:rotate(180deg);font-size:10px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000;white-space:nowrap}
 .zmenu{position:absolute;z-index:6;background:#131a2a;border:1px solid #3a5a78;border-radius:8px;padding:6px;display:flex;flex-direction:column;gap:5px;min-width:150px;max-width:270px}
-.zmenu button{padding:10px 8px;font-size:14px;text-align:left}
+.zmenu button{padding:3px 8px;min-height:0;line-height:1.25;font-size:13px;text-align:left}
 .zmenu button.pend{opacity:.55;background:#2a3350;color:#9aa6c4;pointer-events:none}
 .zmenu .zh{font-size:12px;color:#aab4cc;padding:0 2px 2px}
 .zmenu .zl{font-size:12px;line-height:1.5;color:#d7e0f2;padding:0 2px}
@@ -115,6 +115,16 @@ const n0 = n => n >= 10000 ? Math.round(n / 1000) + 'k' : String(Math.round(n));
 const pct = f => Math.round(Math.max(0, f) * 100);
 const errText = e => (e && e.data && e.data.message) || (e && e.message) || 'error';
 const rel = s => s.hostile ? 'hos' : (view && s.side === view.me.side ? 'ally' : 'neu');
+const CLS = { light: 'lgt', medium: 'med', heavy: 'hvy', super: 'spr', capital: 'spr' };
+const FAB = { railgun: 'RAIL', laser: 'LAS', plasma: 'PLS', missile: 'MSL', torpedo: 'TPD', drone: 'DRN' };
+function abbr(name) {                                   // short names for the small menu: 'Armor Plating' -> 'AP', 'Shield' -> 'SHIE'
+  const w = String(name || '').split(/[\s_-]+/).filter(Boolean);
+  return (w.length > 1 ? w.map(x => x[0]).join('') : (w[0] || '?').slice(0, 4)).toUpperCase().slice(0, 4);
+}
+function grouped(list) {                                // ['RAIL','RAIL','LAS'] -> 'RAILx2 LAS'
+  const n = new Map(); list.forEach(x => n.set(x, (n.get(x) || 0) + 1));
+  return [...n].map(([k, c]) => c > 1 ? k + 'x' + c : k).join(' ') || 'none';
+}
 const ORDER_NAME = { attack_max: 'Attack: long range', attack_opt: 'Attack: best range', follow: 'Follow', stop: 'Stop', flee: 'Flee', heading: 'Thrust on a heading' };
 
 /* where a ship is drawn NOW: its last picture moved along speed and acceleration, plus the part of the last correction still fading out */
@@ -287,7 +297,7 @@ function apply(v) {
 function closeZone(v) {
   const was = !!view;
   view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = '';
-  prevV.clear(); acc.clear(); head.clear(); pst.clear(); stopTimers(); chips.clear();
+  prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
     if (v.ship_state === 'drifting') say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
@@ -339,7 +349,7 @@ export async function zoneCheck() {                       // fly.js asks now and
 }
 export function resetZone() {
   view = null; sel = null; away = false; lastCheck = 0; cam = null; modSig = ''; lastEv = null; lastMe = null; pops = []; zoomMode = 0;
-  prevV.clear(); acc.clear(); head.clear(); pst.clear(); stopTimers(); chips.clear();
+  prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
 }
 
@@ -452,13 +462,21 @@ function makeShipChip(s) {
 function menuItems(id) {
   if (id === view.me.id) return { title: 'Your ship', items: [['stop', 'Stop']] };
   const s = view.ships.find(x => x.id === id); if (!s) return null;
-  return s.hostile ? { title: s.name + ' (hostile)', items: [['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']] }
-                   : { title: s.name + ' (friendly)', items: [['follow', 'Follow']] };
+  return s.hostile ? { ship: s, title: s.name + ' (hostile)', items: [['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']] }
+                   : { ship: s, title: s.name + ' (friendly)', items: [['follow', 'Follow']] };
 }
 function buildMenu() {
   const d = view && menuFor && menuItems(menuFor);
   if (!d) { R.menu.hidden = true; menuFor = null; return false; }
   const rows = [el('div', 'zh', d.title)];
+  if (d.ship) {                                          // class, weapons and mods in short form, and the range toggle
+    const s = d.ship, cl = String(s.class || '?').toLowerCase();
+    rows.push(el('div', 'zl', (CLS[cl] || cl.slice(0, 3)) + '  |  weapons: ' + grouped((s.weapons || []).map(w => FAB[w.fam] || abbr(w.fam)))));
+    rows.push(el('div', 'zl', 'mods: ' + grouped((s.mods || []).filter(x => x.k !== 'weapon').map(x => abbr(x.n)))));
+    const on = rangeOn.has(s.id), rb = el('button', on ? '' : 'alt', 'Range: ' + (on ? 'ON' : 'OFF'));
+    rb.onclick = ev => { ev.stopPropagation(); if (rangeOn.has(s.id)) rangeOn.delete(s.id); else rangeOn.add(s.id); buildMenu(); drawMap(); };
+    rows.push(rb);
+  }
   d.items.forEach(([k, label]) => {
     const wait = pending && pending.kind === k && pending.id === menuFor;
     const b = el('button', wait ? 'pend' : (orderActive(k, menuFor) ? '' : 'alt'), wait ? label + ' ...' : label);
@@ -525,6 +543,7 @@ function showInfo(m, anchor) {
   const me = view.me, w = (me.weapons || []).find(x => x.id === m.id), d = (me.dps_list || []).find(x => x.id === m.id);
   const lines = [m.name, (m.family || m.kind) + (m.on ? '' : '  (OFF)')];
   lines.push('Heat: ' + (m.heat || 0) + ' per second');
+  if (m.family === 'missile') lines.push('Ammo left: ' + Math.round(me.ammo));
   if (w) { lines.push('Best range: ' + km(w.opt_km), 'Longest range: ' + km(w.max_km)); lines.push(d ? 'Damage now: ' + d.dps + '/s  (' + pct(d.acc) + '% hit)' : 'Damage: needs a target in range'); }
   R.info.replaceChildren(...lines.map((t, i) => el('div', i ? '' : 'zh', t)));
   R.info.hidden = false;
@@ -620,6 +639,19 @@ function frame(full) {
   drawMap();
 }
 
+/* weapon reach circles: shaded disc = longest range, ring = best range, one pair per kind of weapon in its own color (identical weapons share one pair) */
+function drawRanges(c, q, ws, k, dashed) {
+  const seen = new Set();
+  (ws || []).forEach(w => {
+    const key = w.fam + '|' + w.opt_km + '|' + w.max_km; if (seen.has(key)) return; seen.add(key);
+    const col = FAM[w.fam] || '#e8b64a';
+    c.globalAlpha = 0.07; c.fillStyle = col; c.beginPath(); c.arc(q.x, q.y, w.max_km * k, 0, 7); c.fill();
+    c.globalAlpha = 0.55; c.strokeStyle = col; c.lineWidth = 1; c.setLineDash(dashed ? [4, 4] : []);
+    c.beginPath(); c.arc(q.x, q.y, w.opt_km * k, 0, 7); c.stroke(); c.setLineDash([]);
+    c.globalAlpha = 1;
+  });
+}
+
 /* a drawn background: soft colored clouds and stars, made once per screen size (25% larger than the screen so it can drift) */
 function makeBg(W, H) {
   const w = Math.round(W * 1.25), h = Math.round(H * 1.25), c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -657,15 +689,8 @@ function drawMap() {
   c.lineWidth = 1.5; c.setLineDash([6, 6]); c.strokeStyle = near ? '#ff5a4a' : '#6b7794';
   c.beginPath(); c.arc(o.x, o.y, exit * k, 0, 7); c.stroke(); c.setLineDash([]);
   // my weapon reach: shaded disc = longest range, ring = best range
-  if (showRanges) {
-    const q = toScr(mp.x, mp.y);
-    (m.weapons || []).forEach(w => {
-      const col = FAM[w.fam] || '#e8b64a';
-      c.globalAlpha = 0.07; c.fillStyle = col; c.beginPath(); c.arc(q.x, q.y, w.max_km * k, 0, 7); c.fill();
-      c.globalAlpha = 0.5; c.strokeStyle = col; c.lineWidth = 1; c.beginPath(); c.arc(q.x, q.y, w.opt_km * k, 0, 7); c.stroke();
-      c.globalAlpha = 1;
-    });
-  }
+  if (showRanges) drawRanges(c, toScr(mp.x, mp.y), m.weapons, k, false);
+  view.ships.forEach(s => { if (rangeOn.has(s.id)) { const p = P(s); drawRanges(c, toScr(p.x, p.y), s.weapons, k, true); } });     // other ships: dashed rings
   const tid = sel || m.target_id;
   const ship = (s, p, col, isMe) => {
     const q = toScr(p.x, p.y), a = acc.get(s.id), am = a ? Math.hypot(a.ax, a.ay) : 0, g = am / G_KMS2;
