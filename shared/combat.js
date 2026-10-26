@@ -51,7 +51,8 @@ export const DEFAULTS = {
   econ_heat_line: 0.8,     // ECONOMY stops big thrust at this share of heat capacity
   class_step_pts: 20,      // accuracy points lost per class step (shooter bigger than target)
   laser_mob_mult: 0.5,     // lasers take this share of the target's mobility penalty
-  hold_factor: 0.98,       // 'attack at MAX range' holds this share of the max range
+  hold_factor: 0.98,       // 'attack at MAX range' holds this share of the max range (when the weapon still hits well out there)
+  long_acc_frac: 0.5,      // 'attack long' holds at the farthest range where a weapon keeps at least this share of its best-range accuracy
   follow_km: 50000,        // distance kept by the FOLLOW order
 };
 
@@ -294,6 +295,14 @@ function nearestHostile(s, ships) {
   return best;
 }
 
+// 'attack long': the farthest range where the weapon keeps at least long_acc_frac of its best-range accuracy.
+// A weapon that stays accurate to its edge (max accuracy is already above that) holds at hold_factor x max range, as before.
+function longRange(w, cfg) {
+  const A = Math.max(w.maxAcc, w.optAcc * cfg.long_acc_frac);
+  if (w.maxR <= w.optR || w.optAcc <= w.maxAcc || A <= w.maxAcc) return w.maxR * cfg.hold_factor;
+  return w.optR + (w.maxR - w.optR) * (w.optAcc - A) / (w.optAcc - w.maxAcc);
+}
+
 // distance the ship wants to hold, from its ORDER and the weapons that are on
 function holdRange(kind, ss, cfg, override) {
   // step 4: the pilot may set his own station-keeping distance on an order (order.hold_km); it replaces the worked-out one
@@ -303,7 +312,7 @@ function holdRange(kind, ss, cfg, override) {
   for (const w of ss.weapons) {
     const wt = w.damage / w.reuse;
     wsum += wt;
-    rsum += wt * (kind === 'attack_max' ? w.maxR * cfg.hold_factor : w.optR);
+    rsum += wt * (kind === 'attack_max' ? longRange(w, cfg) : w.optR);
   }
   return wsum > 0 ? rsum / wsum : cfg.follow_km;
 }
