@@ -18,7 +18,7 @@ async function applyEffects(db, characterId, quest, event) {
 
 // Missions that refuse to start unless the flown ship has a weapon fitted (a rig of kind 'weapon' in a weapon slot).
 // To give another mission the same check, add its id here.
-const NEEDS_WEAPON = ['esc_1'];
+const NEEDS_WEAPON = ['esc_1', 'esc_2'];
 
 // true when the pilot's active ship has at least one fitted rig whose kind is 'weapon'.
 async function hasWeaponFitted(db, characterId) {
