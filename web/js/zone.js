@@ -13,7 +13,7 @@ const POLL_MS = 5000;
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
 let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null;
-let lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
+let endWant = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
@@ -46,6 +46,7 @@ const CSS = `
 .zsq.tall .zt{top:42%}
 @keyframes zflash{0%,100%{background:rgba(255,40,30,.9)}50%{background:rgba(19,26,42,.9)}}
 .zsq.flash{animation:zflash .6s infinite}
+.zsq.wait{opacity:.55;border-style:dashed}
 .zsb{position:relative;height:11px;background:#1c2438;border-radius:3px;overflow:hidden}
 .zsb i{position:absolute;left:0;top:0;bottom:0;width:0}
 .zsb span{position:relative;display:block;font-size:9px;line-height:11px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000}
@@ -192,7 +193,13 @@ function ui() {
   setZoomChip();
   R.set.onclick = ev => { ev.stopPropagation(); const open = R.sets.hidden; closeMenus(); R.sets.hidden = !open; if (open) placeBelow(R.sets, R.set); };
   R.zoomB.onclick = ev => { ev.stopPropagation(); cycleZoom(); };
-  R.end.b.onclick = ev => { ev.stopPropagation(); if (view) send('combat_stance', { stance: view.me.stance === 'free' ? 'full' : 'free' }); };
+  R.end.b.onclick = ev => {
+    ev.stopPropagation();
+    if (!view || endWant !== null) return;                                  // one change at a time
+    endWant = view.me.stance === 'free';                                    // true = we asked for ON
+    paintEnd();                                                             // grey and dashed until the server has answered
+    send('combat_stance', { stance: endWant ? 'full' : 'free' }).finally(() => { endWant = null; if (view) paintEnd(); });
+  };
   R.heat.b.onclick = ev => { ev.stopPropagation(); const open = R.pop.hidden; closeMenus(); if (open) { heatOpen = true; fillHeat(); R.pop.hidden = false; placeLeft(R.pop, R.heat.b); } };
   root.addEventListener('pointerdown', ev => {
     const t = ev.target, inside = x => x && x.contains(t);
@@ -299,7 +306,7 @@ function apply(v) {
 }
 function closeZone(v) {
   const was = !!view;
-  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = ''; lastAmmo = null;
+  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
@@ -408,14 +415,19 @@ function sizeChips() {
   const c = Math.max(38, Math.min(58, Math.floor((root.clientWidth - 70) / n) - 6));
   root.style.setProperty('--c', c + 'px');
 }
+/* the endurance chip: fills like a bar, tap = all or none (ON = full burn, OFF = free burn only); while a change is on its way it shows the wanted state, greyed */
+function paintEnd() {
+  if (!view) return;
+  const m = view.me, ef = m.endurance_max > 0 ? m.endurance / m.endurance_max : 0, waiting = endWant !== null, eon = waiting ? endWant : m.stance !== 'free';
+  R.end.f.style.height = pct(ef) + '%'; R.end.f.style.background = eon ? '#9a7bff' : '#667';
+  R.end.t.textContent = pct(ef) + '%'; R.end.d.textContent = waiting ? '...' : (eon ? 'END ON' : 'END OFF');
+  R.end.b.style.borderColor = m.drained ? '#ff5a4a' : (eon ? '#9a7bff' : '#667');
+  R.end.b.classList.toggle('wait', waiting);
+}
 function render() {
   const v = view, m = v.me;
   R.bSh.set(m.shield, m.shield_max); R.bAr.set(m.armor, m.armor_max); R.bHu.set(m.hull, m.hull_max);
-  // endurance chip: fills like a bar, tap = all or none (ON = full burn, OFF = free burn only)
-  const ef = m.endurance_max > 0 ? m.endurance / m.endurance_max : 0, eon = m.stance !== 'free';
-  R.end.f.style.height = pct(ef) + '%'; R.end.f.style.background = eon ? '#9a7bff' : '#667';
-  R.end.t.textContent = pct(ef) + '%'; R.end.d.textContent = eon ? 'END ON' : 'END OFF';
-  R.end.b.style.borderColor = m.drained ? '#ff5a4a' : (eon ? '#9a7bff' : '#667');
+  paintEnd();
   // heat chip: green to 40%, yellow to the first penalty, red above, flashing while shut down
   const hf = m.heat_cap > 0 ? m.heat / m.heat_cap : 0, hw = m.heat_warn || 0.8, hcol = hf <= 0.4 ? '#4cd37a' : hf <= hw ? '#f2c744' : '#ff5a4a', hi = heatInfo();
   R.heat.f.style.height = pct(hf) + '%'; R.heat.f.style.background = hcol;
