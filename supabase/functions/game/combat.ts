@@ -334,7 +334,7 @@ async function buildView(db, ctx, myShipId) {
   const { data: ev } = await db.from('combat_events').select('id,at,kind,actor_id,target_id,amount').eq('zone_id', zone.location_id).eq('instance', instance).order('id', { ascending: false }).limit(RECENT_EVENTS);
   return {
     ok: true, in_zone: true,
-    zone: { id: zone.location_id, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100) },
+    zone: { id: zone.location_id, instanced: !!zone.instanced, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100) },
     now_ms: Date.now(), scale: CLOCK.scale, step_s: cfg.step_s,
     me: {
       id: me.id, side: me.side, x: Math.round(me.x), y: Math.round(me.y), vx: r3(me.vx), vy: r3(me.vy),
@@ -411,7 +411,7 @@ export async function combatZone(db, user, body) {
     const { data: dts } = await db.from('drone_types').select('id,name,kill_quest,sort_order').order('sort_order');
     const { data: cqs } = await db.from('character_quests').select('quest_id,status').eq('character_id', ch.id);
     const open = new Set((cqs ?? []).filter((q) => ['active', 'ready', 'claimed'].includes(q.status)).map((q) => q.quest_id));
-    drones = (dts ?? []).map((d) => ({ id: d.id, name: d.name, unlocked: !d.kill_quest || open.has(d.kill_quest) }));
+    drones = (dts ?? []).map((d) => ({ id: d.id, name: d.name, quest: d.kill_quest || null, unlocked: !d.kill_quest || open.has(d.kill_quest) }));
   }
   return json({
     ok: true, in_zone: false, here: true, can_enter: !pod, drones,
