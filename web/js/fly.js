@@ -10,7 +10,7 @@
 import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse, stopPlan, segmentEnd } from 'physics';
 import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow } from 'core';
 import { createMap } from 'map';
-import { zoneIn, zoneEnter, zoneShow, zoneCheck } from 'zone';
+import { zoneIn, zoneEnter, zoneShow, zoneCheck, zoneDrones } from 'zone';
 
 const SHOW_FLIGHT_BUTTONS = false;     /* Hold the bar / Stop / Coast: not in the MVP. Set to true to bring the three buttons back. */
 let reveal = false;                    /* true right after a line is tapped: scroll so the Launch button under it is in view */
@@ -344,16 +344,21 @@ function drawZone(ship) {
   if (zoneDismissed === l.id && !inside) { zoneBox.hidden = true; return; }
   const title = document.createElement('div'); title.style.cssText = 'font-weight:bold;margin-bottom:6px'; title.textContent = l.name;
   const text = document.createElement('div'); text.textContent = l.info || 'This is where combat will happen.';
-  const enter = document.createElement('button'); enter.textContent = inside ? 'Return to the zone' : 'Enter the zone'; enter.style.marginTop = '10px';
-  enter.onclick = async () => {
-    enter.disabled = true;
-    try { if (inside) await zoneShow(); else await zoneEnter(); }
-    catch (e) { say('Error: ' + ((e.data && e.data.message) || e.message), 'err'); }
-    finally { enter.disabled = false; }
+  const drs = inside ? [] : zoneDrones();                       /* an instanced range: one Enter button for each drone the pilot may ask for (only when there is a choice) */
+  const mkEnter = (label, drone) => {
+    const b = document.createElement('button'); b.textContent = label; b.style.marginTop = '10px';
+    b.onclick = async () => {
+      b.disabled = true;
+      try { if (inside) await zoneShow(); else await zoneEnter(drone); }
+      catch (e) { say('Error: ' + ((e.data && (e.data.message || e.data.error)) || e.message), 'err'); }
+      finally { b.disabled = false; }
+    };
+    return b;
   };
+  const enters = drs.length > 1 ? drs.map(d => mkEnter('Enter: ' + d.name, d.id)) : [mkEnter(inside ? 'Return to the zone' : 'Enter the zone')];
   const ok = document.createElement('button'); ok.textContent = 'Not now'; ok.className = 'alt'; ok.style.marginTop = '10px';
   ok.onclick = () => { zoneDismissed = l.id; zoneBox.hidden = true; };
-  zoneBox.replaceChildren(...(inside ? [title, text, enter] : [title, text, enter, ok]));
+  zoneBox.replaceChildren(...(inside ? [title, text, ...enters] : [title, text, ...enters, ok]));
   zoneBox.hidden = false;
 }
 
