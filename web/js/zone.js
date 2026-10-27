@@ -8,12 +8,13 @@
 // acceleration, and each new answer is blended in over a moment, so the motion stays smooth at the screen's full speed.
 // Server actions used: combat_zone, combat_enter, combat_order, combat_stance, combat_module.
 import { S, call, whole, el, say } from 'core';
+import { modal, closeModal } from './coach.js';
 
 const POLL_MS = 5000;
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
 let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null;
-let endWant = null, endAt = 0, endBusy = false, endSt = null, heatSt = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
+let outInfo = null, lastDrone = null, lastInstanced = false, endWant = null, endAt = 0, endBusy = false, endSt = null, heatSt = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
@@ -299,6 +300,9 @@ function apply(v) {
   if (!v.in_zone) { closeZone(v); return; }
   ui();
   view = v; recv = Date.now(); lastMe = v.me.id;
+  const dr = (v.ships || []).find(s => s.drone && s.hostile);          // which drone we are fighting (for the choices after the kill)
+  if (dr) lastDrone = dr.drone;
+  lastInstanced = !!(v.zone && v.zone.instanced);
   trackMotion(v);
   trackBars(v);
   newEvents(v);
@@ -316,13 +320,15 @@ function apply(v) {
   render();
 }
 function closeZone(v) {
-  const was = !!view;
+  const was = !!view, killedDrone = lastDrone, wasInstanced = lastInstanced;
+  lastDrone = null; lastCheck = 0;
   view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
     if (v.ship_state === 'drifting') say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
-    else if (v.ended === 'cleared') say('Zone cleared. Your ship is docked at the range.', 'ok');
+    else if (v.ended === 'cleared') { say('Zone cleared. Your ship is docked at the range.', 'ok'); if (wasInstanced && killedDrone) afterKill(killedDrone); }
+    else if (v.ended === 'retreat') say(v.message || 'Combat stopped: your hull fell below the safe limit. Your ship is safe at the range.', 'ok');
     else if (v.ended === 'kill') say('Your ship was destroyed. (Test version: it stays docked at the range.)', 'err');
     else say('The fight is over. Your ship is docked at the range.', 'ok');
     if (S.refresh) S.refresh();
@@ -378,8 +384,38 @@ function newEvents(v) {
 
 /* ---------- what fly.js uses ---------- */
 export const zoneIn = () => !!view;
-export async function zoneEnter() {                       // the Enter button of the popup
-  const v = await call('combat_enter');
+export const zoneDrones = () => (outInfo && outInfo.here && Array.isArray(outInfo.drones)) ? outInfo.drones.filter(d => d.unlocked) : [];   // the drones this pilot may ask for here
+
+/* after a drone dies on an INSTANCED range: what next? Fight again, fight another drone (the next one starts its mission: the one just done is claimed, the next accepted), or leave. */
+const errMsg = e => (e && e.data && (e.data.message || e.data.error)) || (e && e.message) || 'error';
+const KILL_TEXT = {
+  drone_1: 'Target destroyed. It did not fight back, which Range Control reminds you was the design.',
+  drone_2: 'Combat Drone destroyed. Range Control notes that it was shooting at you the whole time.',
+};
+async function afterKill(killedId) {
+  let list = [];
+  try { const o = await call('combat_zone', {}); outInfo = o; list = (o && o.here && o.drones) || []; } catch (e) { return; }
+  const killed = list.find(d => d.id === killedId);
+  if (!killed) return;
+  const go = async d => {
+    closeModal();
+    try {
+      if (!d.unlocked) {
+        if (killed.quest) { try { const r = await call('mission_claim', { quest: killed.quest }); if (r && r.reward) say('Mission complete: +' + whole(r.reward.credits || 0) + ' credits.', 'ok'); } catch (e) { /* already claimed or not ready: fine */ } }
+        try { await call('missions'); } catch (e) { /* only syncs the mission list */ }
+        if (d.quest) await call('mission_accept', { quest: d.quest });
+      }
+      const v = await call('combat_enter', { drone: d.id }); away = false; apply(v);
+    } catch (e) { say(errMsg(e), 'err'); }
+    if (S.refresh) S.refresh();
+  };
+  const buttons = [{ label: 'Fight again', onClick: () => go(killed) }];
+  list.filter(d => d.id !== killedId).forEach(d => buttons.push({ label: 'Fight the ' + d.name + (d.unlocked ? '' : ' (starts its mission)'), onClick: () => go(d) }));
+  buttons.push({ label: 'Leave', alt: true, onClick: () => { closeModal(); if (S.refresh) S.refresh(); } });
+  modal({ kicker: 'RANGE CONTROL', title: 'Exercise complete', paras: [KILL_TEXT[killedId] || 'Target destroyed.'], buttons });
+}
+export async function zoneEnter(drone) {                   // the Enter button of the popup (drone = a drone type the pilot asks for; none = the zone's own)
+  const v = await call('combat_enter', drone ? { drone } : undefined);
   away = false; apply(v);
 }
 export async function zoneShow() {                        // 'Return to the zone'
@@ -388,7 +424,7 @@ export async function zoneShow() {                        // 'Return to the zone
 export async function zoneCheck() {                       // fly.js asks now and then while docked at a zone place: are we already inside?
   if (view || busy || Date.now() - lastCheck < 20000) return;
   lastCheck = Date.now(); busy = true;
-  try { const v = await call('combat_zone', {}); if (v && v.in_zone) { away = false; apply(v); } } catch (e) { /* the popup stays as it is */ }
+  try { const v = await call('combat_zone', {}); if (v && v.in_zone) { away = false; apply(v); } else outInfo = v; } catch (e) { /* the popup stays as it is */ }
   finally { busy = false; }
 }
 export function resetZone() {
