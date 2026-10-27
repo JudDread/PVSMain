@@ -196,6 +196,25 @@ async function advanceZone(db, ctx, nowMs) {
     if (se) throw se;
     for (const r of sh ?? []) owner.set(r.id, r.character_id);
   }
+  // MISSIONS: a player ship that destroyed a drone whose type has a kill_quest finishes that mission's step 'kill:<drone type>'.
+  // (The server does this itself: the page cannot be trusted to say what died. A mission that is not accepted yet simply ignores it.)
+  const kills = res.events.filter((e) => e.kind === 'kill' && e.actor_id && e.target_id);
+  if (kills.length) {
+    const typeOf = new Map(rows.map((r) => [r.id, r.drone_type]));
+    const wanted = [...new Set(kills.map((e) => typeOf.get(e.target_id)).filter(Boolean))];
+    if (wanted.length) {
+      const { data: dts } = await db.from('drone_types').select('id,kill_quest').in('id', wanted);
+      const questOf = new Map((dts ?? []).map((d) => [d.id, d.kill_quest]));
+      for (const e of kills) {
+        const dt = typeOf.get(e.target_id), quest = dt ? questOf.get(dt) : null;
+        const killer = res.ships.find((x) => x.id === e.actor_id);
+        const cid = killer && killer.ship_id ? owner.get(killer.ship_id) : null;
+        if (!quest || !cid) continue;
+        const { error: qe } = await db.rpc('quest_step', { p_character: cid, p_quest: quest, p_step: 'kill:' + dt });
+        if (qe) console.error('quest_step (kill) failed', qe);
+      }
+    }
+  }
   const loc = await getLocation(db, zone.location_id);
   const exitT = new Map();
   for (const e of res.events) if (e.kind === 'exit') exitT.set(e.actor_id, e.t);
@@ -300,7 +319,7 @@ async function buildView(db, ctx, myShipId) {
   const others = ships.filter((s) => s.id !== me.id).map((s) => {
     const st = statsOf(s, cfg);
     return {
-      id: s.id, name: names.get(s.id) || 'Ship', side: s.side, hostile: s.side !== me.side,
+      id: s.id, name: names.get(s.id) || 'Ship', side: s.side, hostile: s.side !== me.side, drone: s.drone_type || null,
       hull_id: s.base.hull.id, class: s.base.hull.class,
       x: Math.round(s.x), y: Math.round(s.y), vx: r3(s.vx), vy: r3(s.vy),
       dist_km: Math.round(dist(me, s)),
@@ -361,7 +380,7 @@ export async function inCombat(db, user) {
 // ---------- combat_zone ----------
 export async function combatZone(db, user, body) {
   const b = await begin(db, user); if (b.err) return b.err;
-  const { ship, mine } = b;
+  const { ch, ship, mine } = b;
   const nowMs = Date.now();
   if (mine) {
     const ctx = await workZone(db, mine.zone_id, mine.instance, nowMs);
@@ -387,8 +406,15 @@ export async function combatZone(db, user, body) {
   if (!zone) return json({ ok: true, in_zone: false, here: false });
   const loc = await getLocation(db, ship.location_id);
   const pod = ship.hull_id === 'life_pod';
+  let drones = null;                                   // instanced range: the drones this pilot may ask for (a drone is open once its mission is accepted)
+  if (zone.instanced) {
+    const { data: dts } = await db.from('drone_types').select('id,name,kill_quest,sort_order').order('sort_order');
+    const { data: cqs } = await db.from('character_quests').select('quest_id,status').eq('character_id', ch.id);
+    const open = new Set((cqs ?? []).filter((q) => ['active', 'ready', 'claimed'].includes(q.status)).map((q) => q.quest_id));
+    drones = (dts ?? []).map((d) => ({ id: d.id, name: d.name, unlocked: !d.kill_quest || open.has(d.kill_quest) }));
+  }
   return json({
-    ok: true, in_zone: false, here: true, can_enter: !pod,
+    ok: true, in_zone: false, here: true, can_enter: !pod, drones,
     message: pod ? 'A life pod cannot enter a combat zone. Board a ship first.' : null,
     zone: { id: zone.location_id, name: loc ? loc.name : zone.location_id, info: loc ? loc.info : null, pvp: loc ? !!loc.pvp : true, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), instanced: !!zone.instanced, retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100), default_drone: zone.default_drone || null },
   });
@@ -446,6 +472,10 @@ export async function combatEnter(db, user, body = {}) {
       const { data: dt, error: dte } = await db.from('drone_types').select('*').eq('id', want).maybeSingle();
       if (dte) throw dte;
       if (!dt) return refuse('bad_drone', 'That drone does not exist.');
+      if (zone.instanced && body && body.drone && dt.kill_quest) {         // an asked-for drone needs its mission accepted (the default drone needs nothing)
+        const { data: cq } = await db.from('character_quests').select('status').eq('character_id', ch.id).eq('quest_id', dt.kill_quest).maybeSingle();
+        if (!cq || !['active', 'ready', 'claimed'].includes(cq.status)) return refuse('drone_locked', 'Accept its mission first (Missions screen).');
+      }
       const { data: dh } = await db.from('hulls').select('*').eq('id', dt.hull_id).maybeSingle();
       if (dh) {
         const dpilot = await pilotBlock(db, null, pilotCfg, t);
