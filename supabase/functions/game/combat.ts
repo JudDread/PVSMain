@@ -3,11 +3,13 @@
 // Combat actions (COMBAT MVP step 4a). The fight maths is shared/combat.js (bundled as ./combat_bundle.ts);
 // this file only loads and stores the fight and checks who is asking.
 //   combat_zone    {}                          where am I: outside a zone (can I enter?) or inside (works the fight forward, returns it)
-//   combat_enter   {}                          enter the zone of the place where the flown ship is docked
+//   combat_enter   {drone?}                     enter the zone of the place where the flown ship is docked (drone = a drone_types id, ranges only)
 //   combat_order   {kind, target?, hold_km?}   attack_max | attack_opt | follow | stop | flee; hold_km = own station-keeping distance
 //   combat_stance  {stance}                    free | economy | full  (the burn switch)
 //   combat_module  {index, on}                 switch one weapon / rig on or off
 // There is no 'leave' action: a ship leaves by flying beyond the exit radius (then it drifts on the Fly screen).
+// A fight = a zone + an INSTANCE. Instanced zones (the ESC range) give every pilot his own fight (instance = character id);
+// other zones have one shared fight (instance ''). A zone with retreat_hull_frac stops the fight for a pilot whose hull falls below it.
 // Imports from common.ts and the two bundles only.
 // ======================================================================
 import { json, getCharacter, getLocation, getShip, resolveFor, placeXY, pilotNumbers, UUID_RE } from './common.ts';
@@ -121,29 +123,51 @@ function missilesOff(s) {
 }
 
 // ---------- working a zone forward ----------
-// Claims the zone (SQL combat_zone_claim), works every ship forward to now, stores the result, handles ships that
+// Claims the fight (SQL combat_instance_claim), works every ship forward to now, stores the result, handles ships that
 // died or left. Returns {zone, cfg, pilotCfg}; null when the place has no zone.
-async function workZone(db, zoneId, nowMs) {
+async function workZone(db, zoneId, instance, nowMs) {
   const { data: zone, error: ze } = await db.from('combat_zones').select('*').eq('location_id', zoneId).maybeSingle();
   if (ze) throw ze;
   if (!zone) return null;
   const { cfg, pilotCfg } = await loadSettings(db);
-  const { data: claim, error: ce } = await db.rpc('combat_zone_claim', { p_zone: zoneId, p_now: new Date(nowMs).toISOString() });
+  const { data: claim, error: ce } = await db.rpc('combat_instance_claim', { p_zone: zoneId, p_instance: instance || '', p_now: new Date(nowMs).toISOString() });
   if (ce) throw ce;
-  const ctx = { zone, cfg, pilotCfg };
+  const ctx = { zone, cfg, pilotCfg, instance: instance || '' };
   if (claim && claim.work) await advanceZone(db, ctx, nowMs);
   return ctx;
 }
 
 async function advanceZone(db, ctx, nowMs) {
-  const { zone, cfg } = ctx;
-  const { data: rows, error } = await db.from('combat_ships').select('*').eq('zone_id', zone.location_id);
+  const { zone, cfg, instance } = ctx;
+  const { data: rows, error } = await db.from('combat_ships').select('*').eq('zone_id', zone.location_id).eq('instance', instance);
   if (error) throw error;
   if (!rows || !rows.length) return;
   const snapMs = Math.min(...rows.map((r) => Date.parse(r.snap_at)));
   const elapsed = (nowMs - snapMs) / 1000;
   if (!(elapsed > 0.5)) return;
-  const res = advance(rows.map(fromRow), elapsed, { scale: CLOCK.scale, cfg, zone: { exit_km: num(zone.exit_radius_km) } });
+
+  // Work forward ONE STEP AT A TIME (same maths as one long advance) so the RETREAT rule can look at every pilot's hull after each step:
+  // a pilot whose hull falls below zone.retreat_hull_frac leaves the fight at once (the ship stays docked, nothing is lost).
+  const retreatFrac = zone.retreat_hull_frac == null ? null : num(zone.retreat_hull_frac);
+  const total = Math.max(0, Math.min(elapsed, cfg.catchup_max_s));
+  const res = { ships: rows.map(fromRow), events: [] };
+  for (let t = 0; total - t > 1e-9;) {
+    const dt = Math.min(cfg.step_s, total - t);
+    const r = advance(res.ships, dt, { scale: CLOCK.scale, cfg, zone: { exit_km: num(zone.exit_radius_km) } });
+    for (const e of r.events) res.events.push({ ...e, t: e.t + t });
+    res.ships = r.ships;
+    t += dt;
+    if (retreatFrac) {
+      for (const s of res.ships) {
+        if (!s.ship_id || !s.alive || s.left) continue;
+        const hm = statsOf(s, cfg).hull_max;
+        if (hm > 0 && s.hull < retreatFrac * hm) {
+          s.left = true; s.retreated = true;
+          res.events.push({ kind: 'retreat', actor_id: s.id, target_id: null, amount: s.hull / hm, note: null, t });
+        }
+      }
+    }
+  }
 
   // events: damage rows are summed per attacker / target pair for the whole catch-up (saves database space)
   const evRows = [];
@@ -152,10 +176,10 @@ async function advanceZone(db, ctx, nowMs) {
     const at = new Date(Math.min(nowMs, snapMs + e.t * 1000)).toISOString();
     if (e.kind === 'damage') {
       const k = e.actor_id + '|' + e.target_id;
-      const d = dmg.get(k) || { zone_id: zone.location_id, at, kind: 'damage', actor_id: e.actor_id, target_id: e.target_id, amount: 0, note: null };
+      const d = dmg.get(k) || { zone_id: zone.location_id, instance, at, kind: 'damage', actor_id: e.actor_id, target_id: e.target_id, amount: 0, note: null };
       d.amount += e.amount; d.at = at; dmg.set(k, d);
     } else {
-      evRows.push({ zone_id: zone.location_id, at, kind: e.kind, actor_id: e.actor_id ?? null, target_id: e.target_id ?? null, amount: e.amount ?? null, note: e.note ?? null });
+      evRows.push({ zone_id: zone.location_id, instance, at, kind: e.kind, actor_id: e.actor_id ?? null, target_id: e.target_id ?? null, amount: e.amount ?? null, note: e.note ?? null });
     }
   }
   for (const d of dmg.values()) evRows.push(d);
@@ -188,7 +212,10 @@ async function advanceZone(db, ctx, nowMs) {
       const characterId = owner.get(s.ship_id);
       const when = snapMs + (exitT.get(s.id) ?? elapsed) * 1000;
       const tNow = gameDaysAt(nowMs);
-      if (s.alive && s.left && loc) {
+      if (s.retreated) {
+        // RETREAT: combat stops, the ship stays docked at the place (the page shows the Fly screen and a message)
+        if (characterId) await db.rpc('combat_endurance_set', { p_character: characterId, p_bar: s.endurance, p_t: tNow });
+      } else if (s.alive && s.left && loc) {
         // flew out: it becomes a DRIFT with the speed and direction it had (positions in the body's frame, AU and AU/day)
         const a = placeXY(loc);
         // it reappears ON the place (the zone is a point at the place) and keeps the speed and direction it had
@@ -223,14 +250,14 @@ async function advanceZone(db, ctx, nowMs) {
       if (live.some((o) => o.side !== p.side)) continue;
       const characterId = owner.get(p.ship_id);
       if (characterId) await db.rpc('combat_endurance_set', { p_character: characterId, p_bar: p.endurance, p_t: gameDaysAt(nowMs) });
-      await db.from('combat_events').insert({ zone_id: zone.location_id, at: new Date(nowMs).toISOString(), kind: 'cleared', actor_id: p.id, target_id: null, amount: null, note: null });
+      await db.from('combat_events').insert({ zone_id: zone.location_id, instance, at: new Date(nowMs).toISOString(), kind: 'cleared', actor_id: p.id, target_id: null, amount: null, note: null });
       const { error: ce2 } = await db.from('combat_ships').delete().eq('id', p.id);
       if (ce2) throw ce2;
       playersLeft = playersLeft.filter((q) => q.id !== p.id);
     }
   }
   if (!playersLeft.length) {
-    const { error: re } = await db.from('combat_ships').delete().eq('zone_id', zone.location_id).is('ship_id', null);
+    const { error: re } = await db.from('combat_ships').delete().eq('zone_id', zone.location_id).eq('instance', instance).is('ship_id', null);
     if (re) console.error('zone reset failed', re);
   }
 }
@@ -257,8 +284,8 @@ async function nameMap(db, rows) {
 }
 
 async function buildView(db, ctx, myShipId) {
-  const { zone, cfg } = ctx;
-  const { data: rows, error } = await db.from('combat_ships').select('*').eq('zone_id', zone.location_id);
+  const { zone, cfg, instance } = ctx;
+  const { data: rows, error } = await db.from('combat_ships').select('*').eq('zone_id', zone.location_id).eq('instance', instance);
   if (error) throw error;
   const myRow = (rows ?? []).find((r) => r.ship_id === myShipId);
   if (!myRow) return null;
@@ -285,10 +312,10 @@ async function buildView(db, ctx, myShipId) {
     };
   }).sort((a, b) => a.dist_km - b.dist_km);
 
-  const { data: ev } = await db.from('combat_events').select('id,at,kind,actor_id,target_id,amount').eq('zone_id', zone.location_id).order('id', { ascending: false }).limit(RECENT_EVENTS);
+  const { data: ev } = await db.from('combat_events').select('id,at,kind,actor_id,target_id,amount').eq('zone_id', zone.location_id).eq('instance', instance).order('id', { ascending: false }).limit(RECENT_EVENTS);
   return {
     ok: true, in_zone: true,
-    zone: { id: zone.location_id, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km) },
+    zone: { id: zone.location_id, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100) },
     now_ms: Date.now(), scale: CLOCK.scale, step_s: cfg.step_s,
     me: {
       id: me.id, side: me.side, x: Math.round(me.x), y: Math.round(me.y), vx: r3(me.vx), vy: r3(me.vy),
@@ -337,7 +364,7 @@ export async function combatZone(db, user, body) {
   const { ship, mine } = b;
   const nowMs = Date.now();
   if (mine) {
-    const ctx = await workZone(db, mine.zone_id, nowMs);
+    const ctx = await workZone(db, mine.zone_id, mine.instance, nowMs);
     const v = ctx ? await buildView(db, ctx, ship.id) : null;
     if (v) return json(v);
     // the ship is gone from the fight (destroyed or flew out while we worked): fall through to the 'outside' answer
@@ -345,13 +372,14 @@ export async function combatZone(db, user, body) {
     let ended = null;                                                // the page sends the id it last saw for itself: how did that ship leave?
     const last = body && body.last && UUID_RE.test(String(body.last)) ? String(body.last) : null;
     if (last) {
-      const { data: ev } = await db.from('combat_events').select('kind,actor_id,target_id').or('actor_id.eq.' + last + ',target_id.eq.' + last).in('kind', ['kill', 'cleared', 'exit']).order('id', { ascending: false }).limit(5);
+      const { data: ev } = await db.from('combat_events').select('kind,actor_id,target_id').or('actor_id.eq.' + last + ',target_id.eq.' + last).in('kind', ['kill', 'cleared', 'exit', 'retreat']).order('id', { ascending: false }).limit(5);
       for (const e of ev ?? []) {
         if (e.kind === 'kill' && e.target_id === last) { ended = 'kill'; break; }
-        if ((e.kind === 'cleared' || e.kind === 'exit') && e.actor_id === last) { ended = e.kind; break; }
+        if ((e.kind === 'cleared' || e.kind === 'exit' || e.kind === 'retreat') && e.actor_id === last) { ended = e.kind; break; }
       }
     }
-    return json({ ok: true, in_zone: false, left: true, ship_state: again ? again.state : null, ended });
+    const message = ended === 'retreat' ? 'Combat stopped: your hull fell below the safe limit. Your ship is safe at the range.' : null;
+    return json({ ok: true, in_zone: false, left: true, ship_state: again ? again.state : null, ended, message });
   }
   if (ship.state !== 'docked' || !ship.location_id) return json({ ok: true, in_zone: false, here: false });
   const { data: zone, error } = await db.from('combat_zones').select('*').eq('location_id', ship.location_id).maybeSingle();
@@ -362,19 +390,22 @@ export async function combatZone(db, user, body) {
   return json({
     ok: true, in_zone: false, here: true, can_enter: !pod,
     message: pod ? 'A life pod cannot enter a combat zone. Board a ship first.' : null,
-    zone: { id: zone.location_id, name: loc ? loc.name : zone.location_id, info: loc ? loc.info : null, pvp: loc ? !!loc.pvp : true, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km) },
+    zone: { id: zone.location_id, name: loc ? loc.name : zone.location_id, info: loc ? loc.info : null, pvp: loc ? !!loc.pvp : true, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), instanced: !!zone.instanced, retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100), default_drone: zone.default_drone || null },
   });
 }
 
 // ---------- combat_enter ----------
-export async function combatEnter(db, user) {
+export async function combatEnter(db, user, body = {}) {
   const b = await begin(db, user); if (b.err) return b.err;
   const { ch, ship, mine } = b;
   if (mine) return await combatZone(db, user, {});                   // already inside: just show it
   if (ship.state !== 'docked' || !ship.location_id) return refuse('not_docked', 'Dock at a combat zone first.');
   if (ship.hull_id === 'life_pod') return refuse('pod_cannot_enter', 'A life pod cannot enter a combat zone. Board a ship first.');
   const nowMs = Date.now();
-  const ctx = await workZone(db, ship.location_id, nowMs);           // work the fight forward to now BEFORE adding a ship
+  const { data: zrow, error: zre } = await db.from('combat_zones').select('instanced').eq('location_id', ship.location_id).maybeSingle();
+  if (zre) throw zre;
+  const instance = zrow && zrow.instanced ? ch.id : '';             // one fight per pilot on an instanced range, else one shared fight
+  const ctx = await workZone(db, ship.location_id, instance, nowMs);  // work the fight forward to now BEFORE adding a ship
   if (!ctx) return refuse('no_zone_here', 'There is no combat zone at this place.');
   const { zone, cfg, pilotCfg } = ctx;
   const loc = await getLocation(db, zone.location_id);
@@ -389,7 +420,7 @@ export async function combatEnter(db, user) {
   const base = resolveBase({ hull, rigs, skillFx: await skillEffects(db, ch.id), pilot });
 
   // where I appear
-  const { data: existing, error: ee } = await db.from('combat_ships').select('x_km,y_km,side,ship_id').eq('zone_id', zone.location_id);
+  const { data: existing, error: ee } = await db.from('combat_ships').select('x_km,y_km,side,ship_id').eq('zone_id', zone.location_id).eq('instance', instance);
   if (ee) throw ee;
   const R = num(zone.entry_radius_km);
   const players = (existing ?? []).filter((r) => r.ship_id).map((r) => ({ x: num(r.x_km), y: num(r.y_km) }));
@@ -398,30 +429,42 @@ export async function combatEnter(db, user) {
   const me = newShip({ id, side: 'players', base, x: R * Math.cos(ang), y: R * Math.sin(ang), endurance: pilot.bar, stance: 'full', order: { kind: 'stop' }, cfg });
   const nowIso = new Date(nowMs).toISOString();
   const toInsert = (s, extra) => ({
-    id: s.id, zone_id: zone.location_id, side: s.side, entered_at: nowIso, snap_at: nowIso,
+    id: s.id, zone_id: zone.location_id, instance, side: s.side, entered_at: nowIso, snap_at: nowIso,
     x_km: s.x, y_km: s.y, vx_kms: s.vx, vy_kms: s.vy, shield: s.shield, armor: s.armor, hull: s.hull, heat: 0, tripped: false,
     shutdown_until: null, ammo: s.ammo, target_id: null, order_kind: s.order.kind, order_at: nowIso, burn_stance: s.stance,
     modules: s.on, stats: s.base, endurance: s.endurance, drained: false, hold_km: null, ...extra,
   });
   const inserts = [toInsert(me, { ship_id: ship.id, drone_type: null })];
 
-  // TEMPORARY (step 5 replaces it): an NPC-only zone with no drone in it gets ONE practice drone, at the CENTRE of the zone
+  // TEMPORARY (step 5 replaces it): an NPC-only fight with no drone in it gets ONE drone, at the CENTRE of the zone.
+  // Which one: on an instanced range the pilot may ask for one (body.drone), otherwise the zone's default_drone.
   const hasDrone = (existing ?? []).some((r) => r.side === 'drones');
+  let spawned = false;
   if (loc && loc.pvp === false && !hasDrone) {
-    const { data: dt } = await db.from('drone_types').select('*').eq('id', 'practice_drone').maybeSingle();
-    if (dt) {
+    const want = zone.instanced && body && body.drone ? String(body.drone) : zone.default_drone;
+    if (want) {
+      const { data: dt, error: dte } = await db.from('drone_types').select('*').eq('id', want).maybeSingle();
+      if (dte) throw dte;
+      if (!dt) return refuse('bad_drone', 'That drone does not exist.');
       const { data: dh } = await db.from('hulls').select('*').eq('id', dt.hull_id).maybeSingle();
       if (dh) {
         const dpilot = await pilotBlock(db, null, pilotCfg, t);
-        const dbase = resolveBase({ hull: dh, rigs: await loadRigs(db, dt.rig_ids || []), skillFx: [], pilot: dpilot });
-        const drone = newShip({ id: crypto.randomUUID(), side: 'drones', base: dbase, x: 0, y: 0, endurance: dpilot.bar, stance: 'economy', order: { kind: 'attack_opt' }, cfg });
+        const dbase = resolveBase({ hull: dh, rigs: await loadRigs(db, dt.rig_ids || []), skillFx: [dt.effects || {}], pilot: dpilot });
+        const order = { kind: dt.start_order || 'attack_opt' };
+        const drone = newShip({ id: crypto.randomUUID(), side: 'drones', base: dbase, x: 0, y: 0, endurance: dpilot.bar, stance: 'economy', order, cfg });
         inserts.push(toInsert(drone, { ship_id: null, drone_type: dt.id }));
+        spawned = true;
       }
     }
   }
   const { error: ie } = await db.from('combat_ships').insert(inserts);
   if (ie) throw ie;
-  await db.from('combat_events').insert({ zone_id: zone.location_id, at: nowIso, kind: 'enter', actor_id: id, target_id: null, amount: null, note: null });
+  if (spawned) {
+    // two pilots entering a SHARED zone at the same moment could both add a drone: keep the one with the smallest id
+    const { data: ds } = await db.from('combat_ships').select('id').eq('zone_id', zone.location_id).eq('instance', instance).eq('side', 'drones').order('id');
+    for (const d of (ds ?? []).slice(1)) await db.from('combat_ships').delete().eq('id', d.id);
+  }
+  await db.from('combat_events').insert({ zone_id: zone.location_id, instance, at: nowIso, kind: 'enter', actor_id: id, target_id: null, amount: null, note: null });
   return json(await buildView(db, ctx, ship.id));
 }
 
@@ -431,7 +474,7 @@ async function command(db, user, apply) {
   const b = await begin(db, user); if (b.err) return b.err;
   const { ship, mine } = b;
   if (!mine) return refuse('not_in_zone', 'Your ship is not in a combat zone.');
-  const ctx = await workZone(db, mine.zone_id, Date.now());
+  const ctx = await workZone(db, mine.zone_id, mine.instance, Date.now());
   const { data: row, error } = await db.from('combat_ships').select('*').eq('ship_id', ship.id).maybeSingle();
   if (error) throw error;
   if (!row) return json({ ok: true, in_zone: false, left: true });
@@ -462,9 +505,9 @@ export async function combatOrder(db, user, body) {
     const patch = { order_kind: kind, order_at: new Date().toISOString(), hold_km: own ? null : hold, order_dir: kind === 'heading' ? dir : null };
     if (hold != null && hold > num(ctx.zone.exit_radius_km)) return { err: refuse('bad_distance', 'That distance is larger than the zone.') };
     if (target && !own) {
-      const { data: t, error } = await db.from('combat_ships').select('id,side,zone_id').eq('id', target).maybeSingle();
+      const { data: t, error } = await db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
       if (error) throw error;
-      if (!t || t.zone_id !== row.zone_id || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
+      if (!t || t.zone_id !== row.zone_id || t.instance !== row.instance || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
       if (kind === 'follow' && t.side !== row.side) return { err: refuse('bad_target', 'You can only follow a friendly ship.') };
       if (kind !== 'follow' && t.side === row.side) return { err: refuse('bad_target', 'You cannot attack a friendly ship.') };
       patch.target_id = t.id;
