@@ -13,7 +13,7 @@ const POLL_MS = 5000;
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
 let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null;
-let endWant = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
+let endWant = null, endAt = 0, endBusy = false, endSt = null, heatSt = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
@@ -47,6 +47,8 @@ const CSS = `
 @keyframes zflash{0%,100%{background:rgba(255,40,30,.9)}50%{background:rgba(19,26,42,.9)}}
 .zsq.flash{animation:zflash .6s infinite}
 .zsq.wait{opacity:.55;border-style:dashed}
+.zsq:active{transform:scale(.93)}
+.zsq.bar.on{box-shadow:inset 0 0 0 2px #9a7bff,0 0 9px rgba(154,123,255,.65)}
 .zsb{position:relative;height:11px;background:#1c2438;border-radius:3px;overflow:hidden}
 .zsb i{position:absolute;left:0;top:0;bottom:0;width:0}
 .zsb span{position:relative;display:block;font-size:9px;line-height:11px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000}
@@ -135,6 +137,12 @@ function posOf(id) {
   const ts = Math.min(12, (Date.now() - p.t) / 1000), g = ts * (view.scale || 60), k = Math.exp(-ts / 0.7);
   return { x: p.x + p.vx * g + 0.5 * p.ax * g * g + p.ox * k, y: p.y + p.vy * g + 0.5 * p.ay * g * g + p.oy * k };
 }
+/* the speed drawn NOW: the last speed plus the estimated acceleration, plus the part of the last correction still fading out */
+function velOf(id) {
+  const p = pst.get(id); if (!p || !view) return null;
+  const ts = Math.min(12, (Date.now() - p.t) / 1000), g = ts * (view.scale || 60), k = Math.exp(-ts / 0.7);
+  return { x: p.vx + p.ax * g + p.ovx * k, y: p.vy + p.ay * g + p.ovy * k };
+}
 const P = s => posOf(s.id) || { x: s.x, y: s.y };
 function headOf(s) {
   const p = pst.get(s.id); if (!p || !view) return head.get(s.id) || 0;
@@ -195,10 +203,12 @@ function ui() {
   R.zoomB.onclick = ev => { ev.stopPropagation(); cycleZoom(); };
   R.end.b.onclick = ev => {
     ev.stopPropagation();
-    if (!view || endWant !== null) return;                                  // one change at a time
-    endWant = view.me.stance === 'free';                                    // true = we asked for ON
-    paintEnd();                                                             // grey and dashed until the server has answered
-    send('combat_stance', { stance: endWant ? 'full' : 'free' }).finally(() => { endWant = null; if (view) paintEnd(); });
+    if (!view || endBusy) return;                                           // one change at a time
+    endWant = view.me.stance === 'free'; endAt = Date.now(); endBusy = true; // true = we asked for ON: the chip shows it AT ONCE
+    paintBars(true);
+    send('combat_stance', { stance: endWant ? 'full' : 'free' })
+      .then(ok => { if (!ok) endWant = null; })                             // the order failed: the chip goes back to what the server says
+      .finally(() => { endBusy = false; if (view) paintBars(true); });
   };
   R.heat.b.onclick = ev => { ev.stopPropagation(); const open = R.pop.hidden; closeMenus(); if (open) { heatOpen = true; fillHeat(); R.pop.hidden = false; placeLeft(R.pop, R.heat.b); } };
   root.addEventListener('pointerdown', ev => {
@@ -290,6 +300,7 @@ function apply(v) {
   ui();
   view = v; recv = Date.now(); lastMe = v.me.id;
   trackMotion(v);
+  trackBars(v);
   newEvents(v);
   if (lastAmmo !== null && lastAmmo >= 0.05 && v.me.ammo < 0.05 && (v.me.modules || []).some(x => x.family === 'missile')) toast('Out of missiles. The launchers are switched off.', true);
   lastAmmo = v.me.ammo;
@@ -306,7 +317,7 @@ function apply(v) {
 }
 function closeZone(v) {
   const was = !!view;
-  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null;
+  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
@@ -326,11 +337,34 @@ function trackMotion(v) {
     if (p) { const dtG = (recv - p.t) / 1000 * (v.scale || 60); if (dtG > 1) acc.set(s.id, { ax: (s.vx - p.vx) / dtG, ay: (s.vy - p.vy) / dtG }); }
     prevV.set(s.id, { vx: s.vx, vy: s.vy, t: recv });
     const old = pst.has(s.id) ? posOf(s.id) : null;            // where it was drawn a moment ago: the new picture is blended in from there
+    const oldVel = pst.has(s.id) ? velOf(s.id) : null;         // ... and how fast
     const a = acc.get(s.id) || { ax: 0, ay: 0 };
-    pst.set(s.id, { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: a.ax, ay: a.ay, t: recv, ox: old ? old.x - s.x : 0, oy: old ? old.y - s.y : 0 });
+    pst.set(s.id, { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: a.ax, ay: a.ay, t: recv, ox: old ? old.x - s.x : 0, oy: old ? old.y - s.y : 0, ovx: oldVel ? oldVel.x - s.vx : 0, ovy: oldVel ? oldVel.y - s.vy : 0 });
   });
   const ids = new Set(all.map(s => s.id));
   for (const k of [...pst.keys()]) if (!ids.has(k)) { pst.delete(k); prevV.delete(k); acc.delete(k); head.delete(k); }
+}
+/* endurance and heat between pictures: each bar is moved along its own rate, and every new picture is blended in over a moment.
+   endurance: the rate is MEASURED between the last two pictures (the page does not know the pilot's burn numbers);
+   heat: the rate is the model the heat menu already shows (heat made per second minus cooling) */
+function trackBars(v) {
+  const m = v.me;
+  const oldE = endSt ? endNow() : null, oldH = heatSt ? heatNow() : null;
+  let er = 0;
+  if (endSt && recv - endSt.t > 500) { const raw = (m.endurance - endSt.v) / ((recv - endSt.t) / 1000); er = 0.4 * endSt.r + 0.6 * raw; }
+  endSt = { v: m.endurance, t: recv, r: er, o: oldE === null ? 0 : oldE - m.endurance };
+  const hr = m.tripped ? -(m.heat_cool || 0) : heatInfo().net;
+  heatSt = { v: m.heat, t: recv, r: hr, o: oldH === null ? 0 : oldH - m.heat };
+}
+function endNow() {
+  const m = view.me; if (!endSt) return m.endurance;
+  const ts = Math.min(12, (Date.now() - endSt.t) / 1000);
+  return Math.max(0, Math.min(m.endurance_max, endSt.v + endSt.r * ts + endSt.o * Math.exp(-ts / 0.7)));
+}
+function heatNow() {
+  const m = view.me; if (!heatSt) return m.heat;
+  const ts = Math.min(12, (Date.now() - heatSt.t) / 1000);
+  return Math.max(0, Math.min(m.heat_cap, heatSt.v + heatSt.r * ts + heatSt.o * Math.exp(-ts / 0.7)));
 }
 function newEvents(v) {
   const evs = v.events || [];
@@ -415,25 +449,29 @@ function sizeChips() {
   const c = Math.max(38, Math.min(58, Math.floor((root.clientWidth - 70) / n) - 6));
   root.style.setProperty('--c', c + 'px');
 }
-/* the endurance chip: fills like a bar, tap = all or none (ON = full burn, OFF = free burn only); while a change is on its way it shows the wanted state, greyed */
-function paintEnd() {
+/* the endurance chip (tap = all or none: ON = full burn, OFF = free burn only) and the heat chip. Called on every screen frame: the fill moves smoothly,
+   the texts (text = true) only ~4 times a second. A tap on the endurance chip shows the wanted state AT ONCE and keeps it until the server says the same. */
+function paintBars(text) {
   if (!view) return;
-  const m = view.me, ef = m.endurance_max > 0 ? m.endurance / m.endurance_max : 0, waiting = endWant !== null, eon = waiting ? endWant : m.stance !== 'free';
+  const m = view.me;
+  if (endWant !== null && ((m.stance !== 'free') === endWant || (!endBusy && Date.now() - endAt > 8000))) endWant = null;
+  const ef = m.endurance_max > 0 ? endNow() / m.endurance_max : 0, eon = endWant !== null ? endWant : m.stance !== 'free';
   R.end.f.style.height = pct(ef) + '%'; R.end.f.style.background = eon ? '#9a7bff' : '#667';
-  R.end.t.textContent = pct(ef) + '%'; R.end.d.textContent = waiting ? '...' : (eon ? 'END ON' : 'END OFF');
+  // heat chip: green to 40%, yellow to the first penalty, red above, flashing while shut down
+  const hf = m.heat_cap > 0 ? heatNow() / m.heat_cap : 0, hw = m.heat_warn || 0.8, hcol = hf <= 0.4 ? '#4cd37a' : hf <= hw ? '#f2c744' : '#ff5a4a';
+  R.heat.f.style.height = pct(hf) + '%'; R.heat.f.style.background = hcol;
+  if (!text) return;
+  R.end.t.textContent = pct(ef) + '%'; R.end.d.textContent = eon ? 'END ON' : 'END OFF';
   R.end.b.style.borderColor = m.drained ? '#ff5a4a' : (eon ? '#9a7bff' : '#667');
-  R.end.b.classList.toggle('wait', waiting);
+  R.end.b.classList.toggle('on', eon);
+  const hi = heatInfo();
+  R.heat.t.textContent = m.tripped ? 'HOT' : pct(hf) + '%';
+  R.heat.d.textContent = (hi.gen >= 0 ? '+' : '') + hi.gen.toFixed(1) + '/s';
+  R.heat.b.style.borderColor = hcol; R.heat.b.classList.toggle('flash', !!m.tripped);
 }
 function render() {
   const v = view, m = v.me;
   R.bSh.set(m.shield, m.shield_max); R.bAr.set(m.armor, m.armor_max); R.bHu.set(m.hull, m.hull_max);
-  paintEnd();
-  // heat chip: green to 40%, yellow to the first penalty, red above, flashing while shut down
-  const hf = m.heat_cap > 0 ? m.heat / m.heat_cap : 0, hw = m.heat_warn || 0.8, hcol = hf <= 0.4 ? '#4cd37a' : hf <= hw ? '#f2c744' : '#ff5a4a', hi = heatInfo();
-  R.heat.f.style.height = pct(hf) + '%'; R.heat.f.style.background = hcol;
-  R.heat.t.textContent = m.tripped ? 'HOT' : pct(hf) + '%';
-  R.heat.d.textContent = (hi.gen >= 0 ? '+' : '') + hi.gen.toFixed(1) + '/s';
-  R.heat.b.style.borderColor = hcol; R.heat.b.classList.toggle('flash', !!m.tripped);
   if (heatOpen) fillHeat();
   if (logOpen) fillLog();
   R.warn.hidden = !(m.tripped || m.drained);
@@ -648,12 +686,13 @@ function headingTo(px, py) {
 function frame(full) {
   if (!view || !root || root.hidden) return;
   const m = view.me, mp = P(m);
+  paintBars(full);
   if (full) {
     chips.forEach(c => { c.dist.textContent = kshort(dist(mp, P(c.ship))); c.b.classList.toggle('sel', c.ship.id === sel); });
     const ord = m.order || { kind: 'stop' }, tgt = m.target_id && view.ships.find(s => s.id === m.target_id), a = acc.get(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0;
     R.stat.textContent = (ORDER_NAME[ord.kind] || ord.kind) + (ord.kind === 'heading' && ord.dir_deg != null ? ' ' + Math.round(ord.dir_deg) + '°' : '') +
       (tgt && ['attack_max', 'attack_opt', 'follow'].includes(ord.kind) ? ': ' + tgt.name : '') + (ord.hold_km ? ' at ' + km(ord.hold_km) : '') +
-      '  |  speed ' + Math.hypot(m.vx, m.vy).toFixed(1) + ' km/s  |  thrust ' + g.toFixed(1) + ' g';
+      '  |  speed ' + (vv => Math.hypot(vv.x, vv.y))(velOf(m.id) || { x: m.vx, y: m.vy }).toFixed(1) + ' km/s  |  thrust ' + g.toFixed(1) + ' g';
     R.stat.style.bottom = 'calc(' + (parseInt(getComputedStyle(root).getPropertyValue('--c')) + 14) + 'px + env(safe-area-inset-bottom,0px))';
   }
   drawMap();
