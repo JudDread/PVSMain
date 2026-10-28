@@ -329,7 +329,7 @@ function closeZone(v) {
   if (was && v && v.left) {
     if (v.ship_state === 'drifting') say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
     else if (v.ended === 'cleared') { say('Zone cleared. Your ship is docked at the range.', 'ok'); if (wasInstanced && killedDrone) afterKill(killedDrone); }
-    else if (v.ended === 'retreat') say(v.message || 'Combat stopped: your hull fell below the safe limit. Your ship is safe at the range.', 'ok');
+    else if (v.ended === 'retreat') modal({ kicker: 'ESC RANGE CONTROL', title: 'Exercise ended', paras: [v.message || "Exercise ended: hull under 25%. There's a lesson here somewhere. Your ship can be repaired at any location with a market."], buttons: [{ label: 'OK', onClick: closeModal }] });
     else if (v.ended === 'kill') say('Your ship was destroyed. (Test version: it stays docked at the range.)', 'err');
     else say('The fight is over. Your ship is docked at the range.', 'ok');
     if (S.refresh) S.refresh();
@@ -447,8 +447,8 @@ function tourStart() {
   }, 250);
   const pct = (view.zone && view.zone.retreat_pct) || 25;
   modal({ kicker: 'ESC RANGE CONTROL', title: 'Combat screen', paras: [
-      'You are cleared for live exercise. This screen holds everything a gunfight needs, and nothing here can cost you your ship: if your ship falls below ' + pct + '% hull, Range Control ends the exercise and sends you home.',
-      'Allow us to show you around.'],
+      'You are cleared for live exercise. This screen holds everything a gunfight needs, and nothing here can cost you your ship: if your ship falls below ' + pct + '% hull, we end the exercise and send you home.',
+      'Let us show you around.'],
     buttons: [{ label: 'Show me', onClick: tourShow }, { label: 'Skip the tour', alt: true, onClick: tourFinish }] });
 }
 async function tourMaybe() {
@@ -465,8 +465,9 @@ async function tourMaybe() {
 /* after a drone dies on an INSTANCED range: what next? Fight again, fight another drone (the next one starts its mission: the one just done is claimed, the next accepted), or leave. */
 const errMsg = e => (e && e.data && (e.data.message || e.data.error)) || (e && e.message) || 'error';
 const KILL_TEXT = {
-  drone_1: 'Target destroyed. It did not fight back, which Range Control reminds you was the design.',
-  drone_2: 'Combat Drone destroyed. Range Control notes that it was shooting at you the whole time.',
+  drone_1: "Target destroyed. Don't go getting a big head, it didn't have any weapons. If you're not comfortable with the layout yet, take a pass at another one.",
+  drone_2: "Nice shooting. We were only a little worried. Keep fighting these until you're ready for two at once.",
+  drone_pair: 'Two down. If your ship needs repairs, head to any location with a market.',
 };
 async function afterKill(killedId) {
   let list = [];
@@ -481,7 +482,7 @@ async function afterKill(killedId) {
   const buttons = [{ label: 'Fight again', onClick: () => go(killed) }];
   list.filter(d => d.id !== killedId && (d.unlocked || d.startable)).forEach(d => buttons.push({ label: 'Fight the ' + d.name + (d.unlocked ? '' : ' (starts its mission)'), onClick: () => go(d) }));
   buttons.push({ label: 'Leave', alt: true, onClick: () => { closeModal(); if (S.refresh) S.refresh(); } });
-  modal({ kicker: 'RANGE CONTROL', title: 'Exercise complete', paras: [(KILL_TEXT[killedId] || 'Target destroyed.') + (killed.xp ? ' Range Control credits you ' + killed.xp + ' XP, which it describes as generous.' : ''), 'Mission rewards are paid when you claim them on the Missions screen.'], buttons });
+  modal({ kicker: 'RANGE CONTROL', title: 'Exercise complete', paras: [(KILL_TEXT[killedId] || 'Target destroyed.') + (killed.xp ? ' (+' + killed.xp + ' XP' + (killed.count > 1 ? ' each' : '') + ')' : ''), 'Mission rewards are paid when you claim them on the Missions screen.'], buttons });
 }
 export async function zoneEnter(d) {                       // the Enter button of the popup. d = a drone choice from zoneDrones(), or nothing (the zone's own drone)
   if (d && typeof d === 'object') return enterDrone(d);
