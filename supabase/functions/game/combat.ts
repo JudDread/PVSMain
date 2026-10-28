@@ -44,9 +44,39 @@ function fromRow(r) {
     tripped: !!r.tripped, shutdown_left: left, ammo: num(r.ammo), endurance: num(r.endurance), drained: !!r.drained,
     stance: r.burn_stance || 'economy', targetId: r.target_id || null,
     order: { kind: r.order_kind || 'stop', hold_km: r.hold_km == null ? null : num(r.hold_km), dir_deg: r.order_dir == null ? null : num(r.order_dir) },
-    alive: true, left: false, ship_id: r.ship_id || null, drone_type: r.drone_type || null,
+    alive: true, left: false, ship_id: r.ship_id || null, drone_type: r.drone_type || null, ai: r.ai || null,
   };
 }
+// a full combat_ships row for a NEW ship (a pilot entering, or a drone spawning)
+function shipInsertRow(s, zoneId, instance, nowMs, extra) {
+  const nowIso = new Date(nowMs).toISOString();
+  return { id: s.id, zone_id: zoneId, instance, side: s.side, entered_at: nowIso, order_at: nowIso, stats: s.base, ...rowPatch(s, nowMs), ...extra };
+}
+
+// a drone ship made from a drone_types row (hull + rigs + the type's own stat changes), at a position in km
+async function buildDrone(db, dt, pos, cfg, pilotCfg, t) {
+  const { data: dh } = await db.from('hulls').select('*').eq('id', dt.hull_id).maybeSingle();
+  if (!dh) return null;
+  const dpilot = await pilotBlock(db, null, pilotCfg, t);
+  const dbase = resolveBase({ hull: dh, rigs: await loadRigs(db, dt.rig_ids || []), skillFx: [dt.effects || {}], pilot: dpilot });
+  const d = newShip({ id: crypto.randomUUID(), side: 'drones', base: dbase, x: pos.x, y: pos.y, endurance: dpilot.bar, stance: 'economy', order: { kind: dt.start_order || 'attack_opt' }, cfg });
+  d.drone_type = dt.id; d.ship_id = null; d.ai = dt.targeting === 'best_shot' ? 'best_shot' : null;
+  return d;
+}
+
+// drones that would land on the same spot are spread on a small ring around it (SPREAD_KM)
+const SPREAD_KM = 20000;
+function spreadPositions(points) {
+  const groups = new Map();
+  points.forEach((p, i) => { const k = Math.round(p.x) + '|' + Math.round(p.y); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+  const out = points.map((p) => ({ x: p.x, y: p.y }));
+  for (const idx of groups.values()) {
+    if (idx.length < 2) continue;
+    idx.forEach((i, k) => { const a = (2 * Math.PI * k) / idx.length; out[i] = { x: points[i].x + SPREAD_KM * Math.cos(a), y: points[i].y + SPREAD_KM * Math.sin(a) }; });
+  }
+  return out;
+}
+
 function rowPatch(s, snapMs) {
   return {
     x_km: s.x, y_km: s.y, vx_kms: s.vx, vy_kms: s.vy,
@@ -151,6 +181,9 @@ async function advanceZone(db, ctx, nowMs) {
   const retreatFrac = zone.retreat_hull_frac == null ? null : num(zone.retreat_hull_frac);
   const total = Math.max(0, Math.min(elapsed, cfg.catchup_max_s));
   const res = { ships: rows.map(fromRow), events: [] };
+  // a zone with drone_per_pilot keeps one live drone for every live pilot: on each 5-second step the missing ones spawn at the centre (spread a little)
+  const respawnType = zone.drone_per_pilot && zone.default_drone ? (await db.from('drone_types').select('*').eq('id', zone.default_drone).maybeSingle()).data : null;
+  const newDrones = new Set();
   for (let t = 0; total - t > 1e-9;) {
     const dt = Math.min(cfg.step_s, total - t);
     const r = advance(res.ships, dt, { scale: CLOCK.scale, cfg, zone: { exit_km: num(zone.exit_radius_km) } });
@@ -164,6 +197,16 @@ async function advanceZone(db, ctx, nowMs) {
         if (hm > 0 && s.hull < retreatFrac * hm) {
           s.left = true; s.retreated = true;
           res.events.push({ kind: 'retreat', actor_id: s.id, target_id: null, amount: s.hull / hm, note: null, t });
+        }
+      }
+    }
+    if (respawnType) {
+      const pilots = res.ships.filter((s) => s.ship_id && s.alive && !s.left).length;
+      const drones = res.ships.filter((s) => s.side === 'drones' && s.alive && !s.left).length;
+      if (pilots > drones) {
+        for (const p of spreadPositions(Array.from({ length: pilots - drones }, () => ({ x: 0, y: 0 })))) {
+          const d = await buildDrone(db, respawnType, p, cfg, ctx.pilotCfg, gameDaysAt(nowMs));
+          if (d) { res.ships.push(d); newDrones.add(d.id); }
         }
       }
     }
@@ -196,11 +239,25 @@ async function advanceZone(db, ctx, nowMs) {
     if (se) throw se;
     for (const r of sh ?? []) owner.set(r.id, r.character_id);
   }
+  // MISSIONS: damage a pilot dealt to drones counts for 'damage:<zone>:<amount>' steps (the SQL function adds it up and finishes the step)
+  const droneIds = new Set(res.ships.filter((s) => s.side === 'drones').map((s) => s.id));
+  const shipOfPilot = new Map(res.ships.filter((s) => s.ship_id).map((s) => [s.id, s.ship_id]));
+  const dealt = new Map();
+  for (const d of dmg.values()) {
+    if (!droneIds.has(d.target_id)) continue;
+    const sid = shipOfPilot.get(d.actor_id), cid = sid ? owner.get(sid) : null;
+    if (cid) dealt.set(cid, (dealt.get(cid) || 0) + d.amount);
+  }
+  for (const [cid, amt] of dealt) {
+    if (!(amt > 0)) continue;
+    const { error: de2 } = await db.rpc('quest_add_damage', { p_character: cid, p_zone: zone.location_id, p_amount: Math.round(amt) });
+    if (de2) console.error('quest_add_damage failed', de2);
+  }
   // MISSIONS: a player ship that destroyed a drone whose type has a kill_quest finishes that mission's step 'kill:<drone type>'.
   // (The server does this itself: the page cannot be trusted to say what died. A mission that is not accepted yet simply ignores it.)
   const kills = res.events.filter((e) => e.kind === 'kill' && e.actor_id && e.target_id);
   if (kills.length) {
-    const typeOf = new Map(rows.map((r) => [r.id, r.drone_type]));
+    const typeOf = new Map(res.ships.map((r) => [r.id, r.drone_type]));
     const wanted = [...new Set(kills.map((e) => typeOf.get(e.target_id)).filter(Boolean))];
     if (wanted.length) {
       const { data: dts } = await db.from('drone_types').select('id,kill_quest,xp_reward').in('id', wanted);
@@ -226,6 +283,14 @@ async function advanceZone(db, ctx, nowMs) {
   for (const e of res.events) if (e.kind === 'exit') exitT.set(e.actor_id, e.t);
 
   for (const s of res.ships) {
+    if (newDrones.has(s.id)) {                                  // a drone that spawned during this catch-up: it has no row yet
+      if (s.alive && !s.left) {
+        missilesOff(s);
+        const { error: ne } = await db.from('combat_ships').insert(shipInsertRow(s, zone.location_id, instance, nowMs, { ship_id: null, drone_type: s.drone_type, ai: s.ai || null }));
+        if (ne) throw ne;
+      }
+      continue;
+    }
     if (s.alive && !s.left) {
       missilesOff(s);
       const { error: ue } = await db.from('combat_ships').update(rowPatch(s, nowMs)).eq('id', s.id);
@@ -403,7 +468,13 @@ export async function combatZone(db, user, body) {
         if ((e.kind === 'cleared' || e.kind === 'exit' || e.kind === 'retreat') && e.actor_id === last) { ended = e.kind; break; }
       }
     }
-    const message = ended === 'retreat' ? 'Combat stopped: your hull fell below the safe limit. Your ship is safe at the range.' : null;
+    let message = null;
+    if (ended === 'retreat') {
+      let pct = 25;
+      const { data: zr } = await db.from('combat_zones').select('retreat_hull_frac').eq('location_id', mine.zone_id).maybeSingle();
+      if (zr && zr.retreat_hull_frac != null) pct = Math.round(num(zr.retreat_hull_frac) * 100);
+      message = 'Exercise ended: hull under ' + pct + "%. There's a lesson here somewhere. Your ship can be repaired at any location with a market.";
+    }
     return json({ ok: true, in_zone: false, left: true, ship_state: again ? again.state : null, ended, message });
   }
   if (ship.state !== 'docked' || !ship.location_id) return json({ ok: true, in_zone: false, here: false });
@@ -414,14 +485,14 @@ export async function combatZone(db, user, body) {
   const pod = ship.hull_id === 'life_pod';
   let drones = null;                                   // instanced range: the drones this pilot may ask for (a drone is open once its mission is accepted)
   if (zone.instanced) {
-    const { data: dts } = await db.from('drone_types').select('id,name,kill_quest,sort_order,xp_reward').order('sort_order');
+    const { data: dts } = await db.from('drone_types').select('id,name,kill_quest,sort_order,xp_reward,spawn,open_after').eq('selectable', true).order('sort_order');
     const { data: cqs } = await db.from('character_quests').select('quest_id,status').eq('character_id', ch.id);
     const st = new Map((cqs ?? []).map((q) => [q.quest_id, q.status]));
     // unlocked = its mission is accepted (or done). startable = locked, but the mission BEFORE it in the list is done (ready or claimed): choosing it starts its mission.
     drones = (dts ?? []).map((d, i) => {
-      const unlocked = !d.kill_quest || ['active', 'ready', 'claimed'].includes(st.get(d.kill_quest));
+      const unlocked = d.open_after ? ['ready', 'claimed'].includes(st.get(d.open_after)) : (!d.kill_quest || ['active', 'ready', 'claimed'].includes(st.get(d.kill_quest)));
       const prev = i > 0 ? (dts[i - 1].kill_quest || null) : null;
-      return { id: d.id, name: d.name, quest: d.kill_quest || null, prev_quest: prev, xp: Number(d.xp_reward) || 0, unlocked,
+      return { id: d.id, name: d.name, quest: d.kill_quest || null, prev_quest: prev, xp: Number(d.xp_reward) || 0, count: Array.isArray(d.spawn) ? d.spawn.length : 1, unlocked,
                startable: !unlocked && !!prev && ['ready', 'claimed'].includes(st.get(prev)) };
     });
   }
@@ -466,42 +537,43 @@ export async function combatEnter(db, user, body = {}) {
   const id = crypto.randomUUID();
   const me = newShip({ id, side: 'players', base, x: R * Math.cos(ang), y: R * Math.sin(ang), endurance: pilot.bar, stance: 'full', order: { kind: 'stop' }, cfg });
   const nowIso = new Date(nowMs).toISOString();
-  const toInsert = (s, extra) => ({
-    id: s.id, zone_id: zone.location_id, instance, side: s.side, entered_at: nowIso, snap_at: nowIso,
-    x_km: s.x, y_km: s.y, vx_kms: s.vx, vy_kms: s.vy, shield: s.shield, armor: s.armor, hull: s.hull, heat: 0, tripped: false,
-    shutdown_until: null, ammo: s.ammo, target_id: null, order_kind: s.order.kind, order_at: nowIso, burn_stance: s.stance,
-    modules: s.on, stats: s.base, endurance: s.endurance, drained: false, hold_km: null, ...extra,
-  });
+  const toInsert = (s, extra) => shipInsertRow(s, zone.location_id, instance, nowMs, extra);
   const inserts = [toInsert(me, { ship_id: ship.id, drone_type: null })];
 
-  // TEMPORARY (step 5 replaces it): an NPC-only fight with no drone in it gets ONE drone, at the CENTRE of the zone.
-  // Which one: on an instanced range the pilot may ask for one (body.drone), otherwise the zone's default_drone.
+  // TEMPORARY (step 5 replaces it): an NPC-only fight gets its drones at the CENTRE of the zone.
+  // A zone with drone_per_pilot adds one drone for EVERY pilot who enters; any other zone gets drones only while it has none.
+  // Which drone: on an instanced range the pilot may ask for one (body.drone), otherwise the zone's default_drone.
+  // A drone type may spawn several drones (its 'spawn' list: km past the centre, on the line from where the pilot entered).
   const hasDrone = (existing ?? []).some((r) => r.side === 'drones');
   let spawned = false;
-  if (loc && loc.pvp === false && !hasDrone) {
-    const want = zone.instanced && body && body.drone ? String(body.drone) : zone.default_drone;
+  if (loc && loc.pvp === false && (zone.drone_per_pilot || !hasDrone)) {
+    const asked = zone.instanced && body && body.drone ? String(body.drone) : null;
+    const want = asked || zone.default_drone;
     if (want) {
       const { data: dt, error: dte } = await db.from('drone_types').select('*').eq('id', want).maybeSingle();
       if (dte) throw dte;
-      if (!dt) return refuse('bad_drone', 'That drone does not exist.');
-      if (zone.instanced && body && body.drone && dt.kill_quest) {         // an asked-for drone needs its mission accepted (the default drone needs nothing)
+      if (!dt || (asked && !dt.selectable)) return refuse('bad_drone', 'That drone does not exist.');
+      if (asked && dt.kill_quest) {                                        // an asked-for drone needs its mission accepted (the default drone needs nothing)
         const { data: cq } = await db.from('character_quests').select('status').eq('character_id', ch.id).eq('quest_id', dt.kill_quest).maybeSingle();
         if (!cq || !['active', 'ready', 'claimed'].includes(cq.status)) return refuse('drone_locked', 'Accept its mission first (Missions screen).');
       }
-      const { data: dh } = await db.from('hulls').select('*').eq('id', dt.hull_id).maybeSingle();
-      if (dh) {
-        const dpilot = await pilotBlock(db, null, pilotCfg, t);
-        const dbase = resolveBase({ hull: dh, rigs: await loadRigs(db, dt.rig_ids || []), skillFx: [dt.effects || {}], pilot: dpilot });
-        const order = { kind: dt.start_order || 'attack_opt' };
-        const drone = newShip({ id: crypto.randomUUID(), side: 'drones', base: dbase, x: 0, y: 0, endurance: dpilot.bar, stance: 'economy', order, cfg });
-        inserts.push(toInsert(drone, { ship_id: null, drone_type: dt.id }));
+      if (asked && dt.open_after) {                                        // ... or another mission finished
+        const { data: cq } = await db.from('character_quests').select('status').eq('character_id', ch.id).eq('quest_id', dt.open_after).maybeSingle();
+        if (!cq || !['ready', 'claimed'].includes(cq.status)) return refuse('drone_locked', 'Finish its mission first (Missions screen).');
+      }
+      const spawn = Array.isArray(dt.spawn) && dt.spawn.length ? dt.spawn : [{ past_center_km: 0 }];
+      const pts = spreadPositions(spawn.map((p) => ({ x: -num(p.past_center_km) * Math.cos(ang), y: -num(p.past_center_km) * Math.sin(ang) })));
+      for (const p of pts) {
+        const drone = await buildDrone(db, dt, p, cfg, pilotCfg, t);
+        if (!drone) continue;
+        inserts.push(toInsert(drone, { ship_id: null, drone_type: dt.id, ai: drone.ai || null }));
         spawned = true;
       }
     }
   }
   const { error: ie } = await db.from('combat_ships').insert(inserts);
   if (ie) throw ie;
-  if (spawned) {
+  if (spawned && !zone.instanced && !zone.drone_per_pilot) {
     // two pilots entering a SHARED zone at the same moment could both add a drone: keep the one with the smallest id
     const { data: ds } = await db.from('combat_ships').select('id').eq('zone_id', zone.location_id).eq('instance', instance).eq('side', 'drones').order('id');
     for (const d of (ds ?? []).slice(1)) await db.from('combat_ships').delete().eq('id', d.id);
