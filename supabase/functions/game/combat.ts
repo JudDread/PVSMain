@@ -203,15 +203,21 @@ async function advanceZone(db, ctx, nowMs) {
     const typeOf = new Map(rows.map((r) => [r.id, r.drone_type]));
     const wanted = [...new Set(kills.map((e) => typeOf.get(e.target_id)).filter(Boolean))];
     if (wanted.length) {
-      const { data: dts } = await db.from('drone_types').select('id,kill_quest').in('id', wanted);
-      const questOf = new Map((dts ?? []).map((d) => [d.id, d.kill_quest]));
+      const { data: dts } = await db.from('drone_types').select('id,kill_quest,xp_reward').in('id', wanted);
+      const dinfo = new Map((dts ?? []).map((d) => [d.id, d]));
       for (const e of kills) {
-        const dt = typeOf.get(e.target_id), quest = dt ? questOf.get(dt) : null;
+        const dt = typeOf.get(e.target_id), info = dt ? dinfo.get(dt) : null;
         const killer = res.ships.find((x) => x.id === e.actor_id);
         const cid = killer && killer.ship_id ? owner.get(killer.ship_id) : null;
-        if (!quest || !cid) continue;
-        const { error: qe } = await db.rpc('quest_step', { p_character: cid, p_quest: quest, p_step: 'kill:' + dt });
-        if (qe) console.error('quest_step (kill) failed', qe);
+        if (!info || !cid) continue;
+        if (info.kill_quest) {
+          const { error: qe } = await db.rpc('quest_step', { p_character: cid, p_quest: info.kill_quest, p_step: 'kill:' + dt });
+          if (qe) console.error('quest_step (kill) failed', qe);
+        }
+        if (Number(info.xp_reward) > 0) {                       // every drone kill pays its XP to the pilot who destroyed it
+          const { error: xe } = await db.rpc('combat_xp_add', { p_character: cid, p_xp: Number(info.xp_reward) });
+          if (xe) console.error('combat_xp_add failed', xe);
+        }
       }
     }
   }
@@ -408,10 +414,16 @@ export async function combatZone(db, user, body) {
   const pod = ship.hull_id === 'life_pod';
   let drones = null;                                   // instanced range: the drones this pilot may ask for (a drone is open once its mission is accepted)
   if (zone.instanced) {
-    const { data: dts } = await db.from('drone_types').select('id,name,kill_quest,sort_order').order('sort_order');
+    const { data: dts } = await db.from('drone_types').select('id,name,kill_quest,sort_order,xp_reward').order('sort_order');
     const { data: cqs } = await db.from('character_quests').select('quest_id,status').eq('character_id', ch.id);
-    const open = new Set((cqs ?? []).filter((q) => ['active', 'ready', 'claimed'].includes(q.status)).map((q) => q.quest_id));
-    drones = (dts ?? []).map((d) => ({ id: d.id, name: d.name, quest: d.kill_quest || null, unlocked: !d.kill_quest || open.has(d.kill_quest) }));
+    const st = new Map((cqs ?? []).map((q) => [q.quest_id, q.status]));
+    // unlocked = its mission is accepted (or done). startable = locked, but the mission BEFORE it in the list is done (ready or claimed): choosing it starts its mission.
+    drones = (dts ?? []).map((d, i) => {
+      const unlocked = !d.kill_quest || ['active', 'ready', 'claimed'].includes(st.get(d.kill_quest));
+      const prev = i > 0 ? (dts[i - 1].kill_quest || null) : null;
+      return { id: d.id, name: d.name, quest: d.kill_quest || null, prev_quest: prev, xp: Number(d.xp_reward) || 0, unlocked,
+               startable: !unlocked && !!prev && ['ready', 'claimed'].includes(st.get(prev)) };
+    });
   }
   return json({
     ok: true, in_zone: false, here: true, can_enter: !pod, drones,
