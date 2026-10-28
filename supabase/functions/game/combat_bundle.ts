@@ -1,9 +1,9 @@
 // @ts-nocheck
-// ======================================================================
-// AUTO-BUNDLED COPY of shared/combat.js (pure functions, nothing removed).
-// REBUILD AND REDEPLOY this file whenever shared/combat.js changes.
-// Do not edit by hand. combat.ts imports from here.
-// ======================================================================
+// AUTO-BUNDLE of shared/combat.js: do not edit here. Edit shared/combat.js, then rebuild this file (same text, this header on top) and redeploy.
+// Rebuilt 2026-10-28 for migration 075 (drones with ai "best_shot").
+//
+//
+//
 
 // =====================================================================
 // Vacuum State - combat core (COMBAT MVP steps 3-4)
@@ -292,6 +292,20 @@ export function newShip({ id, side = 'players', base, x = 0, y = 0, vx = 0, vy =
   };
 }
 
+// BEST SHOT (drones with ai 'best_shot'): keep the current target while it is inside the optimal range of one of my weapons,
+// even if others are inside it too. Otherwise choose again: the hostile I would hurt most at its distance now, the nearest one on a tie.
+function bestShotTarget(s, live, byId, ss, cfg) {
+  const cur = s.targetId ? byId.get(s.targetId) : null;
+  if (cur && cur.side !== s.side && ss.weapons.some((w) => dist(s, cur) <= w.optR)) return cur.id;
+  let best = null, bs = -1, bd = Infinity;
+  for (const o of live) {
+    if (o.id === s.id || o.side === s.side) continue;
+    const d = dist(s, o), sc = dpsAt(s, o, d, cfg).total;
+    if (sc > bs + 1e-9 || (Math.abs(sc - bs) <= 1e-9 && d < bd)) { best = o; bs = sc; bd = d; }
+  }
+  return best ? best.id : null;
+}
+
 function nearestHostile(s, ships) {
   let best = null, bd = Infinity;
   for (const o of ships) {
@@ -404,7 +418,9 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
   const dtG = dt * scale;
 
   // AUTO-TARGET: only when there is no valid target; it stays until it dies or leaves
+  // (a ship with ai 'best_shot', a drone of the combat range, is different: see bestShotTarget)
   for (const s of live) {
+    if (s.ai === 'best_shot') { s.targetId = bestShotTarget(s, live, byId, stat.get(s.id), cfg); continue; }
     if (!(s.targetId && byId.has(s.targetId))) {
       const n = nearestHostile(s, live);
       s.targetId = n ? n.id : null;
