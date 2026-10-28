@@ -43,6 +43,21 @@ export async function missionsView(db, user) {
   try { await db.rpc('tutorial_freight_post', { p_character: ch.id }); } catch (e) { /* ignore */ }
   const { data, error } = await db.rpc('quest_list', { p_character: ch.id });
   if (error) throw error;
+  // 075: a step 'damage:<zone>:<amount>' shows how much of the amount is done
+  try {
+    const { data: cqs } = await db.from('character_quests').select('quest_id,counters').eq('character_id', ch.id);
+    const counters = new Map((cqs ?? []).map((r) => [r.quest_id, r.counters || {}]));
+    for (const q of data.quests ?? []) {
+      const c = counters.get(q.id);
+      for (const s of q.steps ?? []) {
+        if (typeof s.id !== 'string' || !s.id.startsWith('damage:') || s.done) continue;
+        const need = Number(s.id.split(':')[2]);
+        if (!(need > 0)) continue;
+        const got = Math.min(need, Math.floor(Number((c && c[s.id]) || 0)));
+        s.label = s.label + ' (' + got.toLocaleString('en-US') + ' / ' + need.toLocaleString('en-US') + ')';
+      }
+    }
+  } catch (e) { /* the counters are only a display: the list never fails because of them */ }
   return json({ ok: true, chains: data.chains, quests: data.quests, ready: data.ready, new: data.new });
 }
 
