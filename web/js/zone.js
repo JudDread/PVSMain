@@ -384,7 +384,7 @@ function newEvents(v) {
 
 /* ---------- what fly.js uses ---------- */
 export const zoneIn = () => !!view;
-export const zoneDrones = () => (outInfo && outInfo.here && Array.isArray(outInfo.drones)) ? outInfo.drones.filter(d => d.unlocked) : [];   // the drones this pilot may ask for here
+export const zoneDrones = () => (outInfo && outInfo.here && Array.isArray(outInfo.drones)) ? outInfo.drones.filter(d => d.unlocked || d.startable) : [];   // the drones this pilot may ask for here (a startable one starts its mission)
 
 /* after a drone dies on an INSTANCED range: what next? Fight again, fight another drone (the next one starts its mission: the one just done is claimed, the next accepted), or leave. */
 const errMsg = e => (e && e.data && (e.data.message || e.data.error)) || (e && e.message) || 'error';
@@ -399,23 +399,28 @@ async function afterKill(killedId) {
   if (!killed) return;
   const go = async d => {
     closeModal();
-    try {
-      if (!d.unlocked) {
-        if (killed.quest) { try { const r = await call('mission_claim', { quest: killed.quest }); if (r && r.reward) say('Mission complete: +' + whole(r.reward.credits || 0) + ' credits.', 'ok'); } catch (e) { /* already claimed or not ready: fine */ } }
-        try { await call('missions'); } catch (e) { /* only syncs the mission list */ }
-        if (d.quest) await call('mission_accept', { quest: d.quest });
-      }
-      const v = await call('combat_enter', { drone: d.id }); away = false; apply(v);
-    } catch (e) { say(errMsg(e), 'err'); }
+    try { await enterDrone(d); } catch (e) { say(errMsg(e), 'err'); }
     if (S.refresh) S.refresh();
   };
   const buttons = [{ label: 'Fight again', onClick: () => go(killed) }];
-  list.filter(d => d.id !== killedId).forEach(d => buttons.push({ label: 'Fight the ' + d.name + (d.unlocked ? '' : ' (starts its mission)'), onClick: () => go(d) }));
+  list.filter(d => d.id !== killedId && (d.unlocked || d.startable)).forEach(d => buttons.push({ label: 'Fight the ' + d.name + (d.unlocked ? '' : ' (starts its mission)'), onClick: () => go(d) }));
   buttons.push({ label: 'Leave', alt: true, onClick: () => { closeModal(); if (S.refresh) S.refresh(); } });
-  modal({ kicker: 'RANGE CONTROL', title: 'Exercise complete', paras: [KILL_TEXT[killedId] || 'Target destroyed.'], buttons });
+  modal({ kicker: 'RANGE CONTROL', title: 'Exercise complete', paras: [(KILL_TEXT[killedId] || 'Target destroyed.') + (killed.xp ? ' Range Control credits you ' + killed.xp + ' XP, which it describes as generous.' : ''), 'Mission rewards are paid when you claim them on the Missions screen.'], buttons });
 }
-export async function zoneEnter(drone) {                   // the Enter button of the popup (drone = a drone type the pilot asks for; none = the zone's own)
-  const v = await call('combat_enter', drone ? { drone } : undefined);
+export async function zoneEnter(d) {                       // the Enter button of the popup. d = a drone choice from zoneDrones(), or nothing (the zone's own drone)
+  if (d && typeof d === 'object') return enterDrone(d);
+  const v = await call('combat_enter');
+  away = false; apply(v);
+}
+const rewardText = r => [r.credits ? '+' + whole(r.credits) + ' credits' : '', r.xp ? '+' + whole(r.xp) + ' XP' : ''].filter(Boolean).join(', ') || 'no reward';
+/* enter with a chosen drone. A drone whose mission is not open yet STARTS it: the mission before it is claimed (its reward is paid), the list synced, its own mission accepted. */
+async function enterDrone(d) {
+  if (!d.unlocked) {
+    if (d.prev_quest) { try { const r = await call('mission_claim', { quest: d.prev_quest }); if (r && r.reward) say('Mission complete: ' + rewardText(r.reward) + '.', 'ok'); } catch (e) { /* already claimed or not ready: fine */ } }
+    try { await call('missions'); } catch (e) { /* only syncs the mission list */ }
+    if (d.quest) await call('mission_accept', { quest: d.quest });
+  }
+  const v = await call('combat_enter', { drone: d.id });
   away = false; apply(v);
 }
 export async function zoneShow() {                        // 'Return to the zone'
