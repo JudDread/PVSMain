@@ -306,6 +306,7 @@ const map = createMap($('map'), {
     .map(l => ({ id: l.id, name: l.name, body: bodyIdx(l.anchor_body), off: Number(l.offset_au), ang: (Number(l.angle_deg) || 0) * Math.PI / 180 })),
   selectedPlace: () => (mode === 'hold' && deps ? deps.dest : selected),
   pickPlace: id => {
+    if (zoneShip && zoneDismissed === id && zoneShip.location_id === id) { zoneDismissed = null; drawZone(zoneShip); return; }   /* the place the ship is docked at: show its zone box again */
     const d = deps && deps.departures && deps.departures.find(x => x.id === id);
     if (d) { selected = d.id; mode = null; drawAll(); } else say('That place is not a destination from here.', 'muted');
   },
@@ -328,8 +329,9 @@ window.addEventListener('resize', () => { if (depsOpen) sizeDeps(); });
 $('depshead').onclick = () => { depsOpen = !depsOpen; showDeps(); };
 /* ---------- combat zone box (a precursor to combat): docked at a place of kind 'range' or 'zone' the Fly screen shows a box;
    one day the combat screen replaces it. OK hides it for this stay. The text comes from the place's `info` (data). ---------- */
-let zoneBox = null, zoneDismissed = null;
+let zoneBox = null, zoneDismissed = null, zoneShip = null;
 function drawZone(ship) {
+  zoneShip = ship;
   const l = ship && ship.state === 'docked' ? locById(ship.location_id) : null;
   if (!l || (l.kind !== 'range' && l.kind !== 'zone')) { zoneDismissed = null; if (zoneBox) zoneBox.hidden = true; return; }
   const wrap = document.querySelector('#scr-travel .mapwrap');
@@ -341,11 +343,16 @@ function drawZone(ship) {
   }
   zoneCheck();                                                 /* already inside from an earlier visit? then zone.js opens its screen by itself */
   const inside = zoneIn();
-  if (zoneDismissed === l.id && !inside) { zoneBox.hidden = true; return; }
+  if (zoneDismissed === l.id && !inside) {                      /* "Not now" was pressed: one small button stays, and tapping the place on the map brings the box back too */
+    const chip = document.createElement('button'); chip.className = 'alt'; chip.style.cssText = 'padding:6px 10px;font-size:13px';
+    chip.textContent = l.name + ': tap for options';
+    chip.onclick = () => { zoneDismissed = null; drawZone(ship); };
+    zoneBox.replaceChildren(chip); zoneBox.hidden = false; return;
+  }
   const title = document.createElement('div'); title.style.cssText = 'font-weight:bold;margin-bottom:6px'; title.textContent = l.name;
   const text = document.createElement('div'); text.textContent = l.info || 'This is where combat will happen.';
   const drs = inside ? [] : zoneDrones();                       /* an instanced range: one Enter button for each drone the pilot may ask for (only when there is a choice) */
-  const mkEnter = (label, drone) => {
+  const mkEnter = (label, drone) => {                          /* drone = a choice object from zoneDrones(), or nothing */
     const b = document.createElement('button'); b.textContent = label; b.style.marginTop = '10px';
     b.onclick = async () => {
       b.disabled = true;
@@ -355,7 +362,7 @@ function drawZone(ship) {
     };
     return b;
   };
-  const enters = drs.length > 1 ? drs.map(d => mkEnter('Enter: ' + d.name, d.id)) : [mkEnter(inside ? 'Return to the zone' : 'Enter the zone')];
+  const enters = drs.length > 1 ? drs.map(d => mkEnter('Enter: ' + d.name + (d.unlocked ? '' : ' (starts its mission)'), d)) : [mkEnter(inside ? 'Return to the zone' : 'Enter the zone')];
   const ok = document.createElement('button'); ok.textContent = 'Not now'; ok.className = 'alt'; ok.style.marginTop = '10px';
   ok.onclick = () => { zoneDismissed = l.id; zoneBox.hidden = true; };
   zoneBox.replaceChildren(...(inside ? [title, text, ...enters] : [title, text, ...enters, ok]));
