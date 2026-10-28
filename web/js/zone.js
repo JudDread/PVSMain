@@ -8,7 +8,7 @@
 // acceleration, and each new answer is blended in over a moment, so the motion stays smooth at the screen's full speed.
 // Server actions used: combat_zone, combat_enter, combat_order, combat_stance, combat_module.
 import { S, call, whole, el, say } from 'core';
-import { modal, closeModal } from './coach.js';
+import { modal, closeModal, pointAt, clearPointer } from './coach.js';
 
 const POLL_MS = 5000;
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
@@ -303,6 +303,7 @@ function apply(v) {
   const dr = (v.ships || []).find(s => s.drone && s.hostile);          // which drone we are fighting (for the choices after the kill)
   if (dr) lastDrone = dr.drone;
   lastInstanced = !!(v.zone && v.zone.instanced);
+  tourMaybe();
   trackMotion(v);
   trackBars(v);
   newEvents(v);
@@ -321,7 +322,7 @@ function apply(v) {
 }
 function closeZone(v) {
   const was = !!view, killedDrone = lastDrone, wasInstanced = lastInstanced;
-  lastDrone = null; lastCheck = 0;
+  lastDrone = null; lastCheck = 0; tourAbort(); tourChecked = false;
   view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
@@ -385,6 +386,81 @@ function newEvents(v) {
 /* ---------- what fly.js uses ---------- */
 export const zoneIn = () => !!view;
 export const zoneDrones = () => (outInfo && outInfo.here && Array.isArray(outInfo.drones)) ? outInfo.drones.filter(d => d.unlocked || d.startable) : [];   // the drones this pilot may ask for here (a startable one starts its mission)
+
+
+/* ---------- the combat tour: the first time a pilot with the ESC mission esc_1 open enters the training range ----------
+   "Skip the tour" is only offered in the opening message; after "Show me" every beat has Next and nothing else.
+   The SERVER keeps the progress: finishing (or skipping) reports the mission step 'zone_tour' of esc_1. A fight that ends mid-tour just stops it (it starts again next time). */
+let tourOn = false, tourChecked = false, tourI = 0, tourT = 0;
+const DOT = '\u2022 ';
+function tourBeats() {
+  const attackSet = () => { const o = view && view.me && view.me.order; return !!o && (o.kind === 'attack_opt' || o.kind === 'attack_max'); };
+  const menuOpen = () => !!view && !R.menu.hidden && !!menuFor && menuFor !== view.me.id;
+  return [
+    { hole: [], next: true, text: 'The Vacuum. This is where combat happens. Every zone has an escape edge, and any ship that crosses it leaves the zone and returns to the Main Map.' },
+    { target: '.zbars', hole: [], next: true, text: 'Shield, armor, hull: the order in which damage is taken. Yours are at the side of the screen.' },
+    { target: '.ztop .zc', hole: [], next: true, text: "Everyone else's sit under their chip. Once all three are gone, so is the ship." },
+    { modal: true, title: 'Weapons', paras: [
+      'Four kinds of weapon, each with its own opinion of how a fight should go.',
+      DOT + 'RG (railgun): the standard weapon of space combat. Low heat, low power, good damage. Get into optimal range quickly, because accuracy drops off steeply.',
+      DOT + "Laser: better damage than a railgun at long range, for high heat and high power. Not a beginner's choice.",
+      DOT + 'Missile: better damage than railgun or laser at every range, unless the target has a point defense rig. It uses ammo, and ammo is finite.',
+      DOT + 'Plasma: huge damage at short range. Meant for large, slow targets: freighters, bases, capital ships. Do not bring it to a dogfight.'] },
+    { target: '.ztop .zc > .zsq', hole: ['.ztop .zc > .zsq'], until: menuOpen,
+      text: 'The chips along the top are the other ships on the range. Touch a chip, or the ship itself on the map, to make it your target and open the targeting options. Try it now: touch the drone, then choose Attack: best range.' },
+    { target: { sel: '.zmenu button', text: 'best range' }, hole: ['.zmenu button'], until: attackSet, back: () => R.menu.hidden && !attackSet(), text: 'Choose Attack: best range.' },
+    { target: '.zbot', hole: [], next: true, text: 'The chips along the bottom are your own weapons and rigs. Touching one switches it on or off, which is how you manage your heat. A weapon that is off cannot overheat. It cannot hit anything either.' },
+    { modal: true, title: 'Controls', paras: [
+      DOT + 'Double-tap empty space to thrust toward that point. To brake, touch your own ship and choose Stop. There is no friction out here. Start braking before you need to.',
+      DOT + 'Gear icon: settings and options for this screen. The fight goes on if you hide it.',
+      DOT + 'END button: your endurance. ON lets the G-Drive burn as hard as your orders ask, at the cost of your endurance. OFF holds you to free thrust and lets you recover your endurance. Touch to switch.'] },
+    { modal: true, last: true, title: 'Range Control', label: 'Begin', paras: ['That covers most of the basics. You can review all of it, and find more detailed descriptions, by tapping the Vacuum State button and opening the Library. Good hunting, Pilot. Range Control out.'] },
+  ];
+}
+let tourList = null;
+function tourShow() {
+  clearPointer(); closeModal();
+  const b = tourList && tourList[tourI];
+  if (!b) return tourFinish();
+  if (b.modal) {
+    modal({ kicker: 'ESC RANGE CONTROL', title: b.title, paras: b.paras, buttons: [{ label: b.label || 'Next', onClick: b.last ? tourFinish : tourNext }] });
+  } else {
+    pointAt({ target: b.target || null, text: b.text, next: b.next ? 'Next' : null, onNext: b.next ? tourNext : null, lock: true, hole: b.hole, dock: b.dock });
+  }
+}
+function tourNext() { tourI++; tourShow(); }
+function tourAbort() { const was = tourOn; tourOn = false; clearInterval(tourT); tourT = 0; tourList = null; if (was) { clearPointer(); closeModal(); } }   // only touches the screen when a tour was running
+async function tourReport() {
+  try { const m = await import('./missions.js'); await m.reportStep('esc_1', 'zone_tour'); }
+  catch (e) { say('Could not save the briefing: ' + errMsg(e), 'err'); }
+}
+function tourFinish() { tourAbort(); tourReport(); }
+function tourStart() {
+  tourOn = true; tourList = tourBeats(); tourI = 0;
+  clearInterval(tourT);
+  tourT = setInterval(() => {                                   // the beats that wait for the pilot to do something
+    const b = tourList && tourList[tourI];
+    if (!b || !view) return;
+    if (b.until && b.until()) { tourNext(); return; }
+    if (b.back && b.back()) { b.n = (b.n || 0) + 1; if (b.n >= 8) { b.n = 0; tourI--; tourShow(); } }   // 8 checks (2 s) in a row: the pilot really closed the menu without choosing
+    else if (b.back) b.n = 0;
+  }, 250);
+  const pct = (view.zone && view.zone.retreat_pct) || 25;
+  modal({ kicker: 'ESC RANGE CONTROL', title: 'Combat screen', paras: [
+      'You are cleared for live exercise. This screen holds everything a gunfight needs, and nothing here can cost you your ship: if your ship falls below ' + pct + '% hull, Range Control ends the exercise and sends you home.',
+      'Allow us to show you around.'],
+    buttons: [{ label: 'Show me', onClick: tourShow }, { label: 'Skip the tour', alt: true, onClick: tourFinish }] });
+}
+async function tourMaybe() {
+  if (tourOn || tourChecked || !view || !(view.zone && view.zone.instanced)) return;
+  try {
+    const m = await import('./missions.js');
+    const q = (m.missionList() || []).find(x => x.id === 'esc_1');
+    if (!q) return;                                              // the mission list is not loaded yet: try again at the next picture
+    tourChecked = true;
+    if (q.status === 'active' && (q.steps || []).some(x => x.id === 'zone_tour' && !x.done) && view && !tourOn) tourStart();
+  } catch (e) { /* no tour this time */ }
+}
 
 /* after a drone dies on an INSTANCED range: what next? Fight again, fight another drone (the next one starts its mission: the one just done is claimed, the next accepted), or leave. */
 const errMsg = e => (e && e.data && (e.data.message || e.data.error)) || (e && e.message) || 'error';
