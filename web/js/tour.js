@@ -178,8 +178,8 @@ const TOURS = [
       paras: [
         'ESC RANGE CONTROL, ' + name + '. The Combat Range is now on your chart, a short hop from the Training Range. This one is live fire.',
         'The range is shared. Every pilot inside works the same exercise against the same drones, so expect company, and expect someone else to land the last shot. Pilots never fire on pilots here.',
-        'Bring a combat hull: an Interceptor, a Corvette or a Gunship. A Courier will be admitted, and Range Control will be quietly worried about it.',
-        'If your hull falls below a quarter, the exercise ends and your ship stays safe at the range. Drones are worth 10 XP each.',
+        "Bring a combat hull: an Interceptor, a Corvette or a Gunship. Lesser ships don't stand a chance.",
+        "If your hull falls below 25%, we end the exercise and your ship stays safe at the range. Land the killing shot on a drone and it's worth (+15 XP).",
       ],
       start: 'Understood', skip: null,
     }),
