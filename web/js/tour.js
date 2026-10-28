@@ -169,6 +169,25 @@ const TOURS = [
       { target: '#nav button[data-screen="missions"]', text: 'Cal spent. Skills are how a pilot grows. Open the Missions tab and claim your reward.' },
     ],
   },
+  {
+    quest: 'esc_3',
+    plain: true,                                           /* a notice shown when the mission is accepted, not a tutorial */
+    welcome: name => ({
+      kicker: 'NEW MISSION STARTED: LIVE FIRE',
+      title: 'ESC Combat Range',
+      paras: [
+        'ESC RANGE CONTROL, ' + name + '. The Combat Range is now on your chart, a short hop from the Training Range. This one is live fire.',
+        'The range is shared. Every pilot inside works the same exercise against the same drones, so expect company, and expect someone else to land the last shot. Pilots never fire on pilots here.',
+        'Bring a combat hull: an Interceptor, a Corvette or a Gunship. A Courier will be admitted, and Range Control will be quietly worried about it.',
+        'If your hull falls below a quarter, the exercise ends and your ship stays safe at the range. Drones are worth 10 XP each.',
+      ],
+      start: 'Understood', skip: null,
+    }),
+    beats: [],
+    finals: [
+      { target: '#nav button[data-screen="missions"]', text: 'Range reached. Open the Missions tab and claim your reward.' },
+    ],
+  },
 ];
 
 const idxOf = {};                         // quest id -> position in its beats
@@ -182,7 +201,7 @@ function set(k, show) { if (key === k) return; key = k; closeModal(); clearPoint
 
 async function answer(T, on) {
   if (busy) return; busy = true;
-  LS.set(offKey(), on ? '0' : '1');
+  if (!T.plain) LS.set(offKey(), on ? '0' : '1');             // a 'plain' popup (a notice, not a tutorial) must not switch the tutorials on or off
   try { idxOf[T.quest] = 0; markLevelSeen(); await reportStep(T.quest, 'welcome'); }
   catch (e) { say('Error: ' + e.message, 'err'); }
   finally { busy = false; }
@@ -197,7 +216,7 @@ function run(T, q) {
     if (!done('welcome')) {
       return set('welcome:' + T.quest, () => {
         const w = T.welcome(name());
-        modal({ kicker: w.kicker, images: w.images, title: w.title, paras: w.paras, buttons: [{ label: w.start, onClick: () => answer(T, true) }, { label: w.skip, alt: true, onClick: () => answer(T, false) }] });
+        modal({ kicker: w.kicker, images: w.images, title: w.title, paras: w.paras, buttons: [{ label: w.start, onClick: () => answer(T, true) }, ...(w.skip ? [{ label: w.skip, alt: true, onClick: () => answer(T, false) }] : [])] });
       });
     }
   }
