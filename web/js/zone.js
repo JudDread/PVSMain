@@ -33,10 +33,13 @@ const CSS = `
 .zn button{margin:0}
 .zset{position:absolute;left:6px;top:calc(6px + env(safe-area-inset-top,0px));width:44px;height:44px;padding:7px;background:#131a2a;border:1px solid #3a4a6a;border-radius:8px;color:#e3e9f7}
 .zset svg,.zsq svg{width:100%;height:100%;display:block}
-.ztop{position:absolute;left:56px;right:6px;top:calc(6px + env(safe-area-inset-top,0px));display:flex;flex-direction:row-reverse;gap:6px;align-items:flex-start;pointer-events:none}
+.ztop{position:absolute;left:56px;right:6px;top:calc(6px + env(safe-area-inset-top,0px));display:flex;flex-direction:row;gap:6px;align-items:flex-start;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;pointer-events:none}
+.ztop::-webkit-scrollbar{display:none}
+.ztop>.zc:first-child{margin-left:auto}   /* few ships: the row sits against the right edge; a full row starts at the gear and the rest slides in from the right */
+.ztop .zsq{touch-action:pan-x}
 .zbot{position:absolute;left:56px;right:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:row-reverse;gap:6px;align-items:flex-end;pointer-events:none}
 .zside{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:6px;align-items:flex-end;pointer-events:none}
-.zc{display:flex;flex-direction:column;gap:2px;width:var(--c);pointer-events:auto}
+.zc{display:flex;flex-direction:column;gap:2px;width:var(--c);flex:0 0 auto;pointer-events:auto}
 .zsq{position:relative;width:var(--c);height:var(--c);padding:6px 6px 14px;border:2px solid #667;border-radius:8px;background:rgba(19,26,42,.88);color:#e3e9f7;pointer-events:auto;touch-action:none;box-sizing:border-box;overflow:hidden}
 .zsq .zd{position:absolute;left:0;right:0;bottom:1px;font-size:10px;line-height:12px;text-align:center;color:#c8d2ea;text-shadow:0 0 3px #000}
 .zsq.sel{box-shadow:0 0 0 2px #fff}
@@ -216,7 +219,7 @@ function ui() {
   R.heat.b.onclick = ev => { ev.stopPropagation(); const open = R.pop.hidden; closeMenus(); if (open) { heatOpen = true; fillHeat(); R.pop.hidden = false; placeLeft(R.pop, R.heat.b); } };
   root.addEventListener('pointerdown', ev => {
     const t = ev.target, inside = x => x && x.contains(t);
-    if (inside(R.menu) || inside(R.sets) || inside(R.pop) || inside(R.set) || inside(R.heat.b) || (t.closest && t.closest('.zc'))) return;
+    if (inside(R.menu) || inside(R.sets) || inside(R.pop) || inside(R.set) || inside(R.heat.b) || (t.closest && (t.closest('.zc') || t.closest('.ztop')))) return;
     closeMenus();
   }, true);
   bindMap();
@@ -575,7 +578,7 @@ function fillHeat() {
 
 /* ---------- rendering the chips and bars (after each picture) ---------- */
 function sizeChips() {
-  const n = Math.max(4, chips.size, view ? (view.me.modules || []).length : 0);
+  const n = Math.max(4, view ? (view.me.modules || []).length : 0);   // the size follows the pilot's own chips: the ship row scrolls instead of shrinking
   const c = Math.max(38, Math.min(58, Math.floor((root.clientWidth - 70) / n) - 6));
   root.style.setProperty('--c', c + 'px');
 }
@@ -628,7 +631,7 @@ function renderShipChips() {
   if (sel && !ids.has(sel)) sel = null;
   const mp = P(v.me);
   const sorted = [...chips.values()].sort((a, b) => dist(mp, P(a.ship)) - dist(mp, P(b.ship)));
-  sorted.forEach(c => R.top.appendChild(c.w));                 // nearest first = right-most (the bar runs right to left)
+  sorted.forEach(c => R.top.appendChild(c.w));                 // nearest first = left-most; the row grows from the right edge, stops at the gear when full, and the rest slides in by touch
 }
 function makeShipChip(s) {
   const w = el('div', 'zc'), b = el('button', 'zsq'), d = el('div', 'zd');
