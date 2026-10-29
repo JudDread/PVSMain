@@ -35,6 +35,7 @@ const PASSIVE_KEYS = new Set(['power_output', 'hold_cu', 'missile_ammo']);
 // game_state key 'combat' (migration 066); the server merges that row over these.
 export const DEFAULTS = {
   step_s: 5,               // one fight step, REAL seconds
+  shield_regen_by_class: { Light: 2, Medium: 4, Heavy: 6, Super: 8 },   // basic shield regeneration per REAL second, by hull class (ship doc); rigs and skills add shield_regen_per_s on top
   catchup_max_s: 600,      // most fight time worked forward in one wake-up
   heat_cap_per_power: 45,  // heat capacity = power x this
   heat_cool_per_power: 0.65, // passive cooling per second = power x this
@@ -176,7 +177,7 @@ export function activeStats(base, on = null, offline = false, cfg = DEFAULTS) {
     shield_max: Math.max(0, (H.shields + S('shield_add')) * (1 + S('shield_pct') / 100)),
     armor_max: Math.max(0, (H.armor + S('armor_add')) * (1 + S('armor_pct') / 100)),
     hull_max: Math.max(0, (H.hull_points + S('hull_add')) * (1 + S('hull_pct') / 100)),
-    shield_regen: S('shield_regen_per_s'),
+    shield_regen: Math.max(0, S('shield_regen_per_s') + ((cfg.shield_regen_by_class && cfg.shield_regen_by_class[H.class]) || 0)),
     armor_repair: S('armor_repair_per_s'),
     pd: clamp(S('pd_chance_pct'), 0, 100),
     mobility: Math.max(0, H.mobility + S('maneuver_pct') / 100 + S('mobility_add')),
@@ -495,7 +496,9 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
 
     // regen first, then the damage of this step: shield -> armor -> hull
     if (!offline) {
+      const sh0 = s.shield;
       s.shield = Math.min(ss.shield_max, s.shield + ss.shield_regen * dt);
+      if (s.shield - sh0 >= 0.5) events.push({ t: tEnd, kind: 'regen', actor_id: s.id, target_id: s.id, amount: s.shield - sh0, note: null });
       s.armor = Math.min(ss.armor_max, s.armor + ss.armor_repair * dt);
     }
     let d = incoming.get(s.id) || 0;
