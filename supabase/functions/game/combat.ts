@@ -215,17 +215,22 @@ async function advanceZone(db, ctx, nowMs) {
   // events: damage rows are summed per attacker / target pair for the whole catch-up (saves database space)
   const evRows = [];
   const dmg = new Map();
+  const regen = new Map();                                      // shield regeneration is summed per ship for the whole catch-up too
   for (const e of res.events) {
     const at = new Date(Math.min(nowMs, snapMs + e.t * 1000)).toISOString();
     if (e.kind === 'damage') {
       const k = e.actor_id + '|' + e.target_id;
       const d = dmg.get(k) || { zone_id: zone.location_id, instance, at, kind: 'damage', actor_id: e.actor_id, target_id: e.target_id, amount: 0, note: null };
       d.amount += e.amount; d.at = at; dmg.set(k, d);
+    } else if (e.kind === 'regen') {
+      const d = regen.get(e.target_id) || { zone_id: zone.location_id, instance, at, kind: 'regen', actor_id: e.actor_id, target_id: e.target_id, amount: 0, note: null };
+      d.amount += e.amount; d.at = at; regen.set(e.target_id, d);
     } else {
       evRows.push({ zone_id: zone.location_id, instance, at, kind: e.kind, actor_id: e.actor_id ?? null, target_id: e.target_id ?? null, amount: e.amount ?? null, note: e.note ?? null });
     }
   }
   for (const d of dmg.values()) evRows.push(d);
+  for (const d of regen.values()) evRows.push(d);
   if (evRows.length) {
     const { error: ie } = await db.from('combat_events').insert(evRows);
     if (ie) console.error('combat_events insert failed', ie);
