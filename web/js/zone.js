@@ -18,7 +18,9 @@ let outInfo = null, lastDrone = null, lastInstanced = false, endWant = null, end
 const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
-let pops = [];                                 // damage numbers { id, text, born }
+let pops = [];                                 // floating numbers { id, text, color, born }: red damage, blue shield regeneration
+let popNext = 0;                               // the time (ms) the next number may appear: the numbers are queued one after the other
+const POP_GAP = 220, POP_GAP_MIN = 90, POP_SPAN = 4500;   // ms between numbers; the whole queue is kept under ~4.5 s so it never falls behind the 5-second pictures
 const ptrs = new Map(); const rangeOn = new Set();      // ships whose weapon ranges are shown on the map                        // fingers on the map
 
 const REL = { hos: '#ff5a4a', ally: '#4cd37a', neu: '#f2c744' };
@@ -250,7 +252,7 @@ function buildSettings() {
 }
 function syncSettings() { R.setRange.textContent = 'Weapon ranges: ' + (showRanges ? 'ON' : 'OFF'); }
 function fillLog() {
-  R.log.replaceChildren(...(view ? view.events.slice(-8).map(e => el('div', '', evText(e))) : []));
+  R.log.replaceChildren(...(view ? view.events.filter(e => e.kind !== 'regen').slice(-8).map(e => el('div', '', evText(e))) : []));
   if (!R.log.childNodes.length) R.log.textContent = 'Nothing has happened yet.';
 }
 
@@ -323,7 +325,7 @@ function apply(v) {
 function closeZone(v) {
   const was = !!view, killedDrone = lastDrone, wasInstanced = lastInstanced;
   lastDrone = null; lastCheck = 0; tourAbort(); tourChecked = false;
-  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
+  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; popNext = 0; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
@@ -377,14 +379,24 @@ function newEvents(v) {
   const evs = v.events || [];
   const top = evs.reduce((m, e) => Math.max(m, e.id || 0), 0);
   if (lastEv === null) { lastEv = top; return; }          // the first picture: do not replay old hits
-  evs.filter(e => e.id > lastEv && e.kind === 'damage' && e.target_id).forEach((e, i) => {
-    pops.push({ id: e.target_id, text: '-' + whole(e.amount || 0), born: Date.now() + i * 180 });
-  });
+  // a picture brings all of its hits and regenerations at once: they are queued and shown ONE AFTER THE OTHER, POP_GAP apart
+  // (tighter only when a lot happened, so the queue is empty again before the next picture)
+  const fresh = evs.filter(e => e.id > lastEv && (e.kind === 'damage' || e.kind === 'regen') && e.target_id);
+  if (fresh.length) {
+    const now = Date.now(), start = Math.max(now, popNext);
+    const gap = Math.max(POP_GAP_MIN, Math.min(POP_GAP, (POP_SPAN - (start - now)) / fresh.length));
+    fresh.forEach((e, i) => pops.push({ id: e.target_id, text: (e.kind === 'regen' ? '+' : '-') + whole(e.amount || 0), color: e.kind === 'regen' ? '#4aa8ff' : '#ff4a3a', born: start + i * gap }));
+    popNext = start + fresh.length * gap;
+  }
   lastEv = Math.max(lastEv, top);
 }
 
 /* ---------- what fly.js uses ---------- */
 export const zoneIn = () => !!view;
+let infoCb = null, infoKnown = false;                    // fly.js redraws its zone box when the answer of the range check arrives (a reload showed the first message until then)
+export const zoneOnInfo = cb => { infoCb = cb; };
+export const zoneInfoKnown = () => infoKnown;
+function infoChanged() { infoKnown = true; if (infoCb) { try { infoCb(); } catch (e) { /* the box redraws at the next update */ } } }
 export const zoneDrones = () => (outInfo && outInfo.here && Array.isArray(outInfo.drones)) ? outInfo.drones.filter(d => d.unlocked || d.startable) : [];   // the drones this pilot may ask for here (a startable one starts its mission)
 
 
@@ -471,7 +483,7 @@ const KILL_TEXT = {
 };
 async function afterKill(killedId) {
   let list = [];
-  try { const o = await call('combat_zone', {}); outInfo = o; list = (o && o.here && o.drones) || []; } catch (e) { return; }
+  try { const o = await call('combat_zone', {}); outInfo = o; infoChanged(); list = (o && o.here && o.drones) || []; } catch (e) { return; }
   const killed = list.find(d => d.id === killedId);
   if (!killed) return;
   const go = async d => {
@@ -507,10 +519,10 @@ export async function zoneCheck() {                       // fly.js asks now and
   if (view || busy || Date.now() - lastCheck < 20000) return;
   lastCheck = Date.now(); busy = true;
   try { const v = await call('combat_zone', {}); if (v && v.in_zone) { away = false; apply(v); } else outInfo = v; } catch (e) { /* the popup stays as it is */ }
-  finally { busy = false; }
+  finally { busy = false; infoChanged(); }
 }
 export function resetZone() {
-  view = null; sel = null; away = false; lastCheck = 0; cam = null; modSig = ''; lastEv = null; lastMe = null; pops = []; zoomMode = 0;
+  view = null; sel = null; away = false; lastCheck = 0; cam = null; modSig = ''; lastEv = null; lastMe = null; pops = []; popNext = 0; zoomMode = 0;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
 }
@@ -886,12 +898,12 @@ function drawMap() {
   const pos = new Map();
   view.ships.forEach(s => pos.set(s.id, ship(s, P(s), REL[rel(s)], false)));
   pos.set(m.id, ship(m, mp, REL.ally, true));
-  // damage numbers: red, rising and fading
+  // floating numbers: red damage and blue regeneration, rising and fading
   const now = Date.now(); pops = pops.filter(p => now - p.born < 1500);
   c.font = 'bold 14px system-ui,sans-serif'; c.textAlign = 'center';
   pops.forEach(p => {
     const age = (now - p.born) / 1500; if (age < 0) return; const q = pos.get(p.id); if (!q) return;
-    c.globalAlpha = 1 - age; c.lineWidth = 3; c.strokeStyle = '#000'; c.fillStyle = '#ff4a3a';
+    c.globalAlpha = 1 - age; c.lineWidth = 3; c.strokeStyle = '#000'; c.fillStyle = p.color || '#ff4a3a';
     c.strokeText(p.text, q.x, q.y - 14 - age * 34); c.fillText(p.text, q.x, q.y - 14 - age * 34);
   });
   c.globalAlpha = 1; c.textAlign = 'left';
