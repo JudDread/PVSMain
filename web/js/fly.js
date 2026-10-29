@@ -10,7 +10,7 @@
 import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse, stopPlan, segmentEnd } from 'physics';
 import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow } from 'core';
 import { createMap } from 'map';
-import { zoneIn, zoneEnter, zoneShow, zoneCheck, zoneDrones } from 'zone';
+import { zoneIn, zoneEnter, zoneShow, zoneCheck, zoneDrones, zoneOnInfo, zoneInfoKnown } from 'zone';
 
 const SHOW_FLIGHT_BUTTONS = false;     /* Hold the bar / Stop / Coast: not in the MVP. Set to true to bring the three buttons back. */
 let reveal = false;                    /* true right after a line is tapped: scroll so the Launch button under it is in view */
@@ -330,6 +330,7 @@ $('depshead').onclick = () => { depsOpen = !depsOpen; showDeps(); };
 /* ---------- combat zone box (a precursor to combat): docked at a place of kind 'range' or 'zone' the Fly screen shows a box;
    one day the combat screen replaces it. OK hides it for this stay. The text comes from the place's `info` (data). ---------- */
 let zoneBox = null, zoneDismissed = null, zoneShip = null;
+zoneOnInfo(() => { if (zoneShip) drawZone(zoneShip); });      /* the range check answered: draw the box again with the choices the pilot really has */
 function drawZone(ship) {
   zoneShip = ship;
   const l = ship && ship.state === 'docked' ? locById(ship.location_id) : null;
@@ -363,6 +364,7 @@ function drawZone(ship) {
     return b;
   };
   const enters = drs.length > 1 ? drs.map(d => mkEnter('Enter: ' + d.name + (d.unlocked ? '' : ' (starts its mission)'), d)) : [mkEnter(inside ? 'Return to the zone' : 'Enter the zone')];
+  if (!inside && !zoneInfoKnown()) enters.forEach(b => { b.disabled = true; b.textContent = 'Checking the range...'; });   /* no Enter until we know which drones the pilot may ask for */
   const ok = document.createElement('button'); ok.textContent = 'Not now'; ok.className = 'alt'; ok.style.marginTop = '10px';
   ok.onclick = () => { zoneDismissed = l.id; zoneBox.hidden = true; };
   zoneBox.replaceChildren(...(inside ? [title, text, ...enters] : [title, text, ...enters, ok]));
