@@ -1,4 +1,6 @@
 // fly.js - the Fly screen: vertical thrust slider on the map, destination list, ship position, blue preview course, Launch / Confirm button
+// 076 lasting states: the ship chip (top right of the map) with shield / armor / hull bars under it; touch it for the ship menu; touch the ship on the map
+//   while docked at a zone and the zone box comes back (the same box as on arrival).
 // under the map (left) and the in-flight buttons under the map (right).
 // Step 4a: moving the thrust slider only makes a POSSIBLE course (blue line + new ETAs). Nothing changes until the
 //   confirm button is pressed.
@@ -310,6 +312,10 @@ const map = createMap($('map'), {
     const d = deps && deps.departures && deps.departures.find(x => x.id === id);
     if (d) { selected = d.id; mode = null; drawAll(); } else say('That place is not a destination from here.', 'muted');
   },
+  pickShip: () => {                                          /* the ship itself was touched: at a zone place it brings the zone box back, anywhere else the ship menu */
+    const zl = zoneShip && zoneShip.state === 'docked' ? locById(zoneShip.location_id) : null;
+    if (zl && (zl.kind === 'range' || zl.kind === 'zone')) { zoneDismissed = null; drawZone(zoneShip); } else toggleChipMenu();
+  },
   pick: name => {
     const d = deps && deps.departures && deps.departures.find(x => x.anchor_body === name && x.is_default);
     if (d) { selected = d.id; mode = null; drawAll(); } else say(name + ' is not a destination from here.', 'muted');
@@ -339,7 +345,7 @@ function drawZone(ship) {
   if (!wrap) return;
   if (!zoneBox) {
     zoneBox = document.createElement('div');
-    zoneBox.style.cssText = 'position:absolute;left:10px;right:10px;top:10px;z-index:5;padding:12px;border:1px solid #3a5a78;border-radius:8px;background:rgba(8,14,22,.95);color:#d7e4f0;font-size:14px;line-height:1.4';
+    zoneBox.style.cssText = 'position:absolute;left:10px;right:56px;top:10px;z-index:5;padding:12px;border:1px solid #3a5a78;border-radius:8px;background:rgba(8,14,22,.95);color:#d7e4f0;font-size:14px;line-height:1.4';
     wrap.appendChild(zoneBox);
   }
   zoneCheck();                                                 /* already inside from an earlier visit? then zone.js opens its screen by itself */
@@ -371,10 +377,79 @@ function drawZone(ship) {
   zoneBox.hidden = false;
 }
 
+/* ---------- 076 LASTING STATES: the ship chip (top right of the map) with 3 small bars under it, and the ship menu ----------
+   The server sends ship.cond = { name, sh/shm (shield now/max), ar/arm, hu/hum, shr/arr (regeneration per real second, 0 when it is not regenerating), fight, market }.
+   Between answers the page only moves shield and armor along their rate (local seconds since the answer arrived), so the bars rise smoothly. */
+const SHIP_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5 20 21l-8-4.2L4 21z"/></svg>';
+let chipBox = null, chipBtn = null, chipBars = [], chipMenu = null, condNow = null, condRecv = 0, condKey = null;
+function mkChipBar(color) {
+  const w = document.createElement('div'), f = document.createElement('i'), t = document.createElement('span');
+  w.className = 'shb'; f.style.background = color; w.append(f, t);
+  return { w, set(frac, text) { f.style.width = Math.max(0, Math.min(100, frac * 100)) + '%'; t.textContent = text; } };
+}
+function ensureChip() {
+  if (chipBox) return true;
+  const wrap = document.querySelector('#scr-travel .mapwrap');
+  if (!wrap) return false;
+  chipBox = document.createElement('div'); chipBox.className = 'shc'; chipBox.hidden = true;
+  chipBtn = document.createElement('button'); chipBtn.className = 'shq'; chipBtn.innerHTML = SHIP_ICON;
+  chipBtn.onclick = ev => { ev.stopPropagation(); toggleChipMenu(); };
+  chipBars = [mkChipBar('#3f8cff'), mkChipBar('#c9a24a'), mkChipBar('#4cd37a')];      /* shield, armor, hull: the same colors as the combat screen */
+  chipBox.append(chipBtn, ...chipBars.map(b => b.w));
+  chipMenu = document.createElement('div'); chipMenu.className = 'shm'; chipMenu.hidden = true;
+  wrap.append(chipBox, chipMenu);
+  document.addEventListener('click', ev => {                   /* a touch anywhere else closes the menu */
+    if (chipMenu && !chipMenu.hidden && !chipMenu.contains(ev.target) && !chipBox.contains(ev.target)) chipMenu.hidden = true;
+  });
+  return true;
+}
+function liveCond() {                                          /* the numbers now: the answer's numbers moved along their rates */
+  const c = condNow; if (!c) return null;
+  const dt = c.fight || c.market ? 0 : Math.max(0, (Date.now() - condRecv) / 1000);
+  return { sh: Math.min(c.shm, c.sh + c.shr * dt), ar: Math.min(c.arm, c.ar + c.arr * dt), hu: c.hu };
+}
+function drawChipBars() {
+  if (!chipBox || chipBox.hidden) return;
+  const c = condNow, v = liveCond();
+  chipBars.forEach(b => { b.w.style.visibility = c ? 'visible' : 'hidden'; });
+  if (!c || !v) return;
+  chipBars[0].set(c.shm > 0 ? v.sh / c.shm : 0, String(Math.round(v.sh)));
+  chipBars[1].set(c.arm > 0 ? v.ar / c.arm : 0, String(Math.round(v.ar)));
+  chipBars[2].set(c.hum > 0 ? v.hu / c.hum : 0, String(Math.round(v.hu)));
+}
+function drawChipMenu() {
+  if (!chipMenu) return;
+  const pname = (S.last && S.last.character && S.last.character.name) || 'Pilot';
+  const title = document.createElement('div'); title.className = 'shn'; title.textContent = pname;
+  const rows = [title];
+  if (condNow && condNow.name) { const hn = document.createElement('div'); hn.className = 'shh'; hn.textContent = condNow.name; rows.push(hn); }
+  const set = document.createElement('button'); set.className = 'alt'; set.textContent = 'Settings (coming soon)'; set.disabled = true;
+  rows.push(set);
+  chipMenu.replaceChildren(...rows);
+  chipBtn.title = pname;
+}
+function toggleChipMenu() {
+  if (!ensureChip() || chipBox.hidden) return;
+  if (chipMenu.hidden) { drawChipMenu(); chipMenu.hidden = false; } else chipMenu.hidden = true;
+}
+function drawChip(ship) {
+  if (!ensureChip()) return;
+  if (!ship) { chipBox.hidden = true; chipMenu.hidden = true; condNow = null; return; }
+  const c = ship.cond || null;
+  const key = c ? c.at + '|' + ship.id : null;
+  if (key !== condKey) { condKey = key; condNow = c; condRecv = Date.now(); }       /* a new answer: the local seconds start again from it */
+  if (!c) condNow = null;
+  chipBox.hidden = false;
+  drawChipBars();
+  if (!chipMenu.hidden) drawChipMenu();
+}
+setInterval(drawChipBars, 1000);
+
 addScreen('travel', 'Fly', $('scr-travel'), {
   onShow: () => { map.resize(); map.need(); sizeThrust(); },
   update: ship => {
     drawZone(ship);
+    drawChip(ship);
     if (!ship) { map.need(); return; }
     const fl = ship.state !== 'docked';
     /* the list on screen must match the ship's state: docked list for a docked ship, course options for a flying one */
@@ -417,6 +492,6 @@ $('go').onclick = async () => {
 
 /* called by main.js */
 export function invalidateDeps() { deps = null; }                      /* ETAs changed (game speed): fetch them again */
-export function resetFly() { tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; }   /* log out */
+export function resetFly() { tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; if (chipBox) { chipBox.hidden = true; chipMenu.hidden = true; } condNow = null; condKey = null; }   /* log out */
 
 setInterval(drawEta, 1000);                                     /* the countdown ticks once a second (does nothing unless the ship is flying) */
