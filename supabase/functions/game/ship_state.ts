@@ -1,12 +1,13 @@
 // @ts-nocheck
 // ship_state.ts - LASTING STATES (migration 076): a ship's shield, armor, hull and missile ammo between fights.
 // Stored on the ship (ships.shield_v / armor_v / hull_v / ammo_v + cond_at); NULL cond_at = full. Nothing here runs on a timer:
-// the current value is worked out when somebody reads it. Docked at a place with a market = full. Elsewhere shield and armor
+// the current value is worked out when somebody reads it. Docked at a place with a HANGAR (077 location_services) = full. Elsewhere shield and armor
 // regenerate at the fight rates (per REAL second, from combat.js); hull and ammo do not.
 // The maximum and the rates come from the hull and the fitted rigs (the pilot's skills do not touch them yet; if a skill ever
 // adds shield or armor, add its effect to skillFx below and in combat.ts skillEffects).
 // Loaded lazily by index.ts (me) so a fault here can never stop the game.
 import { DEFAULTS, resolveBase, newShip, statsOf } from './combat_bundle.ts';
+import { can } from './services.ts';
 
 const num = (v, d = 0) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
 const r1 = (n) => Math.round(n * 10) / 10;
@@ -20,13 +21,6 @@ export async function loadCfg(db) {
 
 /* the hull fraction needed to enter a zone with a retreat rule (game_state 'combat' -> entry_hull_frac, default 0.3) */
 export const entryHullFrac = (cfg) => { const f = Number(cfg && cfg.entry_hull_frac); return Number.isFinite(f) && f >= 0 && f < 1 ? f : 0.3; };
-
-export async function hasMarket(db, locationId) {
-  if (!locationId) return false;
-  const { data, error } = await db.from('markets').select('location_id').eq('location_id', locationId).limit(1);
-  if (error) throw error;
-  return !!(data && data.length);
-}
 
 /* the maximum numbers of a ship (from its hull and fitted rigs) */
 export async function shipMaxes(db, ship, cfg) {
@@ -77,14 +71,14 @@ export async function storeCondition(db, shipId, s, whenMs) {
 export async function shipCondition(db, ship, nowMs) {
   const cfg = await loadCfg(db);
   const mx = await shipMaxes(db, ship, cfg);
-  let cur, fight = false, market = false;
+  let cur, fight = false, hangar = false;
   const { data: fr, error: fe } = await db.from('combat_ships').select('shield,armor,hull,ammo').eq('ship_id', ship.id).maybeSingle();
   if (fe) throw fe;
   if (fr) {                                                            // in a fight: the fight's own numbers (the last snapshot)
     fight = true;
     cur = { shield: num(fr.shield), armor: num(fr.armor), hull: num(fr.hull), ammo: num(fr.ammo) };
-  } else if (ship.state === 'docked' && ship.location_id && await hasMarket(db, ship.location_id)) {
-    market = true;                                                     // a market repairs and rearms the ship fully
+  } else if (ship.state === 'docked' && ship.location_id && await can(db, ship.location_id, 'hangar')) {
+    hangar = true;                                                     // a hangar repairs and rearms the ship fully
     cur = { shield: mx.shield_max, armor: mx.armor_max, hull: mx.hull_max, ammo: mx.ammo_max };
     if (ship.cond_at != null) {
       const { error: ce } = await db.from('ships').update({ shield_v: null, armor_v: null, hull_v: null, ammo_v: null, cond_at: null }).eq('id', ship.id);
@@ -93,9 +87,9 @@ export async function shipCondition(db, ship, nowMs) {
   } else {
     cur = applyStored(ship, mx, nowMs);
   }
-  const live = !fight && !market && ship.cond_at != null;               // numbers that are still regenerating
+  const live = !fight && !hangar && ship.cond_at != null;               // numbers that are still regenerating
   return {
-    name: mx.name, weapons: mx.weapons, rigs: mx.rigs, at: nowMs, fight, market,
+    name: mx.name, weapons: mx.weapons, rigs: mx.rigs, at: nowMs, fight, hangar,
     sh: r1(cur.shield), shm: r1(mx.shield_max), shr: live ? r2(mx.shield_regen) : 0,
     ar: r1(cur.armor), arm: r1(mx.armor_max), arr: live ? r2(mx.armor_repair) : 0,
     hu: r1(cur.hull), hum: r1(mx.hull_max),
