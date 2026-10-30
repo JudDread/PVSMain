@@ -99,6 +99,7 @@ function assetError(e) {
   if (m === 'not_enough_credits') return 'Not enough credits (the pay costs ' + money(d.cost || 0) + ', you have ' + money(d.credits || 0) + ').';
   if (m === 'not_enough_hold') return 'Not enough room in the hold (free ' + r2(d.hold_free || 0) + ', needed ' + r2(d.hold_needed || 0) + ').';
   if (m === 'not_enough_cargo') return 'You only have ' + (d.have || 0) + ' in the hold.';
+  if (m === 'no_service') return d.message || 'This place has no market. Go to a market location to do that.';
   if (m === 'not_docked' || m === 'not_docked_here') return 'Your ship must be docked at this place for that.';
   if (m === 'too_many_contracts') return 'You have too many open contracts. Cancel one first.';
   if (m === 'same_location') return 'The destination must be a different place.';
@@ -489,7 +490,7 @@ function openHire(it, q) {
   hire.q.value = q;
   hire.chips.replaceChildren();
   [['1', () => 1], ['10', () => 10], ['All', () => hs.have]].forEach(([l, f]) => { const b = el('button', 'alt', l); b.onclick = () => { hire.q.value = f(); refreshHire(); }; hire.chips.appendChild(b); });
-  const locs = ((S.last && S.last.locations) || []).filter(l => l.id !== aloc).sort((a, b) => a.name.localeCompare(b.name));
+  const locs = ((S.last && S.last.locations) || []).filter(l => l.id !== aloc && (!l.svc || l.svc.includes('hangar'))).sort((a, b) => a.name.localeCompare(b.name));
   hire.dest.replaceChildren(...locs.map(l => { const o = document.createElement('option'); o.value = l.id; o.textContent = l.name; return o; }));
   const mem = LS.get('pvs_hdest'); if (mem && locs.some(l => l.id === mem)) hire.dest.value = mem;
   hire.price.value = '';
