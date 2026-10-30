@@ -308,14 +308,11 @@ const map = createMap($('map'), {
     .map(l => ({ id: l.id, name: l.name, body: bodyIdx(l.anchor_body), off: Number(l.offset_au), ang: (Number(l.angle_deg) || 0) * Math.PI / 180 })),
   selectedPlace: () => (mode === 'hold' && deps ? deps.dest : selected),
   pickPlace: id => {
-    if (zoneShip && zoneDismissed === id && zoneShip.location_id === id) { zoneDismissed = null; drawZone(zoneShip); return; }   /* the place the ship is docked at: show its zone box again */
+    if (zoneShip && zoneShip.location_id === id && zonePlace(zoneShip)) { openChipMenu(); return; }   /* the place the ship is docked at: the ship menu (it holds the zone choices) */
     const d = deps && deps.departures && deps.departures.find(x => x.id === id);
     if (d) { selected = d.id; mode = null; drawAll(); } else say('That place is not a destination from here.', 'muted');
   },
-  pickShip: () => {                                          /* the ship itself was touched: at a zone place it brings the zone box back, anywhere else the ship menu */
-    const zl = zoneShip && zoneShip.state === 'docked' ? locById(zoneShip.location_id) : null;
-    if (zl && (zl.kind === 'range' || zl.kind === 'zone')) { zoneDismissed = null; drawZone(zoneShip); } else toggleChipMenu();
-  },
+  pickShip: () => toggleChipMenu(),                           /* the ship itself was touched: the ship menu (at a zone place it holds the zone choices) */
   pick: name => {
     const d = deps && deps.departures && deps.departures.find(x => x.anchor_body === name && x.is_default);
     if (d) { selected = d.id; mode = null; drawAll(); } else say(name + ' is not a destination from here.', 'muted');
@@ -333,53 +330,24 @@ function sizeDeps() {
 function showDeps() { if (depsOpen) sizeDeps(); $('deps').hidden = !depsOpen; $('depscaret').textContent = depsOpen ? '-' : '+'; }
 window.addEventListener('resize', () => { if (depsOpen) sizeDeps(); });
 $('depshead').onclick = () => { depsOpen = !depsOpen; showDeps(); };
-/* ---------- combat zone box (a precursor to combat): docked at a place of kind 'range' or 'zone' the Fly screen shows a box;
-   one day the combat screen replaces it. OK hides it for this stay. The text comes from the place's `info` (data). ---------- */
-let zoneBox = null, zoneDismissed = null, zoneShip = null;
-zoneOnInfo(() => { if (zoneShip) drawZone(zoneShip); });      /* the range check answered: draw the box again with the choices the pilot really has */
-function drawZone(ship) {
-  zoneShip = ship;
+/* ---------- the ship chip (top right of the map) with 3 small bars under it, and the SHIP MENU ----------
+   The server sends ship.cond = { name (hull), weapons[], rigs[] (names), sh/shm (shield now/max), ar/arm, hu/hum, shr/arr (regeneration per real second,
+   0 when it is not regenerating), am/amm (missile ammo), fight, market }. Between answers the page only moves shield and armor along their rate
+   (local seconds since the answer arrived), so the bars rise smoothly.
+   The menu opens by touching the chip or the ship on the map. At a place of kind 'range' or 'zone' it also holds the zone choices
+   (what the old zone box held: the place's info text and the Enter buttons) and it opens by itself once when the ship arrives there.
+   The ship part is built from one description object (shipInfo), so other ships (allies, when fleets exist) can use the same layout. */
+let zoneShip = null, zoneOpenFor = null;
+zoneOnInfo(() => { if (zoneShip) drawChip(zoneShip); });       /* the range check answered: the menu may open now, and shows the choices the pilot really has */
+function zonePlace(ship) {
   const l = ship && ship.state === 'docked' ? locById(ship.location_id) : null;
-  if (!l || (l.kind !== 'range' && l.kind !== 'zone')) { zoneDismissed = null; if (zoneBox) zoneBox.hidden = true; return; }
-  const wrap = document.querySelector('#scr-travel .mapwrap');
-  if (!wrap) return;
-  if (!zoneBox) {
-    zoneBox = document.createElement('div');
-    zoneBox.style.cssText = 'position:absolute;left:10px;right:56px;top:10px;z-index:5;padding:12px;border:1px solid #3a5a78;border-radius:8px;background:rgba(8,14,22,.95);color:#d7e4f0;font-size:14px;line-height:1.4';
-    wrap.appendChild(zoneBox);
-  }
-  zoneCheck();                                                 /* already inside from an earlier visit? then zone.js opens its screen by itself */
-  const inside = zoneIn();
-  if (zoneDismissed === l.id && !inside) {                      /* "Not now" was pressed: one small button stays, and tapping the place on the map brings the box back too */
-    const chip = document.createElement('button'); chip.className = 'alt'; chip.style.cssText = 'padding:6px 10px;font-size:13px';
-    chip.textContent = l.name + ': tap for options';
-    chip.onclick = () => { zoneDismissed = null; drawZone(ship); };
-    zoneBox.replaceChildren(chip); zoneBox.hidden = false; return;
-  }
-  const title = document.createElement('div'); title.style.cssText = 'font-weight:bold;margin-bottom:6px'; title.textContent = l.name;
-  const text = document.createElement('div'); text.textContent = l.info || 'This is where combat will happen.';
-  const drs = inside ? [] : zoneDrones();                       /* an instanced range: one Enter button for each drone the pilot may ask for (only when there is a choice) */
-  const mkEnter = (label, drone) => {                          /* drone = a choice object from zoneDrones(), or nothing */
-    const b = document.createElement('button'); b.textContent = label; b.style.marginTop = '10px';
-    b.onclick = async () => {
-      b.disabled = true;
-      try { if (inside) await zoneShow(); else await zoneEnter(drone); }
-      catch (e) { say('Error: ' + ((e.data && (e.data.message || e.data.error)) || e.message), 'err'); }
-      finally { b.disabled = false; }
-    };
-    return b;
-  };
-  const enters = drs.length > 1 ? drs.map(d => mkEnter('Enter: ' + d.name + (d.unlocked ? '' : ' (starts its mission)'), d)) : [mkEnter(inside ? 'Return to the zone' : 'Enter the zone')];
-  if (!inside && !zoneInfoKnown()) enters.forEach(b => { b.disabled = true; b.textContent = 'Checking the range...'; });   /* no Enter until we know which drones the pilot may ask for */
-  const ok = document.createElement('button'); ok.textContent = 'Not now'; ok.className = 'alt'; ok.style.marginTop = '10px';
-  ok.onclick = () => { zoneDismissed = l.id; zoneBox.hidden = true; };
-  zoneBox.replaceChildren(...(inside ? [title, text, ...enters] : [title, text, ...enters, ok]));
-  zoneBox.hidden = false;
+  return l && (l.kind === 'range' || l.kind === 'zone') ? l : null;
+}
+function drawZone(ship) {                                      /* called on every update: no box any more, it only keeps the ship and asks the range check */
+  zoneShip = ship;
+  if (zonePlace(ship)) zoneCheck();                            /* already inside from an earlier visit? then zone.js opens its screen by itself */
 }
 
-/* ---------- 076 LASTING STATES: the ship chip (top right of the map) with 3 small bars under it, and the ship menu ----------
-   The server sends ship.cond = { name, sh/shm (shield now/max), ar/arm, hu/hum, shr/arr (regeneration per real second, 0 when it is not regenerating), fight, market }.
-   Between answers the page only moves shield and armor along their rate (local seconds since the answer arrived), so the bars rise smoothly. */
 const SHIP_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5 20 21l-8-4.2L4 21z"/></svg>';
 let chipBox = null, chipBtn = null, chipBars = [], chipMenu = null, condNow = null, condRecv = 0, condKey = null;
 function mkChipBar(color) {
@@ -417,30 +385,71 @@ function drawChipBars() {
   chipBars[1].set(c.arm > 0 ? v.ar / c.arm : 0, String(Math.round(v.ar)));
   chipBars[2].set(c.hum > 0 ? v.hu / c.hum : 0, String(Math.round(v.hu)));
 }
+const mkDiv = (cls, text) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; return d; };
+function namesList(arr) {                                      /* ['Railgun', 'Railgun', 'Shield'] -> rows 'Railgun x2', 'Shield' ; none -> 'None fitted' */
+  const n = new Map(); (arr || []).forEach(x => n.set(x, (n.get(x) || 0) + 1));
+  if (!n.size) return [mkDiv('shl', 'None fitted')];
+  return [...n].map(([k, v]) => mkDiv('shl', v > 1 ? k + ' x' + v : k));
+}
+/* the rows that describe one ship: info = { pilot, hull, weapons[], rigs[], am, amm } (your ship now; an ally's later) */
+function shipRows(info) {
+  const rows = [mkDiv('shn', info.pilot || 'Pilot')];
+  if (info.hull) rows.push(mkDiv('shh', info.hull));
+  rows.push(mkDiv('shs', 'Weapons'), ...namesList(info.weapons), mkDiv('shs', 'Rigs'), ...namesList(info.rigs));
+  if (info.amm > 0) rows.push(mkDiv('shl', 'Ammo: ' + info.am + ' / ' + info.amm));
+  return rows;
+}
+/* the zone choices (what the old zone box held), for the place the ship is docked at */
+function zoneRows(l) {
+  const inside = zoneIn();
+  const rows = [mkDiv('shn', l.name), mkDiv('shi', l.info || 'This is where combat will happen.')];
+  const drs = inside ? [] : zoneDrones();                       /* an instanced range: one Enter button for each drone the pilot may ask for (only when there is a choice) */
+  const mkEnter = (label, drone) => {                          /* drone = a choice object from zoneDrones(), or nothing */
+    const b = document.createElement('button'); b.textContent = label; b.className = 'zgo';
+    b.onclick = async () => {
+      b.disabled = true;
+      try { chipMenu.hidden = true; if (inside) await zoneShow(); else await zoneEnter(drone); }
+      catch (e) { say('Error: ' + ((e.data && (e.data.message || e.data.error)) || e.message), 'err'); }
+      finally { b.disabled = false; }
+    };
+    return b;
+  };
+  const enters = drs.length > 1 ? drs.map(d => mkEnter('Enter: ' + d.name + (d.unlocked ? '' : ' (starts its mission)'), d)) : [mkEnter(inside ? 'Return to the zone' : 'Enter the zone')];
+  if (!inside && !zoneInfoKnown()) enters.forEach(b => { b.disabled = true; b.textContent = 'Checking the range...'; });   /* no Enter until we know which drones the pilot may ask for */
+  rows.push(...enters, mkDiv('shd', ''));
+  return rows;
+}
 function drawChipMenu() {
   if (!chipMenu) return;
   const pname = (S.last && S.last.character && S.last.character.name) || 'Pilot';
-  const title = document.createElement('div'); title.className = 'shn'; title.textContent = pname;
-  const rows = [title];
-  if (condNow && condNow.name) { const hn = document.createElement('div'); hn.className = 'shh'; hn.textContent = condNow.name; rows.push(hn); }
+  const c = condNow;
+  const zl = zonePlace(zoneShip);
+  const rows = zl ? zoneRows(zl) : [];
+  rows.push(...shipRows({ pilot: pname, hull: c && c.name, weapons: c && c.weapons, rigs: c && c.rigs, am: c ? c.am : 0, amm: c ? c.amm : 0 }));
   const set = document.createElement('button'); set.className = 'alt'; set.textContent = 'Settings (coming soon)'; set.disabled = true;
   rows.push(set);
+  chipMenu.classList.toggle('wide', !!zl);
   chipMenu.replaceChildren(...rows);
   chipBtn.title = pname;
 }
+function openChipMenu() { if (ensureChip() && !chipBox.hidden) { drawChipMenu(); chipMenu.hidden = false; } }
 function toggleChipMenu() {
   if (!ensureChip() || chipBox.hidden) return;
-  if (chipMenu.hidden) { drawChipMenu(); chipMenu.hidden = false; } else chipMenu.hidden = true;
+  if (chipMenu.hidden) openChipMenu(); else chipMenu.hidden = true;
 }
 function drawChip(ship) {
   if (!ensureChip()) return;
-  if (!ship) { chipBox.hidden = true; chipMenu.hidden = true; condNow = null; return; }
+  if (!ship) { chipBox.hidden = true; chipMenu.hidden = true; condNow = null; zoneOpenFor = null; return; }
   const c = ship.cond || null;
   const key = c ? c.at + '|' + ship.id : null;
   if (key !== condKey) { condKey = key; condNow = c; condRecv = Date.now(); }       /* a new answer: the local seconds start again from it */
   if (!c) condNow = null;
   chipBox.hidden = false;
   drawChipBars();
+  /* ARRIVAL at a zone place: the menu opens by itself, once per stay (not while the ship is inside a fight: zone.js has its own screen then) */
+  const zl = zonePlace(ship);
+  if (!zl) zoneOpenFor = null;
+  else if (zoneOpenFor !== zl.id && zoneInfoKnown()) { zoneOpenFor = zl.id; if (!zoneIn()) { openChipMenu(); return; } }
   if (!chipMenu.hidden) drawChipMenu();
 }
 setInterval(drawChipBars, 1000);
@@ -492,6 +501,6 @@ $('go').onclick = async () => {
 
 /* called by main.js */
 export function invalidateDeps() { deps = null; }                      /* ETAs changed (game speed): fetch them again */
-export function resetFly() { tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; if (chipBox) { chipBox.hidden = true; chipMenu.hidden = true; } condNow = null; condKey = null; }   /* log out */
+export function resetFly() { tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; if (chipBox) { chipBox.hidden = true; chipMenu.hidden = true; } condNow = null; condKey = null; zoneOpenFor = null; zoneShip = null; }   /* log out */
 
 setInterval(drawEta, 1000);                                     /* the countdown ticks once a second (does nothing unless the ship is flying) */
