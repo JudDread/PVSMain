@@ -10,6 +10,7 @@ import { cors, json, getCharacter, getLocation, getLocationFor, visibleLocations
 import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll } from './market.ts';
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard } from './ships.ts';
+import { gate, placeServices } from './services.ts';          // 077: what a place offers
 import { skillsView, skillBuy } from './skills.ts';
 import { missionsView, missionStep, missionAccept, missionClaim, missionsSeen } from './missions.ts';
 import { profileView } from './profile.ts';
@@ -155,7 +156,8 @@ async function me(db, user) {
   const ch = await getCharacter(db, user);
   const out = { game_days: gameDaysAt(Date.now()), real_ms: Date.now(), scale: CLOCK.scale, speed: CLOCK.scale / 60, dev: await isDev(db, user), character: ch };
   /* 059: only the places this pilot may see; `epoch`, `hidden` and the like never leave the server */
-  const pub = l => ({ id: l.id, name: l.name, anchor_body: l.anchor_body, kind: l.kind, offset_au: l.offset_au, angle_deg: l.angle_deg, is_default: l.is_default, info: l.info ?? null, pvp: l.pvp ?? true });
+  let svcMap = null; try { svcMap = await placeServices(db); } catch (e) { console.error('services skipped', e); }   // 077: the page learns what each place offers
+  const pub = l => ({ svc: svcMap ? (svcMap.get(l.id) || []) : undefined, id: l.id, name: l.name, anchor_body: l.anchor_body, kind: l.kind, offset_au: l.offset_au, angle_deg: l.angle_deg, is_default: l.is_default, info: l.info ?? null, pvp: l.pvp ?? true });
   out.locations = [];
   if (!ch) { const { data: pl } = await db.from('locations').select('*').eq('hidden', false); out.locations = (pl ?? []).map(pub); }
   if (ch) {
@@ -273,6 +275,8 @@ Deno.serve(async (req) => {
       try { inFight = await (await import('./combat.ts')).inCombat(db, user); } catch (e) { console.error('combat check skipped', e); }
       if (inFight) return json({ error: 'in_combat', message: 'Your ship is in a combat zone. Fly out of the zone first.' }, 409);
     }
+    const refused = await gate(db, user, body.action, body);        // 077: actions that put things down need the service at this place
+    if (refused) return refused;
     switch (body.action) {
       case 'me': kickBots(db); return await me(db, user); // bots take a turn in the background (bot.ts)
       case 'create_character': return await createCharacter(db, user, body);
