@@ -341,7 +341,7 @@ let zoneShip = null, zoneOpenFor = null;
 zoneOnInfo(() => { if (zoneShip) drawChip(zoneShip); });       /* the range check answered: the menu may open now, and shows the choices the pilot really has */
 function zonePlace(ship) {
   const l = ship && ship.state === 'docked' ? locById(ship.location_id) : null;
-  return l && (l.kind === 'range' || l.kind === 'zone') ? l : null;
+  return l && (l.svc ? l.svc.includes('combat') : (l.kind === 'range' || l.kind === 'zone')) ? l : null;   /* 077: the place's services say it is a combat zone (kind is the fallback for an old answer) */
 }
 function drawZone(ship) {                                      /* called on every update: no box any more, it only keeps the ship and asks the range check */
   zoneShip = ship;
@@ -373,7 +373,7 @@ function ensureChip() {
 }
 function liveCond() {                                          /* the numbers now: the answer's numbers moved along their rates */
   const c = condNow; if (!c) return null;
-  const dt = c.fight || c.market ? 0 : Math.max(0, (Date.now() - condRecv) / 1000);
+  const dt = c.fight || c.hangar ? 0 : Math.max(0, (Date.now() - condRecv) / 1000);
   return { sh: Math.min(c.shm, c.sh + c.shr * dt), ar: Math.min(c.arm, c.ar + c.arr * dt), hu: c.hu };
 }
 function drawChipBars() {
