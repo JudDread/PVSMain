@@ -15,6 +15,7 @@
 import { json, getCharacter, getLocation, getShip, resolveFor, placeXY, pilotNumbers, UUID_RE } from './common.ts';
 import { CLOCK, gameDaysAt, bodyId, coastPlan, KMS, KM_PER_AU } from './physics_bundle.ts';
 import { DEFAULTS, ORDER_KINDS, STANCES, resolveBase, newShip, advance, statsOf, dpsAt, hpsOf } from './combat_bundle.ts';
+import { storeCondition, applyStored, entryHullFrac, hasMarket } from './ship_state.ts';   // 076 lasting states: shield / armor / hull / ammo are kept on the ship
 
 const REST_DAYS = 3650;          // same as course.ts: a drifting ship refills its bar at the flight rate
 const RECENT_EVENTS = 12;        // events shown to the page
@@ -331,6 +332,7 @@ async function advanceZone(db, ctx, nowMs) {
         // INTERIM (step 4; step 5 replaces it with the pod and the insurance rules): a destroyed ship stays docked at the place
         await db.rpc('combat_endurance_set', { p_character: characterId, p_bar: s.endurance, p_t: tNow });
       }
+      await storeCondition(db, s.ship_id, s, when);               // 076: the ship keeps the shield / armor / hull / ammo it ended with
     }
     const { error: de } = await db.from('combat_ships').delete().eq('id', s.id);
     if (de) throw de;
@@ -345,6 +347,7 @@ async function advanceZone(db, ctx, nowMs) {
       if (live.some((o) => o.side !== p.side)) continue;
       const characterId = owner.get(p.ship_id);
       if (characterId) await db.rpc('combat_endurance_set', { p_character: characterId, p_bar: p.endurance, p_t: gameDaysAt(nowMs) });
+      await storeCondition(db, p.ship_id, p, nowMs);               // 076
       await db.from('combat_events').insert({ zone_id: zone.location_id, instance, at: new Date(nowMs).toISOString(), kind: 'cleared', actor_id: p.id, target_id: null, amount: null, note: null });
       const { error: ce2 } = await db.from('combat_ships').delete().eq('id', p.id);
       if (ce2) throw ce2;
@@ -541,6 +544,16 @@ export async function combatEnter(db, user, body = {}) {
   const ang = spawnAngle(R, players, ship.id);
   const id = crypto.randomUUID();
   const me = newShip({ id, side: 'players', base, x: R * Math.cos(ang), y: R * Math.sin(ang), endurance: pilot.bar, stance: 'full', order: { kind: 'stop' }, cfg });
+  // LASTING STATES (076): start with the numbers the ship was left with (full when nothing is stored, or when this place has a market)
+  const ssMe = statsOf(me, cfg);
+  const mxMe = { shield_max: ssMe.shield_max, armor_max: ssMe.armor_max, hull_max: ssMe.hull_max, shield_regen: ssMe.shield_regen, armor_repair: ssMe.armor_repair, ammo_max: num(base.ammo) };
+  const kept = (await hasMarket(db, ship.location_id)) ? { shield: mxMe.shield_max, armor: mxMe.armor_max, hull: mxMe.hull_max, ammo: mxMe.ammo_max } : applyStored(ship, mxMe, nowMs);
+  const needHull = entryHullFrac(cfg);                            // a zone with a retreat rule needs this much hull to enter; any zone needs some hull
+  if (kept.hull < (zone.retreat_hull_frac != null ? needHull * mxMe.hull_max : 1)) {
+    return refuse('hull_too_low', 'Hull integrity below ' + Math.round(needHull * 100) + '%, ACCESS DENIED! Return to a market location for repairs.');
+  }
+  me.shield = kept.shield; me.armor = kept.armor; me.hull = kept.hull; me.ammo = kept.ammo;
+  missilesOff(me);
   const nowIso = new Date(nowMs).toISOString();
   const toInsert = (s, extra) => shipInsertRow(s, zone.location_id, instance, nowMs, extra);
   const inserts = [toInsert(me, { ship_id: ship.id, drone_type: null })];
