@@ -180,6 +180,10 @@ async function me(db, user) {
     if (hbe) throw hbe;
     const hullG = {}; (hulls ?? []).forEach(h => { hullG[h.id] = Number(h.max_g); });
     out.ships = out.ships.map(sh => ({ ...sh, max_g: calcMaxG(hullG[sh.hull_id] ?? sh.thrust_g ?? 3, hb) }));
+    // 076 LASTING STATES: the flown ship's shield / armor / hull for the chip on the Fly screen (loaded on demand; a fault only logs)
+    try {
+      if (out.ships[0]) out.ships[0].cond = await (await import('./ship_state.ts')).shipCondition(db, out.ships[0], Date.now());
+    } catch (e) { console.error('ship condition skipped', e); }
     out.actions = actions.data; out.events = events.data;
     // Level, XP (including XP earned so far on a trip in flight) and the endurance bar, worked out by SQL.
     const { data: pilot, error: pe } = await db.rpc('pilot_status', { p_character: ch.id, p_now_t: out.game_days });
