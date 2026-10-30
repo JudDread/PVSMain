@@ -45,7 +45,8 @@ export async function shipMaxes(db, ship, cfg) {
   }
   const base = resolveBase({ hull, rigs, skillFx: [], pilot: {} });
   const st = statsOf(newShip({ id: 'x', base, cfg }), cfg);
-  return { name: hull.name, shield_max: st.shield_max, armor_max: st.armor_max, hull_max: st.hull_max, shield_regen: st.shield_regen, armor_repair: st.armor_repair, ammo_max: num(base.ammo) };
+  const isWeapon = (r) => r.kind === 'weapon';
+  return { name: hull.name, weapons: rigs.filter(isWeapon).map((r) => r.name), rigs: rigs.filter((r) => !isWeapon(r)).map((r) => r.name), shield_max: st.shield_max, armor_max: st.armor_max, hull_max: st.hull_max, shield_regen: st.shield_regen, armor_repair: st.armor_repair, ammo_max: num(base.ammo) };
 }
 
 /* the STORED numbers of a ship brought up to nowMs (pure: no database). A ship with nothing stored is full. */
@@ -94,7 +95,7 @@ export async function shipCondition(db, ship, nowMs) {
   }
   const live = !fight && !market && ship.cond_at != null;               // numbers that are still regenerating
   return {
-    name: mx.name, at: nowMs, fight, market,
+    name: mx.name, weapons: mx.weapons, rigs: mx.rigs, at: nowMs, fight, market,
     sh: r1(cur.shield), shm: r1(mx.shield_max), shr: live ? r2(mx.shield_regen) : 0,
     ar: r1(cur.armor), arm: r1(mx.armor_max), arr: live ? r2(mx.armor_repair) : 0,
     hu: r1(cur.hull), hum: r1(mx.hull_max),
