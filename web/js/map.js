@@ -66,8 +66,8 @@ export function createMap(cv, hooks) {
 
   function tap(p) {
     let best = null, bd = 26;
-    hits.forEach(k => { const d = Math.hypot(k.x - p.x, k.y - p.y); if (d < bd) { bd = d; best = k; } });
-    if (best) { if (best.place && hooks.pickPlace) hooks.pickPlace(best.place); else hooks.pick(best.name); }
+    hits.forEach(k => { const d = Math.hypot(k.x - p.x, k.y - p.y) - (k.ship ? 10 : 0); if (d < bd) { bd = d; best = k; } });   /* the ship wins over a place under it */
+    if (best) { if (best.ship) { if (hooks.pickShip) hooks.pickShip(); } else if (best.place && hooks.pickPlace) hooks.pickPlace(best.place); else hooks.pick(best.name); }
   }
 
   function draw() {
@@ -131,6 +131,7 @@ export function createMap(cv, hooks) {
     }
     if (sp) {
       const x = X(sp.x), y = Y(sp.y);
+      hits.push({ x, y, ship: true });                          /* the ship can be tapped (hooks.pickShip) */
       let ang = -Math.PI / 2;                                   /* docked: point up */
       if (sp.vx != null && Math.hypot(sp.vx, sp.vy) > 1e-9) ang = Math.atan2(-sp.vy, sp.vx);   /* point along travel */
       if (sp.a > 0) {                                           /* red exhaust line: opposite to acceleration */
