@@ -30,7 +30,7 @@
 
 export const G_KMS2 = 9.80665 / 1000;             // km/s^2 per g
 export const CLASS_RANK = { Pod: 0, Light: 1, Medium: 2, Heavy: 3, Super: 4 };
-export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee', 'heading'];
+export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee', 'heading', 'drift'];
 export const STANCES = ['free', 'economy', 'full'];
 
 // Effect keys that always apply (they are not switched with a module).
@@ -351,6 +351,7 @@ function guide(s, tgt, ss, cfg, dtG) {
     const ang = ((s.order && s.order.dir_deg) || 0) * Math.PI / 180;
     return { dx: Math.cos(ang), dy: Math.sin(ang), gCmd: ss.max_g, closing: true };
   }
+  if (kind === 'drift') return { dx: 0, dy: 0, gCmd: 0, closing: false };   // DRIFT: no thrust at all; the ship keeps its speed and direction (the endurance bar refills)
   let ux = 0, uy = 0, closing = false;
   if (kind !== 'stop' && tgt) {
     const rx = tgt.x - s.x, ry = tgt.y - s.y;
