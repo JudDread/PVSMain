@@ -157,24 +157,32 @@ export async function storageAt(db, characterId, locId) {
 }
 
 // ---------- step 3: pilot, thrust and endurance ----------
-// Highest thrust the ship may use = its hull's max_g, raised by the pilot's Heavy Burn skill (SQL skill_effect:
-// +3% per Grade), never above the code limit of 12 g. Bots have no skills (effect 0).
-// The one rule for a ship's highest thrust: hull max_g raised by the pilot's Heavy Burn boost, never above the code limit of 12 g.
-// Used by getMaxG (flying) and by the state answer (the page shows it as 'max accel').
-export function calcMaxG(hullG, boost) {
-  return Math.min(12, Math.round(Number(hullG) * (1 + (Number(boost) || 0)) * 1000) / 1000);
+// Highest thrust the ship may use = the hull's own max_g + (hull max_g x percent bonuses, e.g. Heavy Burn) + flat rig thrust
+// (Thrust Boosters). The same rule as combat.js: percents are of the HULL's number and are added, never multiplied.
+// There is NO upper limit on thrust (the old 12 g code ceiling was removed 2026-10-31); higher thrust costs heat in combat.
+// `boost` = the percent bonuses as a FRACTION (0.5 = +50% of hull max g); `flat` = rig thrust in g.
+// Used by getMaxG (flying) and by the state answer (the page shows it as 'max accel'); old two-argument calls still work.
+export function calcMaxG(hullG, boost, flat = 0) {
+  const h = Number(hullG);
+  return Math.round((h + h * (Number(boost) || 0) + (Number(flat) || 0)) * 1000) / 1000;
 }
 export async function getMaxG(db, ship) {
   const { data, error } = await db.from('hulls').select('max_g').eq('id', ship.hull_id).maybeSingle();
   if (error) throw error;
   const hullG = Number(data?.max_g ?? ship.thrust_g ?? 3);
-  let boost = 0;
-  if (ship.character_id) {
-    const { data: eff, error: ee } = await db.rpc('skill_effect', { p_character: ship.character_id, p_skill: 'heavy_burn' });
-    if (ee) throw ee;
-    boost = Number(eff) || 0;
+  let boost = 0, flat = 0;
+  if (ship.character_id) {   // bots have no skills and no rigs
+    // 079: the sums come from SQL (skill_fx, ship_fx); the registry (effect_keys) says which keys apply in flight
+    const [sk, rg] = await Promise.all([
+      db.rpc('skill_fx', { p_character: ship.character_id, p_where: 'flight' }),
+      db.rpc('ship_fx', { p_ship: ship.id, p_where: 'flight' }),
+    ]);
+    if (sk.error) throw sk.error;
+    if (rg.error) throw rg.error;
+    boost = (Number(sk.data?.max_g_pct) || 0) / 100;
+    flat = Number(rg.data?.thrust_g) || 0;
   }
-  return calcMaxG(hullG, boost);
+  return calcMaxG(hullG, boost, flat);
 }
 
 // READ-ONLY. For a list of trip durations (game days) flown at `g`: what each costs in endurance and whether
