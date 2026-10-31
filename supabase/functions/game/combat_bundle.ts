@@ -1,6 +1,6 @@
 // @ts-nocheck
 // AUTO-BUNDLE of shared/combat.js: do not edit here. Edit shared/combat.js, then rebuild this file (same text, this header on top) and redeploy.
-// Rebuilt 2026-10-28: basic shield regeneration by hull class (shield_regen_by_class) and the regen event.
+// Rebuilt 2026-10-31: one additive stat rule (hull base + flat + hull base x percents added), thrust heat from the hull's own power, power_pct, no thrust cap.
 //
 //
 //
@@ -21,6 +21,11 @@
 //     so a 5-real-second step moves a ship for 5 x scale game seconds.
 //   accuracy  = POINTS (0..100) while adding; a hit chance is 0..1 at the end
 //
+// THE ONE STAT RULE (2026-10-31): final = hull base + flat bonuses + hull base x (all percents ADDED).
+//   Rigs and skills never multiply each other. Keys ending _add / _g / _per_s are flat; keys ending _pct on
+//   shield, armor, hull, max_g and power are a percent of the HULL's own number.
+//   Thrust heat uses the hull's own power only; power rigs and skills raise heat capacity and cooling, not thrust heat.
+//
 // FLOW
 //   resolveBase()  -> `base`: hull + fitted rigs + skills, worked out ONCE
 //                     when a ship enters a zone (stored as combat_ships.stats)
@@ -36,7 +41,7 @@ export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee'
 export const STANCES = ['free', 'economy', 'full'];
 
 // Effect keys that always apply (they are not switched with a module).
-const PASSIVE_KEYS = new Set(['power_output', 'hold_cu', 'missile_ammo']);
+const PASSIVE_KEYS = new Set(['power_output', 'power_pct', 'hold_cu', 'missile_ammo']);
 
 // All numbers here are the START values. They live as DATA in
 // game_state key 'combat' (migration 066); the server merges that row over these.
@@ -53,7 +58,7 @@ export const DEFAULTS = {
   resume_frac: 0.6,        // ... and until heat is below this share (sheet: 0.4)
   shutdown_g: 3,           // thrust cap while shut down
   heat_thrust_g: 3,        // thrust above this adds heat
-  heat_g_per_power: 0.15,  // heat per second per G over, x hull power
+  heat_g_per_power: 0.15,  // heat per second per G over, x the hull's OWN base power (rigs and skills do not change it)
   reserve_frac: 0.3,       // ECONOMY keeps this share of the bar when closing / chasing
   recover_frac: 0.25,      // an emptied bar must refill to this share before big thrust again
   econ_heat_line: 0.8,     // ECONOMY stops big thrust at this share of heat capacity
@@ -144,7 +149,7 @@ export function resolveBase({ hull, rigs = [], skillFx = [], pilot = {} }) {
     },
     always,
     modules,
-    power: (Number(hull.power) || 0) + sumFx(always, 'power_output'),
+    power: (Number(hull.power) || 0) * (1 + sumFx(always, 'power_pct') / 100) + sumFx(always, 'power_output'),   // power_pct = percent of the hull's own power
     ammo: hasLauncher ? launcherAmmo + sumFx(always, 'missile_ammo') : 0,
     pilot: P,
   };
@@ -152,7 +157,7 @@ export function resolveBase({ hull, rigs = [], skillFx = [], pilot = {} }) {
 
 // ---------------------------------------------------------------------
 // STAT RESOLVER, part 2: the numbers NOW.
-//   (base + flat bonuses) x (1 + all percent bonuses ADDED)
+//   hull base + flat bonuses + hull base x (all percent bonuses ADDED)
 //   on      = array of 0/1 per module (null = all on)
 //   offline = heat shutdown: every module off (hull and passive effects stay)
 // ---------------------------------------------------------------------
@@ -181,14 +186,14 @@ export function activeStats(base, on = null, offline = false, cfg = DEFAULTS) {
     });
   }
   return {
-    shield_max: Math.max(0, (H.shields + S('shield_add')) * (1 + S('shield_pct') / 100)),
-    armor_max: Math.max(0, (H.armor + S('armor_add')) * (1 + S('armor_pct') / 100)),
-    hull_max: Math.max(0, (H.hull_points + S('hull_add')) * (1 + S('hull_pct') / 100)),
+    shield_max: Math.max(0, H.shields * (1 + S('shield_pct') / 100) + S('shield_add')),
+    armor_max: Math.max(0, H.armor * (1 + S('armor_pct') / 100) + S('armor_add')),
+    hull_max: Math.max(0, H.hull_points * (1 + S('hull_pct') / 100) + S('hull_add')),
     shield_regen: Math.max(0, S('shield_regen_per_s') + ((cfg.shield_regen_by_class && cfg.shield_regen_by_class[H.class]) || 0)),
     armor_repair: S('armor_repair_per_s'),
     pd: clamp(S('pd_chance_pct'), 0, 100),
     mobility: Math.max(0, H.mobility + S('maneuver_pct') / 100 + S('mobility_add')),
-    max_g: (H.max_g + S('thrust_g')) * (1 + S('max_g_pct') / 100),   // NO thrust cap (developer, 2026-10-24)
+    max_g: H.max_g * (1 + S('max_g_pct') / 100) + S('thrust_g'),   // percent of the hull's own max g + flat rig thrust; NO thrust cap anywhere
     free_g: P.free_g + S('free_g_add'),
     use_mult: Math.max(0, 1 + S('endurance_use_pct') / 100),
     rec_mult: Math.max(0, 1 + S('endurance_recovery_pct') / 100),
@@ -384,7 +389,7 @@ function thrustBudget(s, ss, gCmd, closing, dtReal, scale, cfg) {
   const g = Math.max(0, Math.min(gCmd, cap));
   const refill = P.refill_flight_hour * ss.rec_mult * scale / 3600;
   const thr = Math.max(cfg.heat_thrust_g, free);
-  const hk = cfg.heat_g_per_power * ss.power;
+  const hk = cfg.heat_g_per_power * s.base.hull.power;   // hull's OWN power: more thrust = more heat; power rigs / skills only raise cooling and capacity
   let bar = s.endurance, gEff, heatG, emptied = false;
 
   if (g <= free + 1e-12) {
