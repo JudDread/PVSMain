@@ -107,11 +107,11 @@ async function pilotBlock(db, characterId, pilotCfg, t) {
 }
 async function skillEffects(db, characterId) {
   if (!characterId) return [];
-  // Heavy Burn raises max thrust (+3% per Grade); the combat skills are still switched off (their hooks come later)
-  const { data, error } = await db.rpc('skill_effect', { p_character: characterId, p_skill: 'heavy_burn' });
+  // 079: ONE sum of the pilot's skills, in the same keys and units as rig effects. The registry table `effect_keys` decides which
+  // keys apply in combat (a key the SQL side already applies, for example through the pilot's endurance numbers, is left out here).
+  const { data, error } = await db.rpc('skill_fx', { p_character: characterId, p_where: 'combat' });
   if (error) throw error;
-  const boost = num(data);
-  return boost > 0 ? [{ max_g_pct: boost * 100 }] : [];
+  return data && Object.keys(data).length ? [data] : [];
 }
 async function loadRigs(db, ids) {
   if (!ids.length) return [];
@@ -289,18 +289,28 @@ async function advanceZone(db, ctx, nowMs) {
   const exitT = new Map();
   for (const e of res.events) if (e.kind === 'exit') exitT.set(e.actor_id, e.t);
 
+  // FIX (2026-10-31, foreign key error 23503): a ship row may only point (target_id) at a ship row that EXISTS. Two rules now:
+  //  1. a drone that spawned during this catch-up gets its row FIRST (a player ship that already targets it is saved afterwards);
+  //  2. nobody is ever saved with a target that is destroyed, has left, or has no row (the pointer is written as empty instead).
+  const stays = new Set(res.ships.filter((x) => x.alive && !x.left).map((x) => x.id));
+  const patchOf = (s) => ({ ...rowPatch(s, nowMs), target_id: s.targetId && stays.has(s.targetId) ? s.targetId : null });
   for (const s of res.ships) {
-    if (newDrones.has(s.id)) {                                  // a drone that spawned during this catch-up: it has no row yet
+    if (!newDrones.has(s.id) || !(s.alive && !s.left)) continue;
+    missilesOff(s);
+    const { error: ne } = await db.from('combat_ships').insert({ ...shipInsertRow(s, zone.location_id, instance, nowMs, { ship_id: null, drone_type: s.drone_type, ai: s.ai || null }), target_id: null });
+    if (ne) throw ne;
+  }
+  for (const s of res.ships) {
+    if (newDrones.has(s.id)) {                                  // a drone that spawned during this catch-up: its row now exists (above); store its state
       if (s.alive && !s.left) {
-        missilesOff(s);
-        const { error: ne } = await db.from('combat_ships').insert(shipInsertRow(s, zone.location_id, instance, nowMs, { ship_id: null, drone_type: s.drone_type, ai: s.ai || null }));
-        if (ne) throw ne;
+        const { error: ue0 } = await db.from('combat_ships').update(patchOf(s)).eq('id', s.id);
+        if (ue0) throw ue0;
       }
       continue;
     }
     if (s.alive && !s.left) {
       missilesOff(s);
-      const { error: ue } = await db.from('combat_ships').update(rowPatch(s, nowMs)).eq('id', s.id);
+      const { error: ue } = await db.from('combat_ships').update(patchOf(s)).eq('id', s.id);
       if (ue) throw ue;
       continue;
     }
