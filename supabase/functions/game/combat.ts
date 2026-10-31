@@ -246,45 +246,6 @@ async function advanceZone(db, ctx, nowMs) {
     if (se) throw se;
     for (const r of sh ?? []) owner.set(r.id, r.character_id);
   }
-  // MISSIONS: damage a pilot dealt to drones counts for 'damage:<zone>:<amount>' steps (the SQL function adds it up and finishes the step)
-  const droneIds = new Set(res.ships.filter((s) => s.side === 'drones').map((s) => s.id));
-  const shipOfPilot = new Map(res.ships.filter((s) => s.ship_id).map((s) => [s.id, s.ship_id]));
-  const dealt = new Map();
-  for (const d of dmg.values()) {
-    if (!droneIds.has(d.target_id)) continue;
-    const sid = shipOfPilot.get(d.actor_id), cid = sid ? owner.get(sid) : null;
-    if (cid) dealt.set(cid, (dealt.get(cid) || 0) + d.amount);
-  }
-  for (const [cid, amt] of dealt) {
-    if (!(amt > 0)) continue;
-    const { error: de2 } = await db.rpc('quest_add_damage', { p_character: cid, p_zone: zone.location_id, p_amount: Math.round(amt) });
-    if (de2) console.error('quest_add_damage failed', de2);
-  }
-  // MISSIONS: a player ship that destroyed a drone whose type has a kill_quest finishes that mission's step 'kill:<drone type>'.
-  // (The server does this itself: the page cannot be trusted to say what died. A mission that is not accepted yet simply ignores it.)
-  const kills = res.events.filter((e) => e.kind === 'kill' && e.actor_id && e.target_id);
-  if (kills.length) {
-    const typeOf = new Map(res.ships.map((r) => [r.id, r.drone_type]));
-    const wanted = [...new Set(kills.map((e) => typeOf.get(e.target_id)).filter(Boolean))];
-    if (wanted.length) {
-      const { data: dts } = await db.from('drone_types').select('id,kill_quest,xp_reward').in('id', wanted);
-      const dinfo = new Map((dts ?? []).map((d) => [d.id, d]));
-      for (const e of kills) {
-        const dt = typeOf.get(e.target_id), info = dt ? dinfo.get(dt) : null;
-        const killer = res.ships.find((x) => x.id === e.actor_id);
-        const cid = killer && killer.ship_id ? owner.get(killer.ship_id) : null;
-        if (!info || !cid) continue;
-        if (info.kill_quest) {
-          const { error: qe } = await db.rpc('quest_step', { p_character: cid, p_quest: info.kill_quest, p_step: 'kill:' + dt });
-          if (qe) console.error('quest_step (kill) failed', qe);
-        }
-        if (Number(info.xp_reward) > 0) {                       // every drone kill pays its XP to the pilot who destroyed it
-          const { error: xe } = await db.rpc('combat_xp_add', { p_character: cid, p_xp: Number(info.xp_reward) });
-          if (xe) console.error('combat_xp_add failed', xe);
-        }
-      }
-    }
-  }
   const loc = await getLocation(db, zone.location_id);
   const exitT = new Map();
   for (const e of res.events) if (e.kind === 'exit') exitT.set(e.actor_id, e.t);
@@ -347,6 +308,48 @@ async function advanceZone(db, ctx, nowMs) {
     }
     const { error: de } = await db.from('combat_ships').delete().eq('id', s.id);
     if (de) throw de;
+  }
+
+  // PAID ONLY AFTER THE FIGHT IS SAVED (2026-10-31): this block used to run BEFORE the save. When a save failed, the next attempt replayed the
+  // same stretch of fight and paid its mission damage, kill steps and XP AGAIN. Now a failed save pays nothing.
+  // MISSIONS: damage a pilot dealt to drones counts for 'damage:<zone>:<amount>' steps (the SQL function adds it up and finishes the step)
+  const droneIds = new Set(res.ships.filter((s) => s.side === 'drones').map((s) => s.id));
+  const shipOfPilot = new Map(res.ships.filter((s) => s.ship_id).map((s) => [s.id, s.ship_id]));
+  const dealt = new Map();
+  for (const d of dmg.values()) {
+    if (!droneIds.has(d.target_id)) continue;
+    const sid = shipOfPilot.get(d.actor_id), cid = sid ? owner.get(sid) : null;
+    if (cid) dealt.set(cid, (dealt.get(cid) || 0) + d.amount);
+  }
+  for (const [cid, amt] of dealt) {
+    if (!(amt > 0)) continue;
+    const { error: de2 } = await db.rpc('quest_add_damage', { p_character: cid, p_zone: zone.location_id, p_amount: Math.round(amt) });
+    if (de2) console.error('quest_add_damage failed', de2);
+  }
+  // MISSIONS: a player ship that destroyed a drone whose type has a kill_quest finishes that mission's step 'kill:<drone type>'.
+  // (The server does this itself: the page cannot be trusted to say what died. A mission that is not accepted yet simply ignores it.)
+  const kills = res.events.filter((e) => e.kind === 'kill' && e.actor_id && e.target_id);
+  if (kills.length) {
+    const typeOf = new Map(res.ships.map((r) => [r.id, r.drone_type]));
+    const wanted = [...new Set(kills.map((e) => typeOf.get(e.target_id)).filter(Boolean))];
+    if (wanted.length) {
+      const { data: dts } = await db.from('drone_types').select('id,kill_quest,xp_reward').in('id', wanted);
+      const dinfo = new Map((dts ?? []).map((d) => [d.id, d]));
+      for (const e of kills) {
+        const dt = typeOf.get(e.target_id), info = dt ? dinfo.get(dt) : null;
+        const killer = res.ships.find((x) => x.id === e.actor_id);
+        const cid = killer && killer.ship_id ? owner.get(killer.ship_id) : null;
+        if (!info || !cid) continue;
+        if (info.kill_quest) {
+          const { error: qe } = await db.rpc('quest_step', { p_character: cid, p_quest: info.kill_quest, p_step: 'kill:' + dt });
+          if (qe) console.error('quest_step (kill) failed', qe);
+        }
+        if (Number(info.xp_reward) > 0) {                       // every drone kill pays its XP to the pilot who destroyed it
+          const { error: xe } = await db.rpc('combat_xp_add', { p_character: cid, p_xp: Number(info.xp_reward) });
+          if (xe) console.error('combat_xp_add failed', xe);
+        }
+      }
+    }
   }
 
   // END OF A FIGHT (test rules). In an NPC-only zone a player with no opponent left is released: the zone is CLEARED and the ship stays docked.
