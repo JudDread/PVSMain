@@ -135,7 +135,7 @@ function grouped(list) {                                // ['RAIL','RAIL','LAS']
   return [...n].map(([k, c]) => c > 1 ? k + 'x' + c : k).join(' ') || 'none';
 }
 const ammoLabel = a => a < 0.05 ? 'no ammo' : 'ammo ' + Math.round(a);
-const ORDER_NAME = { attack_max: 'Attack: long range', attack_opt: 'Attack: best range', follow: 'Follow', stop: 'Stop', flee: 'Flee', heading: 'Thrust on a heading' };
+const ORDER_NAME = { attack_max: 'Attack: long range', attack_opt: 'Attack: best range', follow: 'Follow', stop: 'Stop', drift: 'Drift', flee: 'Flee', heading: 'Thrust on a heading' };
 
 /* where a ship is drawn NOW: its last picture moved along speed and acceleration, plus the part of the last correction still fading out */
 function posOf(id) {
@@ -286,7 +286,7 @@ async function send(action, body) {
 function order(kind, targetId, deg) {
   const body = { kind };
   if (kind === 'heading') body.dir_deg = deg;
-  else if (kind !== 'stop' && kind !== 'flee') {
+  else if (kind !== 'stop' && kind !== 'flee' && kind !== 'drift') {
     const tgt = targetId || sel || (view && view.me.target_id);
     if (tgt) body.target = tgt;
     const h = R.hold.value.trim();
@@ -558,7 +558,7 @@ function heatInfo() {
   (m.modules || []).forEach(mod => {
     if (!mod.on || !mod.heat) return;
     const isW = mod.kind === 'weapon', firing = isW ? (m.dps_list || []).some(d => d.id === mod.id && d.dps > 0) && !(mod.family === 'missile' && m.ammo < 0.05) : true;
-    list.push({ name: mod.name, heat: mod.heat, note: isW ? (firing ? 'firing now' : 'only while firing') : 'always on', active: firing });
+    list.push({ name: mod.name, heat: mod.heat, note: isW ? (firing ? 'firing now' : 'only while firing') : 'while on', active: firing });
     if (firing) gen += mod.heat;
   });
   const a = acc.get(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0, eng = (m.eng_k || 0) * Math.max(0, g - (m.eng_thr || 3));
@@ -646,7 +646,7 @@ function makeShipChip(s) {
 
 /* the order menu of a ship: enemies = attack / flee, friends = follow, your own ship = stop */
 function menuItems(id) {
-  if (id === view.me.id) return { title: 'Your ship', items: [['stop', 'Stop']] };
+  if (id === view.me.id) return { title: 'Your ship', items: [['stop', 'Stop'], ['drift', 'Drift']] };
   const s = view.ships.find(x => x.id === id); if (!s) return null;
   return s.hostile ? { ship: s, title: s.name + ' (hostile)', items: [['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']] }
                    : { ship: s, title: s.name + ' (friendly)', items: [['follow', 'Follow']] };
