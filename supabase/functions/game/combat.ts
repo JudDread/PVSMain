@@ -4,7 +4,7 @@
 // this file only loads and stores the fight and checks who is asking.
 //   combat_zone    {}                          where am I: outside a zone (can I enter?) or inside (works the fight forward, returns it)
 //   combat_enter   {drone?}                     enter the zone of the place where the flown ship is docked (drone = a drone_types id, ranges only)
-//   combat_order   {kind, target?, hold_km?}   attack_max | attack_opt | follow | stop | flee; hold_km = own station-keeping distance
+//   combat_order   {kind, target?, hold_km?}   attack_max | attack_opt | follow | stop | flee | heading | drift; hold_km = own station-keeping distance
 //   combat_stance  {stance}                    free | economy | full  (the burn switch)
 //   combat_module  {index, on}                 switch one weapon / rig on or off
 // There is no 'leave' action: a ship leaves by flying beyond the exit radius (then it drifts on the Fly screen).
@@ -647,7 +647,7 @@ export async function combatOrder(db, user, body) {
   const target = body.target ? String(body.target) : null;
   if (target && !UUID_RE.test(target)) return json({ error: 'bad_request' }, 400);
   return await command(db, user, async (row, ctx) => {
-    const own = kind === 'stop' || kind === 'flee' || kind === 'heading';
+    const own = kind === 'stop' || kind === 'flee' || kind === 'heading' || kind === 'drift';
     const patch = { order_kind: kind, order_at: new Date().toISOString(), hold_km: own ? null : hold, order_dir: kind === 'heading' ? dir : null };
     if (hold != null && hold > num(ctx.zone.exit_radius_km)) return { err: refuse('bad_distance', 'That distance is larger than the zone.') };
     if (target && !own) {
