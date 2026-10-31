@@ -188,7 +188,7 @@ export function shipStateAt(ship, t) {
 export function planTravel({ from, to, departT, g }) {
   const fail = (reason) => ({ ok: false, reason });
   if (!Number.isFinite(departT)) return fail('bad_time');
-  if (!(g > 0) || g > 12) return fail('bad_thrust');
+  if (!Number.isFinite(g) || !(g > 0)) return fail('bad_thrust');   // no upper limit on thrust (the 12 g ceiling was removed 2026-10-31)
   if (to.body != null && !(to.body >= 1 && to.body < BODIES.length)) return fail('bad_destination');
   if (to.body == null && !(Number.isFinite(to.x) && Number.isFinite(to.y))) return fail('bad_destination');
   if (from.body != null && !(from.body >= 1 && from.body < BODIES.length)) return fail('bad_origin');
