@@ -1,6 +1,6 @@
 // @ts-nocheck
 // AUTO-BUNDLE of shared/combat.js: do not edit here. Edit shared/combat.js, then rebuild this file (same text, this header on top) and redeploy.
-// Rebuilt 2026-10-31: one additive stat rule (hull base + flat + hull base x percents added), thrust heat from the hull's own power, power_pct, no thrust cap.
+// Rebuilt 2026-10-31 (2): + the DRIFT order (no thrust, keep speed and direction); one additive stat rule; thrust heat from the hull's own power; power_pct; no thrust cap.
 //
 //
 //
@@ -37,7 +37,7 @@
 
 export const G_KMS2 = 9.80665 / 1000;             // km/s^2 per g
 export const CLASS_RANK = { Pod: 0, Light: 1, Medium: 2, Heavy: 3, Super: 4 };
-export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee', 'heading'];
+export const ORDER_KINDS = ['attack_max', 'attack_opt', 'follow', 'stop', 'flee', 'heading', 'drift'];
 export const STANCES = ['free', 'economy', 'full'];
 
 // Effect keys that always apply (they are not switched with a module).
@@ -358,6 +358,7 @@ function guide(s, tgt, ss, cfg, dtG) {
     const ang = ((s.order && s.order.dir_deg) || 0) * Math.PI / 180;
     return { dx: Math.cos(ang), dy: Math.sin(ang), gCmd: ss.max_g, closing: true };
   }
+  if (kind === 'drift') return { dx: 0, dy: 0, gCmd: 0, closing: false };   // DRIFT: no thrust at all; the ship keeps its speed and direction (the endurance bar refills)
   let ux = 0, uy = 0, closing = false;
   if (kind !== 'stop' && tgt) {
     const rx = tgt.x - s.x, ry = tgt.y - s.y;
