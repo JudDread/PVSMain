@@ -175,13 +175,19 @@ async function me(db, user) {
     const act = ch.active_ship_id;
     out.ships = (ships.data ?? []).slice().sort((a, b) =>
       ((b.id === act) - (a.id === act)) || String(a.created_at).localeCompare(String(b.created_at)));
-    // Each ship's highest thrust ('max accel' on the Assets screen): hull max_g x the pilot's Heavy Burn, the same rule as flying (calcMaxG).
-    const { data: hulls, error: he } = await db.from('hulls').select('id,max_g');
-    if (he) throw he;
-    const { data: hb, error: hbe } = await db.rpc('skill_effect', { p_character: ch.id, p_skill: 'heavy_burn' });
-    if (hbe) throw hbe;
-    const hullG = {}; (hulls ?? []).forEach(h => { hullG[h.id] = Number(h.max_g); });
-    out.ships = out.ships.map(sh => ({ ...sh, max_g: calcMaxG(hullG[sh.hull_id] ?? sh.thrust_g ?? 3, hb) }));
+    // Each ship's highest thrust ('max accel' on the Assets screen and the Fly slider): the same rule as flying (calcMaxG):
+    // hull max_g + Heavy Burn (a percent of the hull's own max_g) + the flat thrust of the rigs fitted to THAT ship (079: skill_fx, ship_fx).
+    const [hullsR, skR, rigR] = await Promise.all([
+      db.from('hulls').select('id,max_g'),
+      db.rpc('skill_fx', { p_character: ch.id, p_where: 'flight' }),
+      Promise.all(out.ships.map(sh => db.rpc('ship_fx', { p_ship: sh.id, p_where: 'flight' }))),
+    ]);
+    if (hullsR.error) throw hullsR.error;
+    if (skR.error) throw skR.error;
+    for (const r of rigR) if (r.error) throw r.error;
+    const hb = (Number(skR.data?.max_g_pct) || 0) / 100;
+    const hullG = {}; (hullsR.data ?? []).forEach(h => { hullG[h.id] = Number(h.max_g); });
+    out.ships = out.ships.map((sh, i) => ({ ...sh, max_g: calcMaxG(hullG[sh.hull_id] ?? sh.thrust_g ?? 3, hb, Number(rigR[i].data?.thrust_g) || 0) }));
     // 076 LASTING STATES: the flown ship's shield / armor / hull for the chip on the Fly screen (loaded on demand; a fault only logs)
     try {
       if (out.ships[0]) out.ships[0].cond = await (await import('./ship_state.ts')).shipCondition(db, out.ships[0], Date.now());
