@@ -1,8 +1,9 @@
 // home.js - the Home screen, opened by the VS box at the top left (no tab). The business side of the game:
-// welcome message, Discord / support, membership button (not connected yet), account, game time, log out.
+// welcome message, the Library button, Discord / support, membership button (not connected yet), account, game time, log out.
 // Layout that is fixed lives in web/index.html (#scr-home: #who, #gtime, #ship, #out); the rest is built here in code.
 // The ship line (#ship) stays in the page, hidden (core.js still fills it); the ship is shown in Profile.
-import { S, $, addScreen, el } from 'core';
+import { S, $, addScreen, openScreen, el } from 'core';
+import './library.js';                                  /* the Library screen (its text is in library_pages.js) */
 
 const DISCORD = 'https://discord.gg/4G8rWeF7AV';
 const WELCOME = 'Thank you for playtesting Vacuum State, a hard sci-fi trading game. The NPC economy, buying and selling goods from NPC locations, needs to be tested. Please try to break it. The next additions will be Combat, Faction Reputation and full Mission Chains with global events. ';   // the welcome text: edit here
@@ -28,6 +29,13 @@ const welcome = block('Welcome');
 const welcomeName = el('div', 'pad', '');
 welcome.append(welcomeName, el('div', 'muted pad', WELCOME));
 
+/* the Library */
+const lib = block('Library');
+lib.appendChild(el('div', 'muted pad', 'The game explained in plain words: flying, trading, freight, ships, skills and missions.'));
+const lb = el('button', '', 'Open the Library');
+lb.addEventListener('click', () => openScreen('library'));
+lib.appendChild(lb);
+
 /* support + Discord (Discord is the support channel for now) */
 const help = block('Help and feedback');
 help.appendChild(el('div', 'muted pad', 'Questions, bugs, ideas or account trouble: message us on our Discord server. We are using Discord for chat at this time. '));
@@ -46,7 +54,7 @@ member.appendChild(mb);
 
 /* the blocks go under the page's own account / game time lines and above Log out */
 const out = $('out');
-[welcome, help, member].forEach(b => { if (out) home.insertBefore(b, out); else home.appendChild(b); });
+[welcome, lib, help, member].forEach(b => { if (out) home.insertBefore(b, out); else home.appendChild(b); });
 
 function draw() {
   const ch = S.last && S.last.character;
