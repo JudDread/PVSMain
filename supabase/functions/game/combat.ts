@@ -169,6 +169,37 @@ async function workZone(db, zoneId, instance, nowMs) {
   return ctx;
 }
 
+// DEATH (084): a destroyed ship is delivered to an insurance place (parked, rigs still fitted, cargo gone, freight failed); the pilot gets a life POD
+// that drifts from the zone with the dead ship's speed and heading. insurance.js then asks the pilot where the ship should be delivered.
+async function insurancePlace(db) {
+  const { data, error } = await db.from('location_services').select('location_id').eq('service', 'insurance');
+  if (error) throw error;
+  const ids = (data ?? []).map((r) => r.location_id);
+  return ids.includes('luna') ? 'luna' : (ids[0] || null);
+}
+async function shipLost(db, s, characterId, loc, whenMs, tNow) {
+  const place = await insurancePlace(db);
+  if (!place || !loc) return false;                                   // no insurance place set up: the old behaviour (the ship stays docked)
+  const a = placeXY(loc);
+  const st = { x: a.x, y: a.y, vx: s.vx / KMS, vy: s.vy / KMS };
+  const plan = coastPlan(st, gameDaysAt(whenMs));
+  plan.frame = bodyId(loc.anchor_body);
+  plan.origin = loc.id;
+  plan.xp_au = 0;
+  const { data, error } = await db.rpc('ship_destroyed', { p_character: characterId, p_ship: s.ship_id, p_place: place, p_plan: plan });
+  if (error) throw error;
+  if (!data || !data.ok) { console.error('ship_destroyed failed', data); return false; }
+  await db.rpc('combat_endurance_set', { p_character: characterId, p_bar: s.endurance, p_t: tNow });
+  const { error: fe } = await db.rpc('endurance_fly', { p_character: characterId, p_g: s.base.pilot.free_g, p_burn_days: 0, p_total_days: REST_DAYS, p_now_t: tNow });
+  if (fe) console.error('endurance_fly after death failed', fe);
+  return true;
+}
+// "seen": every poll or order of a pilot stamps the fight row; a pilot silent for leave_after_s (60) is taken out of the zone safely (see advanceZone)
+async function touchSeen(db, shipId) {
+  const { error } = await db.from('combat_ships').update({ seen_at: new Date().toISOString() }).eq('ship_id', shipId);
+  if (error) console.error('seen_at not saved', error);
+}
+
 async function advanceZone(db, ctx, nowMs) {
   const { zone, cfg, instance } = ctx;
   const { data: rows, error } = await db.from('combat_ships').select('*').eq('zone_id', zone.location_id).eq('instance', instance);
@@ -181,6 +212,9 @@ async function advanceZone(db, ctx, nowMs) {
   // Work forward ONE STEP AT A TIME (same maths as one long advance) so the RETREAT rule can look at every pilot's hull after each step:
   // a pilot whose hull falls below zone.retreat_hull_frac leaves the fight at once (the ship stays docked, nothing is lost).
   const retreatFrac = zone.retreat_hull_frac == null ? null : num(zone.retreat_hull_frac);
+  // 084: a pilot who has not been heard from for leave_after_s real seconds (0 = never) leaves the fight safely, at exactly seen_at + that time
+  const leaveMs = Math.max(0, num(cfg.leave_after_s, 60)) * 1000;
+  const seenMs = new Map(rows.filter((r) => r.ship_id).map((r) => [r.id, Date.parse(r.seen_at || r.entered_at || r.snap_at)]));
   const total = Math.max(0, Math.min(elapsed, cfg.catchup_max_s));
   const res = { ships: rows.map(fromRow), events: [] };
   // a zone with drone_per_pilot (the combat range) grows its drones with the pilots: every spawn CYCLE (5 real seconds) ONE drone spawns at the centre
@@ -195,6 +229,17 @@ async function advanceZone(db, ctx, nowMs) {
     for (const e of r.events) res.events.push({ ...e, t: e.t + t });
     res.ships = r.ships;
     t += dt;
+    if (leaveMs > 0) {
+      const nowT = snapMs + t * 1000;
+      for (const s of res.ships) {
+        if (!s.ship_id || !s.alive || s.left) continue;
+        const seen = seenMs.get(s.id);
+        if (Number.isFinite(seen) && nowT - seen > leaveMs) {
+          s.left = true; s.timedOut = true;
+          res.events.push({ kind: 'retreat', actor_id: s.id, target_id: null, amount: null, note: 'timeout', t });
+        }
+      }
+    }
     if (retreatFrac) {
       for (const s of res.ships) {
         if (!s.ship_id || !s.alive || s.left) continue;
@@ -258,6 +303,8 @@ async function advanceZone(db, ctx, nowMs) {
   const loc = await getLocation(db, zone.location_id);
   const exitT = new Map();
   for (const e of res.events) if (e.kind === 'exit') exitT.set(e.actor_id, e.t);
+  const killT = new Map();                                      // 084: when a ship was destroyed (the pod starts drifting from that moment)
+  for (const e of res.events) if (e.kind === 'kill') killT.set(e.target_id, e.t);
 
   // FIX (2026-10-31, foreign key error 23503): a ship row may only point (target_id) at a ship row that EXISTS. Two rules now:
   //  1. a drone that spawned during this catch-up gets its row FIRST (a player ship that already targets it is saved afterwards);
@@ -287,10 +334,11 @@ async function advanceZone(db, ctx, nowMs) {
     // the ship is out of the fight (destroyed, or beyond the exit radius)
     if (s.ship_id) {
       const characterId = owner.get(s.ship_id);
-      const when = snapMs + (exitT.get(s.id) ?? elapsed) * 1000;
+      const when = snapMs + (exitT.get(s.id) ?? killT.get(s.id) ?? elapsed) * 1000;
+      let lost = false;
       const tNow = gameDaysAt(nowMs);
-      if (s.retreated) {
-        // RETREAT: combat stops, the ship stays docked at the place (the page shows the Fly screen and a message)
+      if (s.retreated || s.timedOut) {
+        // RETREAT (or 60 s of silence): combat stops, the ship stays docked at the place (the page shows the Fly screen and a message)
         if (characterId) await db.rpc('combat_endurance_set', { p_character: characterId, p_bar: s.endurance, p_t: tNow });
       } else if (s.alive && s.left && loc) {
         // flew out: it becomes a DRIFT with the speed and direction it had (positions in the body's frame, AU and AU/day)
@@ -309,11 +357,13 @@ async function advanceZone(db, ctx, nowMs) {
           const { error: fe } = await db.rpc('endurance_fly', { p_character: characterId, p_g: s.base.pilot.free_g, p_burn_days: 0, p_total_days: REST_DAYS, p_now_t: tNow });
           if (fe) console.error('endurance_fly after exit failed', fe);
         }
+      } else if (!s.alive && characterId && await shipLost(db, s, characterId, loc, when, tNow)) {
+        lost = true;                                              // 084: pod + insurance (SQL ship_destroyed); the ship comes back repaired, so its condition is not stored
       } else if (characterId) {
-        // INTERIM (step 4; step 5 replaces it with the pod and the insurance rules): a destroyed ship stays docked at the place
+        // fallback when no insurance place exists or the SQL call failed: the old rule, a destroyed ship stays docked at the place
         await db.rpc('combat_endurance_set', { p_character: characterId, p_bar: s.endurance, p_t: tNow });
       }
-      await storeCondition(db, s.ship_id, s, when);               // 076: the ship keeps the shield / armor / hull / ammo it ended with
+      if (!lost) await storeCondition(db, s.ship_id, s, when);    // 076: the ship keeps the shield / armor / hull / ammo it ended with
     }
     const { error: de } = await db.from('combat_ships').delete().eq('id', s.id);
     if (de) throw de;
@@ -487,16 +537,16 @@ export async function combatZone(db, user, body) {
   if (mine) {
     const ctx = await workZone(db, mine.zone_id, mine.instance, nowMs);
     const v = ctx ? await buildView(db, ctx, ship.id) : null;
-    if (v) return json(v);
+    if (v) { await touchSeen(db, ship.id); return json(v); }
     // the ship is gone from the fight (destroyed or flew out while we worked): fall through to the 'outside' answer
     const { data: again } = await db.from('ships').select('state').eq('id', ship.id).maybeSingle();
     let ended = null;                                                // the page sends the id it last saw for itself: how did that ship leave?
     const last = body && body.last && UUID_RE.test(String(body.last)) ? String(body.last) : null;
     if (last) {
-      const { data: ev } = await db.from('combat_events').select('kind,actor_id,target_id').or('actor_id.eq.' + last + ',target_id.eq.' + last).in('kind', ['kill', 'cleared', 'exit', 'retreat']).order('id', { ascending: false }).limit(5);
+      const { data: ev } = await db.from('combat_events').select('kind,actor_id,target_id,note').or('actor_id.eq.' + last + ',target_id.eq.' + last).in('kind', ['kill', 'cleared', 'exit', 'retreat']).order('id', { ascending: false }).limit(5);
       for (const e of ev ?? []) {
         if (e.kind === 'kill' && e.target_id === last) { ended = 'kill'; break; }
-        if ((e.kind === 'cleared' || e.kind === 'exit' || e.kind === 'retreat') && e.actor_id === last) { ended = e.kind; break; }
+        if ((e.kind === 'cleared' || e.kind === 'exit' || e.kind === 'retreat') && e.actor_id === last) { ended = e.kind === 'retreat' && e.note === 'timeout' ? 'timeout' : e.kind; break; }
       }
     }
     let message = null;
@@ -506,6 +556,7 @@ export async function combatZone(db, user, body) {
       if (zr && zr.retreat_hull_frac != null) pct = Math.round(num(zr.retreat_hull_frac) * 100);
       message = 'Exercise ended: hull under ' + pct + "%. There's a lesson here somewhere. Your ship can be repaired at any location with a market.";
     }
+    if (ended === 'timeout') message = "You must have blacked out from the g's. The last thing you remember is the alarms, then nothing. Somehow you are out of the zone, alive, in a ship that is mostly in one piece. You can call it luck, or you can call it grace. Either way, it's worth a thought.";
     return json({ ok: true, in_zone: false, left: true, ship_state: again ? again.state : null, ended, message });
   }
   if (ship.state !== 'docked' || !ship.location_id) return json({ ok: true, in_zone: false, here: false });
@@ -579,7 +630,7 @@ export async function combatEnter(db, user, body = {}) {
   missilesOff(me);
   const nowIso = new Date(nowMs).toISOString();
   const toInsert = (s, extra) => shipInsertRow(s, zone.location_id, instance, nowMs, extra);
-  const inserts = [toInsert(me, { ship_id: ship.id, drone_type: null })];
+  const inserts = [toInsert(me, { ship_id: ship.id, drone_type: null, seen_at: nowIso })];
 
   // TEMPORARY (step 5 replaces it): an NPC-only fight gets its drones at the CENTRE of the zone.
   // A zone with drone_per_pilot adds one drone for EVERY pilot who enters; any other zone gets drones only while it has none.
@@ -633,6 +684,7 @@ async function command(db, user, apply) {
   const { data: row, error } = await db.from('combat_ships').select('*').eq('ship_id', ship.id).maybeSingle();
   if (error) throw error;
   if (!row) return json({ ok: true, in_zone: false, left: true });
+  await touchSeen(db, ship.id);                                  // 084: an order counts as 'seen' too
   const res = await apply(row, ctx);
   if (res && res.err) return res.err;
   const v = await buildView(db, ctx, ship.id);
