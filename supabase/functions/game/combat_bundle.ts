@@ -1,6 +1,6 @@
 // @ts-nocheck
 // AUTO-BUNDLE of shared/combat.js: do not edit here. Edit shared/combat.js, then rebuild this file (same text, this header on top) and redeploy.
-// Rebuilt 2026-10-31 (2): + the DRIFT order (no thrust, keep speed and direction); one additive stat rule; thrust heat from the hull's own power; power_pct; no thrust cap.
+// Rebuilt 2026-11-01: + ai 'raider' (shoots an NPC escort target unless a player is inside its maximum weapon range). Before: 2026-10-31 (2): the DRIFT order; one additive stat rule; thrust heat from the hull's own power; power_pct; no thrust cap.
 //
 //
 //
@@ -312,6 +312,23 @@ function bestShotTarget(s, live, byId, ss, cfg) {
   return best ? best.id : null;
 }
 
+// RAIDER (drones with ai 'raider', 2026-11-01): shoots a hostile NPC (an escort target such as a transport) while no player ship is inside the
+// maximum range of any of its weapons. A player ship inside that range becomes the target; when the player leaves the range it goes back to the NPC.
+// With no hostile NPC left it simply takes the nearest player. (Player ships carry ship_id; NPC ships do not.)
+function raiderTarget(s, live, ss) {
+  const maxR = ss.weapons.reduce((m, w) => Math.max(m, w.maxR), 0);
+  let player = null, pd = Infinity, npc = null, nd = Infinity;
+  for (const o of live) {
+    if (o.id === s.id || o.side === s.side) continue;
+    const d = dist(s, o);
+    if (o.ship_id) { if (d < pd) { pd = d; player = o; } }
+    else if (d < nd) { nd = d; npc = o; }
+  }
+  if (player && pd <= maxR) return player.id;
+  if (npc) return npc.id;
+  return player ? player.id : null;
+}
+
 function nearestHostile(s, ships) {
   let best = null, bd = Infinity;
   for (const o of ships) {
@@ -428,6 +445,7 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
   // (a ship with ai 'best_shot', a drone of the combat range, is different: see bestShotTarget)
   for (const s of live) {
     if (s.ai === 'best_shot') { s.targetId = bestShotTarget(s, live, byId, stat.get(s.id), cfg); continue; }
+    if (s.ai === 'raider') { s.targetId = raiderTarget(s, live, stat.get(s.id)); continue; }
     if (!(s.targetId && byId.has(s.targetId))) {
       const n = nearestHostile(s, live);
       s.targetId = n ? n.id : null;
