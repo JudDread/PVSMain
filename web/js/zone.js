@@ -11,6 +11,7 @@ import { S, call, whole, el, say } from 'core';
 import { modal, closeModal, pointAt, clearPointer } from './coach.js';
 
 const POLL_MS = 5000;
+const KEEPALIVE_MS = 20000;        // a HIDDEN zone screen still polls this slowly: the server takes a pilot out of the zone after 60 s of silence (084)
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
 let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null;
@@ -251,7 +252,7 @@ function buildSettings() {
   m.append(R.setRange,
     el('div', 'zh', 'Distance for the next attack order'), R.hold,
     mk('Event log', () => { closeMenus(); logOpen = true; fillLog(); R.log.hidden = false; }),
-    mk('Hide this screen', () => { closeMenus(); root.hidden = true; away = true; stopTimers(); }));
+    mk('Hide this screen', () => { closeMenus(); root.hidden = true; away = true; stopTimers(); pollT = setInterval(() => { if (!document.hidden) poll(); }, KEEPALIVE_MS); }));
 }
 function syncSettings() { R.setRange.textContent = 'Weapon ranges: ' + (showRanges ? 'ON' : 'OFF'); }
 function fillLog() {
@@ -335,10 +336,11 @@ function closeZone(v) {
     if (v.ship_state === 'drifting') say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
     else if (v.ended === 'cleared') { say('Zone cleared. Your ship is docked at the range.', 'ok'); if (wasInstanced && killedDrone) afterKill(killedDrone); }
     else if (v.ended === 'retreat') modal({ kicker: 'ESC RANGE CONTROL', title: 'Exercise ended', paras: [v.message || "Exercise ended: hull under 25%. There's a lesson here somewhere. Your ship can be repaired at any location with a market."], buttons: [{ label: 'OK', onClick: closeModal }] });
-    else if (v.ended === 'kill') say('Your ship was destroyed. (Test version: it stays docked at the range.)', 'err');
+    else if (v.ended === 'timeout') modal({ kicker: 'ESC COMMAND', title: 'Signal lost', paras: [v.message || 'You blacked out.'], buttons: [{ label: 'OK', onClick: closeModal }] });
+    else if (v.ended === 'kill') { /* the insurance popup (insurance.js) tells the pilot; it opens with the next refresh below */ }
     else say('The fight is over. Your ship is docked at the range.', 'ok');
     if (S.refresh) S.refresh();
-  }
+  } else if (was && S.refresh) S.refresh();   // the fight ended while another pilot's poll worked the zone: still look at the pilot's ships again (a lost ship asks for its delivery place)
 }
 
 /* what the page remembers between pictures: acceleration (thrust lines and smooth motion) and new damage (the numbers) */
