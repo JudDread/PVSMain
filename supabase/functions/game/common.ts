@@ -213,7 +213,8 @@ export async function enduranceSpend(db, characterId, g, days, nowT) {
 export async function pilotNumbers(db, characterId, g, nowT) {
   const chk = await enduranceCheck(db, characterId, g, [], nowT);
   const freeG = Number(chk.free_g), perG = Number(chk.drain_per_g_hour);
-  return { bar: Number(chk.endurance), max: Number(chk.max), freeG, perG, refill: Number(chk.refill_flight_hour), share: Number(chk.pulse_share),
+  // refill = flight refill WITH the rigs (Healing Factor + G Chamber, added); refillBase = WITHOUT the rigs (combat applies a switched-on G Chamber itself)
+  return { bar: Number(chk.endurance), max: Number(chk.max), freeG, perG, refill: Number(chk.refill_flight_hour), refillBase: Number(chk.refill_flight_base ?? chk.refill_flight_hour), share: Number(chk.pulse_share),
     drainHour: Math.max(0, g - freeG) * perG };
 }
 
