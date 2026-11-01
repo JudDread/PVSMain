@@ -101,7 +101,7 @@ async function pilotBlock(db, characterId, pilotCfg, t) {
   }
   const p = await pilotNumbers(db, characterId, 4, t);   // bar, max, freeG, refill (skills included)
   return {
-    free_g: p.freeG, endurance_max: p.max, bar: p.bar, refill_flight_hour: p.refill,
+    free_g: p.freeG, endurance_max: p.max, bar: p.bar, refill_flight_hour: p.refillBase,   // WITHOUT the rigs: combat.js applies a switched-on G Chamber itself
     ref_g: num(pilotCfg.ref_g, 4), burn_hours_ref: num(pilotCfg.burn_hours_ref, 1.5), burn_keep: num(pilotCfg.burn_keep, 1),
   };
 }
@@ -183,11 +183,14 @@ async function advanceZone(db, ctx, nowMs) {
   const retreatFrac = zone.retreat_hull_frac == null ? null : num(zone.retreat_hull_frac);
   const total = Math.max(0, Math.min(elapsed, cfg.catchup_max_s));
   const res = { ships: rows.map(fromRow), events: [] };
-  // a zone with drone_per_pilot keeps one live drone for every live pilot: on each 5-second step the missing ones spawn at the centre (spread a little)
+  // a zone with drone_per_pilot (the combat range) grows its drones with the pilots: every spawn CYCLE (5 real seconds) ONE drone spawns at the centre
+  // while the live drones are fewer than TWICE the live pilots (settings key 'combat': drones_per_pilot 2, spawn_cycle_s 5, drone_cap 40)
   const respawnType = zone.drone_per_pilot && zone.default_drone ? (await db.from('drone_types').select('*').eq('id', zone.default_drone).maybeSingle()).data : null;
   const newDrones = new Set();
+  const cycleS = Math.max(1, num(cfg.spawn_cycle_s, 5));
   for (let t = 0; total - t > 1e-9;) {
     const dt = Math.min(cfg.step_s, total - t);
+    const tPrev = t;
     const r = advance(res.ships, dt, { scale: CLOCK.scale, cfg, zone: { exit_km: num(zone.exit_radius_km) } });
     for (const e of r.events) res.events.push({ ...e, t: e.t + t });
     res.ships = r.ships;
@@ -203,12 +206,18 @@ async function advanceZone(db, ctx, nowMs) {
       }
     }
     if (respawnType) {
-      const pilots = res.ships.filter((s) => s.ship_id && s.alive && !s.left).length;
-      const drones = res.ships.filter((s) => s.side === 'drones' && s.alive && !s.left).length;
-      if (pilots > drones) {
-        for (const p of spreadPositions(Array.from({ length: pilots - drones }, () => ({ x: 0, y: 0 })))) {
-          const d = await buildDrone(db, respawnType, p, cfg, ctx.pilotCfg, gameDaysAt(nowMs));
-          if (d) { res.ships.push(d); newDrones.add(d.id); }
+      // the cycles are counted on the REAL clock (a cycle boundary crossed in this step), so polling more often cannot spawn extra drones
+      const cycles = Math.floor((snapMs / 1000 + t + 1e-6) / cycleS) - Math.floor((snapMs / 1000 + tPrev + 1e-6) / cycleS);
+      if (cycles > 0) {
+        const pilots = res.ships.filter((s) => s.ship_id && s.alive && !s.left).length;
+        const drones = res.ships.filter((s) => s.side === 'drones' && s.alive && !s.left).length;
+        const want = Math.min(Math.floor(pilots * num(cfg.drones_per_pilot, 2)), num(cfg.drone_cap, 40));
+        const n = Math.min(cycles, Math.max(0, want - drones));
+        if (n > 0) {
+          for (const p of spreadPositions(Array.from({ length: n }, () => ({ x: 0, y: 0 })))) {
+            const d = await buildDrone(db, respawnType, p, cfg, ctx.pilotCfg, gameDaysAt(nowMs));
+            if (d) { res.ships.push(d); newDrones.add(d.id); }
+          }
         }
       }
     }
