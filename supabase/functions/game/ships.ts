@@ -1,6 +1,6 @@
 // @ts-nocheck
 // ======================================================================
-// Leave ship / board ship (step 2b). The SQL functions ship_leave and ship_board
+// Leave ship / board ship (step 2b), and the insurance choice after a ship is lost (084). The SQL functions ship_leave and ship_board
 // (migration 025) do the real work; this file only checks who is asking and passes
 // the answer on. Imports from common.ts and freight.ts only.
 // ======================================================================
@@ -28,6 +28,21 @@ export async function shipBoard(db, user, body) {
   await resolveFor(db, ch.id);
   await freightResolve(db, ch.id, false);
   const { data, error } = await db.rpc('ship_board', { p_character: ch.id, p_ship: ship });
+  if (error) throw error;
+  if (!data || !data.ok) return json(data ?? { error: 'server_error' }, 409);
+  return json(data);
+}
+
+// After a ship was lost (084): where should the insured ship be delivered? body.ship = the ship's id, body.place = a place that offers 'insurance'.
+// The SQL function insurance_choose checks both and moves the ship; this file only checks who is asking.
+export async function insuranceChoose(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const ship = String(body.ship ?? '');
+  const place = String(body.place ?? '');
+  if (!UUID_RE.test(ship)) return json({ error: 'bad_ship' }, 400);
+  if (!/^[a-z0-9_]{1,40}$/.test(place)) return json({ error: 'bad_place' }, 400);
+  const { data, error } = await db.rpc('insurance_choose', { p_character: ch.id, p_ship: ship, p_place: place });
   if (error) throw error;
   if (!data || !data.ok) return json(data ?? { error: 'server_error' }, 409);
   return json(data);
