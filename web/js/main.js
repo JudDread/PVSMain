@@ -13,6 +13,7 @@ import 'home';
 import { resetMissions } from './missions.js';
 import { resetTour } from './tour.js';
 import { checkLevelUp } from './levelup.js';
+import { checkInsurance, resetInsurance } from './insurance.js';   // the insurance popup after a ship is lost (084)
 import { SUPABASE_KEY } from './config.js';          // the publishable key (safe to publish); empty = the old one-time setup box
 
 const URL_ = 'https://krallhjvjjeeypdpnjha.supabase.co';
@@ -51,6 +52,7 @@ async function refresh() {
     }
     S.last = d; render();
     checkLevelUp().catch(() => {});                   /* the level-up screen (levelup.js) */
+    try { checkInsurance(); } catch (e) {}            /* a lost ship waits for its delivery place (insurance.js) */
   }
   catch (e) { say('Error: ' + e.message, 'err'); }
 }
@@ -105,7 +107,7 @@ $('login').onclick = async () => {
   if (error) return say(error.message, 'err');
   say(''); enterGame(data.session);
 };
-const logout = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetFacilities(); resetRigging(); resetProfile(); resetZone(); resetMissions(); resetTour(); S.current = null; show('auth'); };
+const logout = async () => { await S.sb.auth.signOut(); clearInterval(timer); S.last = null; resetFly(); resetMarket(); resetAssets(); resetFacilities(); resetRigging(); resetProfile(); resetZone(); resetMissions(); resetTour(); resetInsurance(); S.current = null; show('auth'); };
 $('out').onclick = logout; $('out2').onclick = logout;
 $('mk').onclick = async () => {
   try { await call('create_character', { name: $('cname').value }); say('Character created.', 'ok'); await refresh(); }
