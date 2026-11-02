@@ -202,10 +202,15 @@ async function me(db, user) {
     out.pilot = { ...pilot, skill_points: cal ? Number(cal.available) : 0 };
     // Missions: this also starts any mission that is due (tutorial 1 for a new pilot). missions_ready = rewards waiting, missions_new = missions not looked at yet (the dot on the tab shows for either).
     // A failure here must never break the game, so it only logs.
+    // 086: repeatable missions (quests.repeat_after_s) are offered again once their wait is over (best effort)
+    const { error: re } = await db.rpc('quest_repeat', { p_character: ch.id });
+    if (re) console.error('quest_repeat failed', re);
     const { data: ql, error: qe } = await db.rpc('quest_list', { p_character: ch.id });
     if (qe) console.error(qe);
     out.missions_ready = ql ? Number(ql.ready) : 0;
     out.missions_new = ql ? Number(ql.new) : 0;
+    // 086: the running clocks of timed missions (the Fly screen shows one touchable timer for each)
+    out.mission_timers = ql ? (ql.quests ?? []).filter((q) => q.status === 'active' && q.due_at).map((q) => ({ id: q.id, title: q.title, due_at: q.due_at })) : [];
   }
   out.sent_ms = Date.now(); // server time when this answer leaves: the page uses it to measure how far its own clock is off
   return json(out);
