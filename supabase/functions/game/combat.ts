@@ -725,6 +725,8 @@ export async function combatEnter(db, user, body = {}) {
       }
     }
   }
+  // 087: a bulk insert sends the same columns for every row (a missing one becomes NULL, which script_done does not accept), so every row gets all of them
+  for (const r of inserts) { if (!Array.isArray(r.script_done)) r.script_done = []; if (r.entry_ang === undefined) r.entry_ang = null; if (r.seen_at === undefined) r.seen_at = null; }
   const { error: ie } = await db.from('combat_ships').insert(inserts);
   if (ie) throw ie;
   if (spawned && !zone.instanced && !zone.drone_per_pilot) {
