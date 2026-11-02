@@ -665,7 +665,7 @@ export async function combatEnter(db, user, body = {}) {
   if (ee) throw ee;
   const R = num(zone.entry_radius_km);
   const players = (existing ?? []).filter((r) => r.ship_id).map((r) => ({ x: num(r.x_km), y: num(r.y_km) }));
-  const ang = spawnAngle(R, players, ship.id);
+  const ang = zone.random_entry && !players.length ? Math.random() * 2 * Math.PI : spawnAngle(R, players, ship.id);   // 086: random_entry = a new direction every run (when alone)
   const id = crypto.randomUUID();
   const me = newShip({ id, side: 'players', base, x: R * Math.cos(ang), y: R * Math.sin(ang), endurance: pilot.bar, stance: 'full', order: { kind: 'stop' }, cfg });
   // LASTING STATES (076): start with the numbers the ship was left with (full when nothing is stored, or when this place has a hangar)
