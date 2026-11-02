@@ -41,13 +41,19 @@ export async function missionsView(db, user) {
   if (!ch) return json({ error: 'no_character' }, 400);
   // 058: post the pilot's private tutorial freight job when its turn has come (does nothing otherwise; a failure never blocks the list)
   try { await db.rpc('tutorial_freight_post', { p_character: ch.id }); } catch (e) { /* ignore */ }
+  // 086: a repeatable mission whose wait is over is offered again (best effort; a failure never blocks the list)
+  try { await db.rpc('quest_repeat', { p_character: ch.id }); } catch (e) { /* ignore */ }
   const { data, error } = await db.rpc('quest_list', { p_character: ch.id });
   if (error) throw error;
   // 075: a step 'damage:<zone>:<amount>' shows how much of the amount is done
   try {
-    const { data: cqs } = await db.from('character_quests').select('quest_id,counters').eq('character_id', ch.id);
+    const { data: cqs } = await db.from('character_quests').select('quest_id,counters,claims,fails').eq('character_id', ch.id);
     const counters = new Map((cqs ?? []).map((r) => [r.quest_id, r.counters || {}]));
+    const times = new Map((cqs ?? []).map((r) => [r.quest_id, r]));
     for (const q of data.quests ?? []) {
+      const tm = times.get(q.id);                                    // 086: how many times the mission was claimed / failed
+      q.claims = tm ? Number(tm.claims) || 0 : 0;
+      q.fails = tm ? Number(tm.fails) || 0 : 0;
       const c = counters.get(q.id);
       for (const s of q.steps ?? []) {
         if (typeof s.id !== 'string' || !s.id.startsWith('damage:') || s.done) continue;
@@ -85,6 +91,15 @@ export async function missionAccept(db, user, body) {
   if (error) throw error;
   if (!data.ok) return json({ error: data.error }, 409);
   await applyEffects(db, ch.id, String(body.quest ?? ''), 'accept');
+  // 086: some missions move their place to a new random angle at every accept (quests.randomize_place), so each run looks like a different ship
+  try {
+    const { data: qd } = await db.from('quests').select('randomize_place').eq('id', String(body.quest ?? '')).maybeSingle();
+    if (qd && qd.randomize_place) {
+      const angle = Math.round(Math.random() * 3600) / 10;
+      const { error: le } = await db.from('locations').update({ angle_deg: angle }).eq('id', qd.randomize_place);
+      if (le) console.error('randomize_place failed', le);
+    }
+  } catch (e) { console.error('randomize_place failed', e); }
   return json(data);
 }
 
