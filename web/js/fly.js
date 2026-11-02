@@ -10,7 +10,7 @@
 // Any thrust may launch. Above the free thrust (3 g) the flight PULSES: burn half the bar, refill at 3 g until full,
 // burn again, for the whole trip. The rows show the average thrust that gives.
 import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse, stopPlan, segmentEnd } from 'physics';
-import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow } from 'core';
+import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow, nowMs } from 'core';
 import { createMap } from 'map';
 import { zoneIn, zoneEnter, zoneShow, zoneCheck, zoneDrones, zoneOnInfo, zoneInfoKnown } from 'zone';
 
@@ -454,11 +454,47 @@ function drawChip(ship) {
 }
 setInterval(drawChipBars, 1000);
 
+/* 086: TIMERS of timed missions. One touchable chip for each running timer (they stack, top right of the map). A touch shows the mission's name for 4 seconds.
+   The list comes from the server (me.mission_timers); when a clock reaches zero the page asks the server once, which marks the mission failed and removes the chip. */
+const tmrSt = document.createElement('style');
+tmrSt.textContent = '#scr-travel .tmrs{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;z-index:6}'
+  + '#scr-travel .tmrs button{margin:0;padding:6px 10px;min-height:0;width:auto;font-size:14px;font-weight:700;background:#131a2a;color:#e8b64a;border:1px solid #3a4666;border-radius:8px}'
+  + '#scr-travel .tmrs button.low{color:#ff6b6b;border-color:#ff6b6b}';
+document.head.appendChild(tmrSt);
+let tmrBox = null;
+const tmrBtn = {}, tmrName = {}, tmrDone = {};
+const tmrClock = ms => {                                       /* 1450000 -> '24:10' ; 3725000 -> '1:02:05' */
+  const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(r).padStart(2, '0');
+};
+function drawTimers() {
+  const wrap = document.querySelector('#scr-travel .mapwrap');
+  if (!wrap) return;
+  const list = (S.last && S.last.character && S.last.mission_timers) || [];
+  if (!tmrBox) { tmrBox = document.createElement('div'); tmrBox.className = 'tmrs'; wrap.appendChild(tmrBox); }
+  const ids = new Set(list.map(t => t.id));
+  for (const id in tmrBtn) if (!ids.has(id)) { tmrBtn[id].remove(); delete tmrBtn[id]; delete tmrDone[id]; }
+  for (const t of list) {
+    let b = tmrBtn[t.id];
+    if (!b) {
+      b = document.createElement('button');
+      b.onclick = ev => { ev.stopPropagation(); tmrName[t.id] = Date.now() + 4000; drawTimers(); };
+      tmrBtn[t.id] = b; tmrBox.appendChild(b);
+    }
+    const ms = new Date(t.due_at).getTime() - nowMs();
+    b.textContent = (tmrName[t.id] > Date.now() ? t.title + '  ' : '') + tmrClock(ms);
+    b.classList.toggle('low', ms < 60000);
+    if (ms <= 0 && !tmrDone[t.id]) { tmrDone[t.id] = true; if (S.refresh) S.refresh(); }
+  }
+}
+setInterval(drawTimers, 1000);
+
 addScreen('travel', 'Fly', $('scr-travel'), {
   onShow: () => { map.resize(); map.need(); sizeThrust(); },
   update: ship => {
     drawZone(ship);
     drawChip(ship);
+    drawTimers();
     if (!ship) { map.need(); return; }
     const fl = ship.state !== 'docked';
     /* the list on screen must match the ship's state: docked list for a docked ship, course options for a flying one */
