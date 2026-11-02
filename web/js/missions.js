@@ -59,7 +59,17 @@ const span = ms => {                              // 3725000 -> '1h 2m'
   const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
   return h ? h + 'h ' + m + 'm' : m ? m + 'm ' + (s % 60) + 's' : (s % 60) + 's';
 };
-const leftText = q => { const ms = new Date(q.due_at).getTime() - nowMs(); return ms > 0 ? 'Time left: ' + span(ms) : 'Time is up'; };
+const clock = ms => {                              // 1450000 -> '24:10' ; 3725000 -> '1:02:05'
+  const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(r).padStart(2, '0');
+};
+const words = min => {                            // 30 -> '30 minutes' ; 60 -> '1 hour' ; 90 -> '1 hour 30 minutes'
+  const h = Math.floor(min / 60), m = Math.round(min % 60), p = [];
+  if (h) p.push(h + (h === 1 ? ' hour' : ' hours'));
+  if (m || !h) p.push(m + (m === 1 ? ' minute' : ' minutes'));
+  return p.join(' ');
+};
+const leftText = q => { const ms = new Date(q.due_at).getTime() - nowMs(); return ms > 0 ? 'Time left ' + clock(ms) : 'Time is up'; };
 
 async function load() {
   if (loading) return;
@@ -123,7 +133,8 @@ function card(q) {
   });
   c.appendChild(el('div', 'mqr', (q.status === 'claimed' ? 'Reward paid: ' : 'Reward: ') + rewardText(q.reward)));
   if (q.status === 'active' && q.due_at) { const d = el('div', 'mdue', leftText(q)); d.dataset.due = q.due_at; c.appendChild(d); }
-  if (q.status === 'offered' && q.time_limit_minutes) c.appendChild(el('div', 'mdue', 'Time limit once accepted: ' + span(q.time_limit_minutes * 60000)));
+  if (q.status === 'offered' && q.time_limit_minutes) c.appendChild(el('div', 'mdue', 'Timed mission: you have ' + words(Number(q.time_limit_minutes)) + ' from the moment you accept.'));
+  if (Number(q.claims) > 0 && q.status !== 'claimed') c.appendChild(el('div', 'mqr', 'Completed ' + q.claims + (Number(q.claims) === 1 ? ' time' : ' times')));
   if (q.status === 'failed') c.appendChild(el('div', 'mdue', 'The time ran out.'));
   if (q.status === 'ready') { const b = el('button', '', 'Claim reward'); b.onclick = () => act('mission_claim', q, b, 'Reward claimed: ' + rewardText(q.reward)); c.appendChild(b); }
   if (q.status === 'offered') { const b = el('button', '', 'Accept mission'); b.onclick = () => act('mission_accept', q, b, 'Mission accepted: ' + q.title); c.appendChild(b); }
