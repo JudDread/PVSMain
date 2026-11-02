@@ -2,6 +2,7 @@
 # Runs when the function's code (or this file) changes, or when started by hand.
 # The only secret is SUPABASE_ACCESS_TOKEN, stored in the repo's Actions secrets.
 # Database migrations are NOT run here - those stay manual.
+# 2026-11-02: --yes added. The newest Supabase CLI asks "Deploy 1 Function?" before deploying; an automatic run cannot answer, so it stopped with exit code 1.
 
 name: Deploy game function
 
@@ -27,4 +28,4 @@ jobs:
         with:
           version: latest
 
-      - run: supabase functions deploy game --project-ref $PROJECT_ID
+      - run: supabase functions deploy game --project-ref $PROJECT_ID --yes
