@@ -56,13 +56,13 @@ function shipInsertRow(s, zoneId, instance, nowMs, extra) {
 }
 
 // a drone ship made from a drone_types row (hull + rigs + the type's own stat changes), at a position in km
-async function buildDrone(db, dt, pos, cfg, pilotCfg, t) {
+async function buildDrone(db, dt, pos, cfg, pilotCfg, t, vel = null) {
   const { data: dh } = await db.from('hulls').select('*').eq('id', dt.hull_id).maybeSingle();
   if (!dh) return null;
   const dpilot = await pilotBlock(db, null, pilotCfg, t);
   const dbase = resolveBase({ hull: dh, rigs: await loadRigs(db, dt.rig_ids || []), skillFx: [dt.effects || {}], pilot: dpilot });
-  const d = newShip({ id: crypto.randomUUID(), side: 'drones', base: dbase, x: pos.x, y: pos.y, endurance: dpilot.bar, stance: 'economy', order: { kind: dt.start_order || 'attack_opt' }, cfg });
-  d.drone_type = dt.id; d.ship_id = null; d.ai = dt.targeting === 'best_shot' ? 'best_shot' : null;
+  const d = newShip({ id: crypto.randomUUID(), side: dt.side || 'drones', base: dbase, x: pos.x, y: pos.y, vx: vel ? vel.vx : 0, vy: vel ? vel.vy : 0, endurance: dpilot.bar, stance: 'economy', order: { kind: dt.start_order || 'attack_opt' }, cfg });
+  d.drone_type = dt.id; d.ship_id = null; d.ai = dt.targeting === 'best_shot' ? 'best_shot' : dt.targeting === 'raider' ? 'raider' : null;
   return d;
 }
 
@@ -169,6 +169,24 @@ async function workZone(db, zoneId, instance, nowMs) {
   return ctx;
 }
 
+// 085 SCRIPTED ZONES (combat_zones.script): a list of {key, after_s, drone}. A drone type's own `spawn` list gives the places (km past the centre on the line
+// from where the pilot entered), `side` its side (a friendly escort target is 'players') and `start_speed_kms` its speed toward the pilot's entry point.
+// after_s 0 = when the pilot enters; later = real seconds after the pilot entered (advanceZone). Only instanced zones use it.
+async function scriptDrones(db, dtId, ang, cfg, pilotCfg, t) {
+  const { data: dt, error } = await db.from('drone_types').select('*').eq('id', dtId).maybeSingle();
+  if (error) throw error;
+  if (!dt) { console.error('script drone type missing', dtId); return []; }
+  const spawn = Array.isArray(dt.spawn) && dt.spawn.length ? dt.spawn : [{ past_center_km: 0 }];
+  const pts = spreadPositions(spawn.map((p) => ({ x: -num(p.past_center_km) * Math.cos(ang), y: -num(p.past_center_km) * Math.sin(ang) })));
+  const sp = num(dt.start_speed_kms);
+  const out = [];
+  for (const p of pts) {
+    const d = await buildDrone(db, dt, p, cfg, pilotCfg, t, { vx: sp * Math.cos(ang), vy: sp * Math.sin(ang) });
+    if (d) out.push(d);
+  }
+  return out;
+}
+
 // DEATH (084): a destroyed ship is delivered to an insurance place (parked, rigs still fitted, cargo gone, freight failed); the pilot gets a life POD
 // that drifts from the zone with the dead ship's speed and heading. insurance.js then asks the pilot where the ship should be delivered.
 async function insurancePlace(db) {
@@ -215,6 +233,14 @@ async function advanceZone(db, ctx, nowMs) {
   // 084: a pilot who has not been heard from for leave_after_s real seconds (0 = never) leaves the fight safely, at exactly seen_at + that time
   const leaveMs = Math.max(0, num(cfg.leave_after_s, 60)) * 1000;
   const seenMs = new Map(rows.filter((r) => r.ship_id).map((r) => [r.id, Date.parse(r.seen_at || r.entered_at || r.snap_at)]));
+  // 085: scripted zones. script entries due later (after_s > 0) spawn at their exact time inside the loop below; scriptDone remembers which already did.
+  const pilotRows = rows.filter((r) => r.ship_id);
+  const scriptList = zone.instanced && Array.isArray(zone.script) ? zone.script.filter((e) => e && e.key && e.drone) : [];
+  const scriptLater = scriptList.filter((e) => num(e.after_s) > 0);
+  const scriptDone = new Set(pilotRows.flatMap((r) => r.script_done || []));
+  const scriptEnter = pilotRows.length ? Math.min(...pilotRows.map((r) => Date.parse(r.entered_at))) : null;
+  const scriptAng = pilotRows.length && pilotRows[0].entry_ang != null ? num(pilotRows[0].entry_ang) : null;
+  const scriptNew = [];
   const total = Math.max(0, Math.min(elapsed, cfg.catchup_max_s));
   const res = { ships: rows.map(fromRow), events: [] };
   // a zone with drone_per_pilot (the combat range) grows its drones with the pilots: every spawn CYCLE (5 real seconds) ONE drone spawns at the centre
@@ -266,6 +292,28 @@ async function advanceZone(db, ctx, nowMs) {
         }
       }
     }
+    if (scriptLater.length && scriptAng != null && scriptEnter != null) {
+      const nowT = snapMs + t * 1000;
+      for (const e of scriptLater) {
+        if (scriptDone.has(e.key) || nowT < scriptEnter + num(e.after_s) * 1000) continue;
+        scriptDone.add(e.key); scriptNew.push(e.key);                  // marked first: a bad drone type must not be retried every step
+        for (const d of await scriptDrones(db, e.drone, scriptAng, cfg, ctx.pilotCfg, gameDaysAt(nowMs))) { res.ships.push(d); newDrones.add(d.id); }
+      }
+    }
+  }
+
+  // 085: remember the script entries that fired, and note a lost escort target (combat_zones.protect_drone): destroyed = the run is FAILED
+  // (it left the zone alive = saved). The flag lives on the pilot's row, so later catch-ups still know; the kill steps are not paid in a failed run.
+  if (scriptNew.length && pilotRows.length) {
+    const { error: sde } = await db.from('combat_ships').update({ script_done: [...scriptDone] }).in('id', pilotRows.map((r) => r.id));
+    if (sde) console.error('script_done not saved', sde);
+  }
+  const failedBefore = rows.some((r) => r.run_failed);
+  const failedNow = !!zone.protect_drone && res.ships.some((s) => s.drone_type === zone.protect_drone && !s.alive);
+  const runFailed = failedBefore || failedNow;
+  if (failedNow && !failedBefore) {
+    const { error: rfe } = await db.from('combat_ships').update({ run_failed: true }).eq('zone_id', zone.location_id).eq('instance', instance).not('ship_id', 'is', null);
+    if (rfe) console.error('run_failed not saved', rfe);
   }
 
   // events: damage rows are summed per attacker / target pair for the whole catch-up (saves database space)
@@ -399,7 +447,7 @@ async function advanceZone(db, ctx, nowMs) {
         const killer = res.ships.find((x) => x.id === e.actor_id);
         const cid = killer && killer.ship_id ? owner.get(killer.ship_id) : null;
         if (!info || !cid) continue;
-        if (info.kill_quest) {
+        if (info.kill_quest && !runFailed) {                      // 085: a failed run (the escort target was lost) does not finish the mission step
           const { error: qe } = await db.rpc('quest_step', { p_character: cid, p_quest: info.kill_quest, p_step: 'kill:' + dt });
           if (qe) console.error('quest_step (kill) failed', qe);
         }
@@ -418,6 +466,7 @@ async function advanceZone(db, ctx, nowMs) {
   if (loc && loc.pvp === false) {
     for (const p of playersLeft) {
       if (live.some((o) => o.side !== p.side)) continue;
+      if (scriptLater.some((e) => !scriptDone.has(e.key))) continue;       // 085: a scripted drone is still to come: the fight is not over
       const characterId = owner.get(p.ship_id);
       if (characterId) await db.rpc('combat_endurance_set', { p_character: characterId, p_bar: p.endurance, p_t: gameDaysAt(nowMs) });
       await storeCondition(db, p.ship_id, p, nowMs);               // 076
@@ -486,6 +535,7 @@ async function buildView(db, ctx, myShipId) {
   const { data: ev } = await db.from('combat_events').select('id,at,kind,actor_id,target_id,amount').eq('zone_id', zone.location_id).eq('instance', instance).order('id', { ascending: false }).limit(RECENT_EVENTS);
   return {
     ok: true, in_zone: true,
+    run_failed: !!myRow.run_failed, fail_text: myRow.run_failed ? (zone.fail_text || null) : null,
     zone: { id: zone.location_id, instanced: !!zone.instanced, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100) },
     now_ms: Date.now(), scale: CLOCK.scale, step_s: cfg.step_s,
     me: {
@@ -566,7 +616,7 @@ export async function combatZone(db, user, body) {
   const loc = await getLocation(db, ship.location_id);
   const pod = ship.hull_id === 'life_pod';
   let drones = null;                                   // instanced range: the drones this pilot may ask for (a drone is open once its mission is accepted)
-  if (zone.instanced) {
+  if (zone.instanced && !(Array.isArray(zone.script) && zone.script.length)) {   // 085: a scripted zone has its own drones: no choice
     const { data: dts } = await db.from('drone_types').select('id,name,kill_quest,sort_order,xp_reward,spawn,open_after').eq('selectable', true).order('sort_order');
     const { data: cqs } = await db.from('character_quests').select('quest_id,status').eq('character_id', ch.id);
     const st = new Map((cqs ?? []).map((q) => [q.quest_id, q.status]));
@@ -638,7 +688,19 @@ export async function combatEnter(db, user, body = {}) {
   // A drone type may spawn several drones (its 'spawn' list: km past the centre, on the line from where the pilot entered).
   const hasDrone = (existing ?? []).some((r) => r.side === 'drones');
   let spawned = false;
-  if (loc && loc.pvp === false && (zone.drone_per_pilot || !hasDrone)) {
+  // 085: a SCRIPTED zone (combat_zones.script) spawns its own drones: those with after_s 0 now, the others later (advanceZone)
+  const scripted = zone.instanced && Array.isArray(zone.script) && zone.script.length > 0;
+  if (scripted) {
+    inserts[0].entry_ang = ang;
+    const now0 = zone.script.filter((e) => e && e.key && e.drone && !(num(e.after_s) > 0));
+    inserts[0].script_done = now0.map((e) => e.key);
+    if (loc && loc.pvp === false) {
+      for (const e of now0) {
+        for (const d of await scriptDrones(db, e.drone, ang, cfg, pilotCfg, t)) { inserts.push(toInsert(d, { ship_id: null, drone_type: d.drone_type, ai: d.ai || null })); spawned = true; }
+      }
+    }
+  }
+  if (!scripted && loc && loc.pvp === false && (zone.drone_per_pilot || !hasDrone)) {
     const asked = zone.instanced && body && body.drone ? String(body.drone) : null;
     const want = asked || zone.default_drone;
     if (want) {
