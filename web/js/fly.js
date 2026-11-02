@@ -454,10 +454,10 @@ function drawChip(ship) {
 }
 setInterval(drawChipBars, 1000);
 
-/* 086: TIMERS of timed missions. One touchable chip for each running timer (they stack, top right of the map). A touch shows the mission's name for 4 seconds.
+/* 086: TIMERS of timed missions. One touchable chip for each running timer (they stack downward, top left of the map, under the zoom buttons). A touch shows the mission's name for 4 seconds.
    The list comes from the server (me.mission_timers); when a clock reaches zero the page asks the server once, which marks the mission failed and removes the chip. */
 const tmrSt = document.createElement('style');
-tmrSt.textContent = '#scr-travel .tmrs{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;z-index:6}'
+tmrSt.textContent = '#scr-travel .tmrs{position:absolute;top:96px;left:8px;display:flex;flex-direction:column;align-items:flex-start;gap:6px;z-index:6}'
   + '#scr-travel .tmrs button{margin:0;padding:6px 10px;min-height:0;width:auto;font-size:14px;font-weight:700;background:#131a2a;color:#e8b64a;border:1px solid #3a4666;border-radius:8px}'
   + '#scr-travel .tmrs button.low{color:#ff6b6b;border-color:#ff6b6b}';
 document.head.appendChild(tmrSt);
@@ -472,6 +472,16 @@ function drawTimers() {
   if (!wrap) return;
   const list = (S.last && S.last.character && S.last.mission_timers) || [];
   if (!tmrBox) { tmrBox = document.createElement('div'); tmrBox.className = 'tmrs'; wrap.appendChild(tmrBox); }
+  /* sit just under the zoom buttons (found by their + / - label; if they cannot be found the CSS position above is used) */
+  const wr = wrap.getBoundingClientRect();
+  if (wr.height > 0) {
+    const zb = [...wrap.querySelectorAll('button')].filter(b => !tmrBox.contains(b) && /^\s*[+\u2212\u2013\uFF0B-]\s*$/.test(b.textContent));
+    if (zb.length) {
+      const rects = zb.map(b => b.getBoundingClientRect());
+      tmrBox.style.top = Math.round(Math.max(...rects.map(r => r.bottom)) - wr.top + 8) + 'px';
+      tmrBox.style.left = Math.round(Math.min(...rects.map(r => r.left)) - wr.left) + 'px';
+    }
+  }
   const ids = new Set(list.map(t => t.id));
   for (const id in tmrBtn) if (!ids.has(id)) { tmrBtn[id].remove(); delete tmrBtn[id]; delete tmrDone[id]; }
   for (const t of list) {
