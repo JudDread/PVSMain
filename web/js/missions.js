@@ -212,7 +212,14 @@ actionWatchers.push(noteStep);
 
 export function resetMissions() { data = null; failed = ''; loading = false; busy = false; for (const k in openMap) delete openMap[k]; for (const k in doneMap) delete doneMap[k]; div.replaceChildren(); }
 
+let liveKey = null;                                   /* 2026-11-02: when the server reports a change (a new offer, a ready mission, a timer) the screen reloads by itself */
 addScreen('missions', 'Missions', div, {
   onShow() { paint(); load(); },
+  update() {
+    if (!S.last || !S.last.character) return;
+    const k = [S.last.missions_ready, S.last.missions_new, (S.last.mission_timers || []).map(t => t.id).join(',')].join('|');
+    if (liveKey !== null && k !== liveKey) load();
+    liveKey = k;
+  },
   dot: () => !!S.last && (Number(S.last.missions_ready) > 0 || Number(S.last.missions_new) > 0),
 });
