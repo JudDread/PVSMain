@@ -4,6 +4,7 @@
 // this file only loads and stores the fight and checks who is asking.
 //   combat_zone    {}                          where am I: outside a zone (can I enter?) or inside (works the fight forward, returns it)
 //   combat_enter   {drone?}                     enter the zone of the place where the flown ship is docked (drone = a drone_types id, ranges only)
+//   combat_target  {target}   the weapons' target only (a hostile ship); the movement order stays
 //   combat_order   {kind, target?, hold_km?}   attack_max | attack_opt | follow | stop | flee | heading | drift; hold_km = own station-keeping distance
 //   combat_stance  {stance}                    free | economy | full  (the burn switch)
 //   combat_module  {index, on}                 switch one weapon / rig on or off
@@ -45,7 +46,7 @@ function fromRow(r) {
     shield: num(r.shield), armor: num(r.armor), hull: num(r.hull), heat: num(r.heat),
     tripped: !!r.tripped, shutdown_left: left, ammo: num(r.ammo), endurance: num(r.endurance), drained: !!r.drained,
     stance: r.burn_stance || 'economy', targetId: r.target_id || null,
-    order: { kind: r.order_kind || 'stop', hold_km: r.hold_km == null ? null : num(r.hold_km), dir_deg: r.order_dir == null ? null : num(r.order_dir) },
+    order: { kind: r.order_kind || 'stop', hold_km: r.hold_km == null ? null : num(r.hold_km), dir_deg: r.order_dir == null ? null : num(r.order_dir), follow_id: r.follow_id || null },
     alive: true, left: false, ship_id: r.ship_id || null, drone_type: r.drone_type || null, ai: r.ai || null,
   };
 }
@@ -84,7 +85,7 @@ function rowPatch(s, snapMs) {
     x_km: s.x, y_km: s.y, vx_kms: s.vx, vy_kms: s.vy,
     shield: s.shield, armor: s.armor, hull: s.hull, heat: s.heat,
     tripped: s.tripped, shutdown_until: s.tripped ? new Date(snapMs + s.shutdown_left * 1000).toISOString() : null,
-    ammo: s.ammo, target_id: s.targetId, order_kind: s.order.kind, hold_km: s.order.hold_km ?? null, order_dir: s.order.dir_deg ?? null,
+    ammo: s.ammo, target_id: s.targetId, order_kind: s.order.kind, hold_km: s.order.hold_km ?? null, order_dir: s.order.dir_deg ?? null, follow_id: s.order.follow_id ?? null,
     burn_stance: s.stance, modules: s.on, endurance: s.endurance, drained: s.drained,
     snap_at: new Date(snapMs).toISOString(),
   };
@@ -314,6 +315,14 @@ async function advanceZone(db, ctx, nowMs) {
   if (failedNow && !failedBefore) {
     const { error: rfe } = await db.from('combat_ships').update({ run_failed: true }).eq('zone_id', zone.location_id).eq('instance', instance).not('ship_id', 'is', null);
     if (rfe) console.error('run_failed not saved', rfe);
+    if (zone.fail_quest && pilotRows.length) {                   // 2026-11-02: the mission itself fails at once (due_at = now: a repeatable mission is then offered again)
+      const { data: shs } = await db.from('ships').select('character_id').in('id', pilotRows.map((r) => r.ship_id));
+      const cids = [...new Set((shs ?? []).map((x) => x.character_id))];
+      if (cids.length) {
+        const { error: fqe } = await db.from('character_quests').update({ status: 'failed', due_at: new Date(nowMs).toISOString() }).eq('quest_id', zone.fail_quest).in('character_id', cids).eq('status', 'active');
+        if (fqe) console.error('mission not failed', fqe);
+      }
+    }
   }
 
   // events: damage rows are summed per attacker / target pair for the whole catch-up (saves database space)
@@ -535,7 +544,7 @@ async function buildView(db, ctx, myShipId) {
   const { data: ev } = await db.from('combat_events').select('id,at,kind,actor_id,target_id,amount').eq('zone_id', zone.location_id).eq('instance', instance).order('id', { ascending: false }).limit(RECENT_EVENTS);
   return {
     ok: true, in_zone: true,
-    run_failed: !!myRow.run_failed, fail_text: myRow.run_failed ? (zone.fail_text || null) : null,
+    run_failed: !!myRow.run_failed, fail_text: myRow.run_failed ? (zone.fail_text || null) : null, success_text: zone.success_text || null,
     zone: { id: zone.location_id, instanced: !!zone.instanced, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100) },
     now_ms: Date.now(), scale: CLOCK.scale, step_s: cfg.step_s,
     me: {
@@ -773,7 +782,7 @@ export async function combatOrder(db, user, body) {
   if (target && !UUID_RE.test(target)) return json({ error: 'bad_request' }, 400);
   return await command(db, user, async (row, ctx) => {
     const own = kind === 'stop' || kind === 'flee' || kind === 'heading' || kind === 'drift';
-    const patch = { order_kind: kind, order_at: new Date().toISOString(), hold_km: own ? null : hold, order_dir: kind === 'heading' ? dir : null };
+    const patch = { order_kind: kind, order_at: new Date().toISOString(), hold_km: own ? null : hold, order_dir: kind === 'heading' ? dir : null, follow_id: null };
     if (hold != null && hold > num(ctx.zone.exit_radius_km)) return { err: refuse('bad_distance', 'That distance is larger than the zone.') };
     if (target && !own) {
       const { data: t, error } = await db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
@@ -781,10 +790,25 @@ export async function combatOrder(db, user, body) {
       if (!t || t.zone_id !== row.zone_id || t.instance !== row.instance || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
       if (kind === 'follow' && t.side !== row.side) return { err: refuse('bad_target', 'You can only follow a friendly ship.') };
       if (kind !== 'follow' && t.side === row.side) return { err: refuse('bad_target', 'You cannot attack a friendly ship.') };
-      patch.target_id = t.id;
+      if (kind === 'follow') patch.follow_id = t.id;                 // 2026-11-02: following a friend does not touch the weapons target
+      else patch.target_id = t.id;
     }
     const { error } = await db.from('combat_ships').update(patch).eq('id', row.id);
     if (error) throw error;
+  });
+}
+
+// 2026-11-02: choose the weapons' target without changing the movement order (a hostile ship of this fight)
+export async function combatTarget(db, user, body) {
+  const target = String(body.target ?? '');
+  if (!UUID_RE.test(target)) return json({ error: 'bad_request' }, 400);
+  return await command(db, user, async (row) => {
+    const { data: t, error } = await db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
+    if (error) throw error;
+    if (!t || t.zone_id !== row.zone_id || t.instance !== row.instance || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
+    if (t.side === row.side) return { err: refuse('bad_target', 'You cannot target a friendly ship.') };
+    const { error: ue } = await db.from('combat_ships').update({ target_id: t.id }).eq('id', row.id);
+    if (ue) throw ue;
   });
 }
 
