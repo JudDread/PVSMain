@@ -439,7 +439,7 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
   for (const s of live) {
     if (s.ai === 'best_shot') { s.targetId = bestShotTarget(s, live, byId, stat.get(s.id), cfg); continue; }
     if (s.ai === 'raider') { s.targetId = raiderTarget(s, live, stat.get(s.id)); continue; }
-    if (!(s.targetId && byId.has(s.targetId))) {
+    if (!(s.targetId && byId.has(s.targetId) && byId.get(s.targetId).side !== s.side)) {   // a friendly ship is never a weapons target (2026-11-02)
       const n = nearestHostile(s, live);
       s.targetId = n ? n.id : null;
     }
@@ -453,7 +453,7 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
     const out = { heat: 0, ammo: 0 };
     plan.set(s.id, out);
     const tgt = s.targetId ? byId.get(s.targetId) : null;
-    if (!tgt || s.tripped) continue;
+    if (!tgt || tgt.side === s.side || s.tripped) continue;
     const ss = stat.get(s.id), ts = stat.get(tgt.id);
     const r = Math.hypot(start.get(tgt.id).x - start.get(s.id).x, start.get(tgt.id).y - start.get(s.id).y);
     const eff = heatEffectiveness(s.heat, ss.heatCap, cfg);
@@ -486,7 +486,9 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
     const offline = wasTripped.get(s.id);
 
     // movement
-    const gd = guide({ ...st0, order: s.order }, tgt, ss, cfg, dtG);
+    // 2026-11-02: the FOLLOW order has its own subject (order.follow_id), so following a friend no longer replaces the weapons target
+    const mvt = s.order && s.order.kind === 'follow' && s.order.follow_id ? (start.get(s.order.follow_id) || null) : tgt;
+    const gd = guide({ ...st0, order: s.order }, mvt, ss, cfg, dtG);
     const tb = thrustBudget(s, ss, gd.gCmd, gd.closing, dt, scale, cfg);
     const a = tb.gEff * G_KMS2;
     const ax = gd.dx * a, ay = gd.dy * a;
