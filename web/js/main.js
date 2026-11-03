@@ -8,7 +8,7 @@ import { resetAssets } from 'assets';
 import { resetFacilities } from 'facilities';
 import { resetRigging } from 'rigs';
 import { resetProfile } from 'profile';
-import { resetZone } from 'zone';
+import { resetZone, zoneIn } from 'zone';
 import 'home';
 import { resetMissions } from './missions.js';
 import { resetTour } from './tour.js';
@@ -51,7 +51,7 @@ async function refresh() {
       S.skew = ((d.real_ms - t0) + (d.sent_ms - t1)) / 2; S.skewRtt = t1 - t0; S.skewAt = t1;
     }
     S.last = d; render();
-    checkLevelUp().catch(() => {});                   /* the level-up screen (levelup.js) */
+    if (!zoneIn()) checkLevelUp().catch(() => {});    /* the level-up screen (levelup.js) waits until the pilot is out of combat */
     try { checkInsurance(); } catch (e) {}            /* a lost ship waits for its delivery place (insurance.js) */
   }
   catch (e) { say('Error: ' + e.message, 'err'); }
