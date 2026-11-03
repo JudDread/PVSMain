@@ -15,7 +15,7 @@ const KEEPALIVE_MS = 20000;        // a HIDDEN zone screen still polls this slow
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
 let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null, failShown = false;
-let outInfo = null, lastDrone = null, lastInstanced = false, endWant = null, endAt = 0, endBusy = false, endSt = null, heatSt = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
+let outInfo = null, lastDrone = null, lastInstanced = false, lastSuccess = null, endWant = null, endAt = 0, endBusy = false, endSt = null, heatSt = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
@@ -296,8 +296,10 @@ function order(kind, targetId, deg) {
   send('combat_order', body);
 }
 function orderActive(kind, id) {
+  if (kind === 'target') return !!view && view.me.target_id === id;            // 'Set as target': the weapons' target only
   const o = view && view.me.order; if (!o || o.kind !== kind) return false;
-  return (kind === 'attack_max' || kind === 'attack_opt' || kind === 'follow') ? view.me.target_id === id : true;
+  if (kind === 'follow') return o.follow_id === id;                            // follow has its own subject now
+  return (kind === 'attack_max' || kind === 'attack_opt') ? view.me.target_id === id : true;
 }
 
 /* a picture from the server */
@@ -313,6 +315,7 @@ function apply(v) {
   const dr = (v.ships || []).find(s => s.drone && s.hostile);          // which drone we are fighting (for the choices after the kill)
   if (dr) lastDrone = dr.drone;
   lastInstanced = !!(v.zone && v.zone.instanced);
+  lastSuccess = v.success_text || null;
   tourMaybe();
   trackMotion(v);
   trackBars(v);
@@ -331,7 +334,8 @@ function apply(v) {
   render();
 }
 function closeZone(v) {
-  const was = !!view, killedDrone = lastDrone, wasInstanced = lastInstanced;
+  const was = !!view, killedDrone = lastDrone, wasInstanced = lastInstanced, okText = lastSuccess, failedRun = failShown;
+  lastSuccess = null;
   lastDrone = null; lastCheck = 0; tourAbort(); tourChecked = false;
   failShown = false;
   view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; popNext = 0; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
@@ -339,7 +343,11 @@ function closeZone(v) {
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
     if (v.ship_state === 'drifting') say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
-    else if (v.ended === 'cleared') { say('Zone cleared. Your ship is docked at the range.', 'ok'); if (wasInstanced && killedDrone) afterKill(killedDrone); }
+    else if (v.ended === 'cleared') {
+      if (okText && !failedRun) modal({ kicker: 'VACUUM STATE', title: 'Mission complete', paras: [okText], buttons: [{ label: 'OK', onClick: closeModal }] });   // a scripted zone with a success text (and the run was not failed)
+      else say('Zone cleared. Your ship is docked at the range.', 'ok');
+      if (wasInstanced && killedDrone) afterKill(killedDrone);
+    }
     else if (v.ended === 'retreat') modal({ kicker: 'ESC RANGE CONTROL', title: 'Exercise ended', paras: [v.message || "Exercise ended: hull under 25%. There's a lesson here somewhere. Your ship can be repaired at any location with a market."], buttons: [{ label: 'OK', onClick: closeModal }] });
     else if (v.ended === 'timeout') modal({ kicker: 'VACUUM STATE', title: 'Signal lost', paras: [v.message || 'You blacked out.'], buttons: [{ label: 'OK', onClick: closeModal }] });
     else if (v.ended === 'kill') { /* the insurance popup (insurance.js) tells the pilot; it opens with the next refresh below */ }
@@ -532,7 +540,7 @@ export async function zoneCheck() {                       // fly.js asks now and
   finally { busy = false; infoChanged(); }
 }
 export function resetZone() {
-  failShown = false;
+  failShown = false; lastSuccess = null;
   view = null; sel = null; away = false; lastCheck = 0; cam = null; modSig = ''; lastEv = null; lastMe = null; pops = []; popNext = 0; zoomMode = 0;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
@@ -656,7 +664,7 @@ function makeShipChip(s) {
 function menuItems(id) {
   if (id === view.me.id) return { title: 'Your ship', items: [['stop', 'Stop'], ['drift', 'Drift']] };
   const s = view.ships.find(x => x.id === id); if (!s) return null;
-  return s.hostile ? { ship: s, title: s.name + ' (hostile)', items: [['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']] }
+  return s.hostile ? { ship: s, title: s.name + ' (hostile)', items: [['target', 'Set as target'], ['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']] }
                    : { ship: s, title: s.name + ' (friendly)', items: [['follow', 'Follow']] };
 }
 function buildMenu() {
@@ -674,7 +682,7 @@ function buildMenu() {
   d.items.forEach(([k, label]) => {
     const wait = pending && pending.kind === k && pending.id === menuFor;
     const b = el('button', wait ? 'pend' : (orderActive(k, menuFor) ? '' : 'alt'), wait ? label + ' ...' : label);
-    b.onclick = ev => { ev.stopPropagation(); pending = { kind: k, id: menuFor }; buildMenu(); order(k, menuFor === view.me.id ? null : menuFor); };
+    b.onclick = ev => { ev.stopPropagation(); pending = { kind: k, id: menuFor }; buildMenu(); if (k === 'target') send('combat_target', { target: menuFor }); else order(k, menuFor === view.me.id ? null : menuFor); };
     rows.push(b);
   });
   R.menu.replaceChildren(...rows);
@@ -830,9 +838,9 @@ function frame(full) {
   paintBars(full);
   if (full) {
     chips.forEach(c => { c.dist.textContent = kshort(dist(mp, P(c.ship))); c.b.classList.toggle('sel', c.ship.id === sel); });
-    const ord = m.order || { kind: 'stop' }, tgt = m.target_id && view.ships.find(s => s.id === m.target_id), a = acc.get(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0;
+    const ord = m.order || { kind: 'stop' }, tgt = m.target_id && view.ships.find(s => s.id === m.target_id), fol = ord.follow_id && view.ships.find(s => s.id === ord.follow_id), a = acc.get(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0;
     R.stat.textContent = (ORDER_NAME[ord.kind] || ord.kind) + (ord.kind === 'heading' && ord.dir_deg != null ? ' ' + Math.round(ord.dir_deg) + '°' : '') +
-      (tgt && ['attack_max', 'attack_opt', 'follow'].includes(ord.kind) ? ': ' + tgt.name : '') + (ord.hold_km ? ' at ' + km(ord.hold_km) : '') +
+      (ord.kind === 'follow' ? (fol ? ': ' + fol.name : '') : (tgt && ['attack_max', 'attack_opt'].includes(ord.kind) ? ': ' + tgt.name : '')) + (ord.hold_km ? ' at ' + km(ord.hold_km) : '') +
       '  |  speed ' + (vv => Math.hypot(vv.x, vv.y))(velOf(m.id) || { x: m.vx, y: m.vy }).toFixed(1) + ' km/s  |  thrust ' + g.toFixed(1) + ' g';
     R.stat.style.bottom = 'calc(' + (parseInt(getComputedStyle(root).getPropertyValue('--c')) + 14) + 'px + env(safe-area-inset-bottom,0px))';
   }
