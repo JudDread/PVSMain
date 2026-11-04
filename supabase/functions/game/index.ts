@@ -178,7 +178,7 @@ async function me(db, user) {
     // Each ship's highest thrust ('max accel' on the Assets screen and the Fly slider): the same rule as flying (calcMaxG):
     // hull max_g + Heavy Burn (a percent of the hull's own max_g) + the flat thrust of the rigs fitted to THAT ship (079: skill_fx, ship_fx).
     const [hullsR, skR, rigR] = await Promise.all([
-      db.from('hulls').select('id,max_g'),
+      db.from('hulls').select('id,name,max_g'),
       db.rpc('skill_fx', { p_character: ch.id, p_where: 'flight' }),
       Promise.all(out.ships.map(sh => db.rpc('ship_fx', { p_ship: sh.id, p_where: 'flight' }))),
     ]);
@@ -188,6 +188,29 @@ async function me(db, user) {
     const hb = (Number(skR.data?.max_g_pct) || 0) / 100;
     const hullG = {}; (hullsR.data ?? []).forEach(h => { hullG[h.id] = Number(h.max_g); });
     out.ships = out.ships.map((sh, i) => ({ ...sh, max_g: calcMaxG(hullG[sh.hull_id] ?? sh.thrust_g ?? 3, hb, Number(rigR[i].data?.thrust_g) || 0) }));
+    // 091: the OTHER pilots (everyone sees everyone, up to 100): name, hull, the docked place or the flight plan (the page works out where the ship is), and whether it is in a fight.
+    // A ship docked at a place this pilot cannot see is left out, so it does not give a hidden place away.
+    try {
+      const hullName = {}; (hullsR.data ?? []).forEach((h) => { hullName[h.id] = h.name; });
+      const { data: oc } = await db.from('characters').select('id,name,active_ship_id').neq('id', ch.id).not('active_ship_id', 'is', null).limit(100);
+      const sids = (oc ?? []).map((c) => c.active_ship_id);
+      let osh = []; let fight = new Set();
+      if (sids.length) {
+        const [a1, b1] = await Promise.all([
+          db.from('ships').select('id,hull_id,state,location_id,plan').in('id', sids),
+          db.from('combat_ships').select('ship_id').in('ship_id', sids),
+        ]);
+        osh = a1.data ?? []; fight = new Set((b1.data ?? []).map((r) => r.ship_id));
+      }
+      const canSee = new Set((out.locations ?? []).map((l) => l.id));
+      const byShip = new Map(osh.map((s) => [s.id, s]));
+      out.others = (oc ?? []).map((c) => {
+        const s = byShip.get(c.active_ship_id);
+        if (!s) return null;
+        if (s.state === 'docked' && !canSee.has(s.location_id)) return null;
+        return { id: c.id, name: c.name, hull: hullName[s.hull_id] || s.hull_id, state: s.state, loc: s.state === 'docked' ? s.location_id : null, plan: s.state === 'docked' ? null : s.plan, fight: fight.has(s.id) };
+      }).filter(Boolean);
+    } catch (e) { console.error('other pilots skipped', e); out.others = []; }
     // 076 LASTING STATES: the flown ship's shield / armor / hull for the chip on the Fly screen (loaded on demand; a fault only logs)
     try {
       if (out.ships[0]) out.ships[0].cond = await (await import('./ship_state.ts')).shipCondition(db, out.ships[0], Date.now());
