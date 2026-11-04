@@ -203,6 +203,8 @@ async function me(db, user) {
     // Missions: this also starts any mission that is due (tutorial 1 for a new pilot). missions_ready = rewards waiting, missions_new = missions not looked at yet (the dot on the tab shows for either).
     // A failure here must never break the game, so it only logs.
     // 086: repeatable missions (quests.repeat_after_s) are offered again once their wait is over (best effort)
+    const { error: wte } = await db.rpc('quest_wave_tick');                      // 090: a new wave moves the place and hides it at the end of the open window
+    if (wte) console.error('quest_wave_tick failed', wte);
     const { error: re } = await db.rpc('quest_repeat', { p_character: ch.id });
     if (re) console.error('quest_repeat failed', re);
     const { data: ql, error: qe } = await db.rpc('quest_list', { p_character: ch.id });
