@@ -67,7 +67,7 @@ export function createMap(cv, hooks) {
   function tap(p) {
     let best = null, bd = 26;
     hits.forEach(k => { const d = Math.hypot(k.x - p.x, k.y - p.y) - (k.ship ? 10 : 0); if (d < bd) { bd = d; best = k; } });   /* the ship wins over a place under it */
-    if (best) { if (best.ship) { if (hooks.pickShip) hooks.pickShip(); } else if (best.place && hooks.pickPlace) hooks.pickPlace(best.place); else hooks.pick(best.name); }
+    if (best) { if (best.ship) { if (hooks.pickShip) hooks.pickShip(); } else if (best.pilots) { if (hooks.pickPilots) hooks.pickPilots(best.pilots); } else if (best.place && hooks.pickPlace) hooks.pickPlace(best.place); else hooks.pick(best.name); }
   }
 
   function draw() {
@@ -129,6 +129,22 @@ export function createMap(cv, hooks) {
         ctx.fillStyle = '#ffd23d'; ctx.beginPath(); ctx.arc(X(d.x), Y(d.y), 4, 0, 7); ctx.fill();
       }
     }
+    /* OTHER PILOTS (091): small blue ships; ones that fall on the same spot on the screen (a crowd docked at one place) are ONE marker with a count.
+       A docked marker sits a little beside its place, so the place can still be touched. A red ring = in a fight. */
+    const crowd = new Map();
+    (hooks.others ? hooks.others() : []).forEach(o => {
+      const px = X(o.x), py = Y(o.y);
+      if (px < -20 || py < -20 || px > w + 20 || py > h + 20) return;
+      const k = Math.round(px / 14) + ':' + Math.round(py / 14) + (o.docked ? 'd' : 'f');
+      let g = crowd.get(k); if (!g) { g = { x: px + (o.docked ? 11 : 0), y: py + (o.docked ? 9 : 0), list: [] }; crowd.set(k, g); }
+      g.list.push(o);
+    });
+    crowd.forEach(g => {
+      ctx.fillStyle = '#4fb3ff'; ctx.beginPath(); ctx.arc(g.x, g.y, 4, 0, 7); ctx.fill();
+      if (g.list.some(o => o.fight)) { ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(g.x, g.y, 7, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
+      ctx.fillStyle = '#9fd4ff'; ctx.fillText(g.list.length > 1 ? String(g.list.length) : g.list[0].name, g.x + 8, g.y + 3);
+      hits.push({ x: g.x, y: g.y, pilots: g.list });
+    });
     if (sp) {
       const x = X(sp.x), y = Y(sp.y);
       hits.push({ x, y, ship: true });                          /* the ship can be tapped (hooks.pickShip) */
