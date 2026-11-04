@@ -113,7 +113,7 @@ export function createMap(cv, hooks) {
     /* places that sit a little away from their planet (moons, stations): drawn only when zoomed in far enough to tell apart.
        Display only: a place is its planet's position plus its fixed offset at its fixed angle (the same frame hops are flown in). */
     const selP = hooks.selectedPlace ? hooks.selectedPlace() : null;
-    ctx.font = 'bold 24px system-ui,sans-serif';                                  /* place names (moons, stations): twice the old size, bold */
+    ctx.font = '18px system-ui,sans-serif';                                       /* place names (moons, stations): 18 px, not bold */
     (hooks.places ? hooks.places() : []).forEach(q => {
       if (q.off * view.s < 10) return;
       const bp = bodyPos(BODIES[q.body], gd), x = X(bp[0] + q.off * Math.cos(q.ang || 0)), y = Y(bp[1] + q.off * Math.sin(q.ang || 0));
@@ -121,6 +121,7 @@ export function createMap(cv, hooks) {
       ctx.fillStyle = '#aab4cf'; ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
       hits.push({ x, y, name: q.name, place: q.id });
       if (q.id === selP) { ctx.strokeStyle = '#e8b64a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 9, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
+      ctx.font = (q.kind === 'moon' ? 'bold ' : '') + '18px system-ui,sans-serif';           /* planets and moons: bold; zones and the rest: not bold (all 18 px) */
       ctx.fillStyle = '#9fb0d4'; ctx.fillText(q.name, x + 8, y);
     });
     /* course lines: blue = preview while choosing, green = launched */
