@@ -206,6 +206,17 @@ async function ejectAtRest(db, s, characterId, loc, whenMs) {
   return true;
 }
 
+// 093: a ship docked at a HIDDEN place its pilot has no grant for (the place was hidden while the ship was flying there) is not docked: it stops in space
+// beside the place, at rest, and the place leaves the pilot's list. Not for a ship inside a fight. Returns true when the ship was released.
+export async function releaseFromHidden(db, ch, ship) {
+  if (!ship || ship.state !== 'docked' || !ship.location_id) return false;
+  const loc = await getLocation(db, ship.location_id);
+  if (!loc || !loc.hidden || await hasGrant(db, ch.id, loc)) return false;
+  const { data: fight } = await db.from('combat_ships').select('id').eq('ship_id', ship.id).limit(1);
+  if (fight && fight.length) return false;
+  return await ejectAtRest(db, { ship_id: ship.id }, null, loc, Date.now());
+}
+
 // DEATH (084): a destroyed ship is delivered to an insurance place (parked, rigs still fitted, cargo gone, freight failed); the pilot gets a life POD
 // that drifts from the zone with the dead ship's speed and heading. insurance.js then asks the pilot where the ship should be delivered.
 async function insurancePlace(db) {
@@ -653,7 +664,7 @@ export async function combatZone(db, user, body) {
   if (error) throw error;
   if (!zone) return json({ ok: true, in_zone: false, here: false });
   const loc = await getLocation(db, ship.location_id);
-  if (!(await hasGrant(db, ch.id, loc))) return json({ ok: true, in_zone: false, here: false });   // 090: a hidden place gives no zone menu without its grant
+  if (!(await hasGrant(db, ch.id, loc))) return json({ ok: true, in_zone: false, here: false, released: await releaseFromHidden(db, ch, ship) });   // 090/093: a hidden place gives no zone menu without its grant; a ship docked there is released
   const pod = ship.hull_id === 'life_pod';
   let drones = null;                                   // instanced range: the drones this pilot may ask for (a drone is open once its mission is accepted)
   if (zone.instanced && !(Array.isArray(zone.script) && zone.script.length)) {   // 085: a scripted zone has its own drones: no choice
@@ -690,7 +701,7 @@ export async function combatEnter(db, user, body = {}) {
   if (!ctx) return refuse('no_zone_here', 'There is no combat zone at this place.');
   const { zone, cfg, pilotCfg } = ctx;
   const loc = await getLocation(db, zone.location_id);
-  if (!(await hasGrant(db, ch.id, loc))) return refuse('no_zone_here', 'There is no combat zone at this place.');   // 090: a hidden place needs its grant
+  if (!(await hasGrant(db, ch.id, loc))) { await releaseFromHidden(db, ch, ship); return refuse('no_zone_here', 'There is no combat zone at this place.'); }   // 090/093: a hidden place needs its grant
   const t = gameDaysAt(nowMs);
 
   // my ship's numbers, worked out once
