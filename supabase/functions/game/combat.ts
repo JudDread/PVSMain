@@ -581,7 +581,7 @@ async function buildView(db, ctx, myShipId) {
       id: me.id, side: me.side, x: Math.round(me.x), y: Math.round(me.y), vx: r3(me.vx), vy: r3(me.vy),
       shield: Math.round(me.shield), shield_max: Math.round(ss.shield_max), armor: Math.round(me.armor), armor_max: Math.round(ss.armor_max),
       hull: Math.round(me.hull), hull_max: Math.round(ss.hull_max),
-      heat: r1(me.heat), heat_cap: r1(ss.heatCap), heat_cool: r1(ss.cooling), heat_warn: cfg.heat_eff_start, heat_resume: cfg.resume_frac,
+      heat: r1(me.heat), heat_cap: r1(ss.heatCap), heat_cool: r1(ss.cooling), heat_warn: cfg.heat_eff_start, heat_resume: cfg.resume_frac, end_recover: cfg.recover_frac,
       eng_k: r3(cfg.heat_g_per_power * ss.power), eng_thr: r1(Math.max(cfg.heat_thrust_g, ss.free_g)), tripped: me.tripped, shutdown_left: r1(me.shutdown_left),
       ammo: r1(me.ammo), endurance: r1(me.endurance), endurance_max: me.base.pilot.endurance_max, drained: me.drained,
       stance: me.stance, order: me.order, target_id: me.targetId, max_g: r1(ss.max_g), free_g: r1(ss.free_g),
@@ -856,7 +856,10 @@ export async function combatTarget(db, user, body) {
 export async function combatStance(db, user, body) {
   const stance = String(body.stance ?? '');
   if (!STANCES.includes(stance)) return json({ error: 'bad_request' }, 400);
-  return await command(db, user, async (row) => {
+  return await command(db, user, async (row, ctx) => {
+    if (stance !== 'free' && row.drained) {                      // 2026-11-02: the END switch cannot go ON until the endurance has refilled to the recover share
+      return { err: refuse('end_low', "Can't activate until your endurance is above " + Math.round(num(ctx.cfg.recover_frac, 0.25) * 100) + '%.') };
+    }
     const { error } = await db.from('combat_ships').update({ burn_stance: stance }).eq('id', row.id);
     if (error) throw error;
   });
