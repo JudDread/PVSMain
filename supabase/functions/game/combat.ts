@@ -219,6 +219,16 @@ async function touchSeen(db, shipId) {
   if (error) console.error('seen_at not saved', error);
 }
 
+// 090: a HIDDEN place may only be used (the zone menu, entering) by a pilot who holds its grant (the mark that 'show this place' writes).
+// Being docked there is not enough. A place that is not hidden is open to everyone.
+async function hasGrant(db, characterId, loc) {
+  if (!loc || !loc.hidden) return true;
+  const { data, error } = await db.from('characters').select('seen_locations').eq('id', characterId).maybeSingle();
+  if (error) throw error;
+  const v = data && data.seen_locations ? data.seen_locations[loc.id] : null;
+  return v != null && Number(v) >= Number(loc.epoch || 0);
+}
+
 async function advanceZone(db, ctx, nowMs) {
   const { zone, cfg, instance } = ctx;
   const { data: rows, error } = await db.from('combat_ships').select('*').eq('zone_id', zone.location_id).eq('instance', instance);
@@ -623,6 +633,7 @@ export async function combatZone(db, user, body) {
   if (error) throw error;
   if (!zone) return json({ ok: true, in_zone: false, here: false });
   const loc = await getLocation(db, ship.location_id);
+  if (!(await hasGrant(db, ch.id, loc))) return json({ ok: true, in_zone: false, here: false });   // 090: a hidden place gives no zone menu without its grant
   const pod = ship.hull_id === 'life_pod';
   let drones = null;                                   // instanced range: the drones this pilot may ask for (a drone is open once its mission is accepted)
   if (zone.instanced && !(Array.isArray(zone.script) && zone.script.length)) {   // 085: a scripted zone has its own drones: no choice
@@ -659,6 +670,7 @@ export async function combatEnter(db, user, body = {}) {
   if (!ctx) return refuse('no_zone_here', 'There is no combat zone at this place.');
   const { zone, cfg, pilotCfg } = ctx;
   const loc = await getLocation(db, zone.location_id);
+  if (!(await hasGrant(db, ch.id, loc))) return refuse('no_zone_here', 'There is no combat zone at this place.');   // 090: a hidden place needs its grant
   const t = gameDaysAt(nowMs);
 
   // my ship's numbers, worked out once
@@ -738,6 +750,15 @@ export async function combatEnter(db, user, body = {}) {
   for (const r of inserts) { if (!Array.isArray(r.script_done)) r.script_done = []; if (r.entry_ang === undefined) r.entry_ang = null; if (r.seen_at === undefined) r.seen_at = null; }
   const { error: ie } = await db.from('combat_ships').insert(inserts);
   if (ie) throw ie;
+  if (zone.fail_quest) {                                         // 090: a one-time mission zone: entering it hides the place for this pilot and stops the mission's timer (nothing can expire the fight)
+    const { data: chr } = await db.from('characters').select('seen_locations').eq('id', ch.id).maybeSingle();
+    const seen = { ...((chr && chr.seen_locations) || {}) };
+    delete seen[zone.location_id];
+    const { error: she } = await db.from('characters').update({ seen_locations: seen }).eq('id', ch.id);
+    if (she) console.error('place not hidden', she);
+    const { error: tme } = await db.from('character_quests').update({ due_at: null }).eq('character_id', ch.id).eq('quest_id', zone.fail_quest).eq('status', 'active');
+    if (tme) console.error('timer not cleared', tme);
+  }
   if (spawned && !zone.instanced && !zone.drone_per_pilot) {
     // two pilots entering a SHARED zone at the same moment could both add a drone: keep the one with the smallest id
     const { data: ds } = await db.from('combat_ships').select('id').eq('zone_id', zone.location_id).eq('instance', instance).eq('side', 'drones').order('id');
