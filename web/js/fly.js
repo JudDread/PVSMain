@@ -224,6 +224,31 @@ function shipPoint() {
   const p = bodyPos(BODIES[i], gd); return { x: p[0] + off.x, y: p[1] + off.y, plan: null };
 }
 
+/* 091: the other pilots as map points. The server sends name, hull and either the docked place or the flight plan; the position is worked out here,
+   with the same shared physics as the own ship, so they move smoothly between the 30-second answers. */
+function otherPoints() {
+  const arr = (S.last && S.last.others) || [];
+  if (!arr.length) return [];
+  const gd = curGd(), locs = S.last.locations || [], out = [];
+  for (const o of arr) {
+    let p = null;
+    try {
+      if (o.plan && o.state === 'traveling') p = stateAt(o.plan, gd);
+      else if (o.plan && (o.state === 'hopping' || o.state === 'drifting')) p = shipStateAbs(o.plan, gd);
+      else if (o.loc) {
+        const l = locs.find(x => x.id === o.loc), i = l ? bodyIdx(l.anchor_body) : -1;
+        if (i > 0) { const b = bodyPos(BODIES[i], gd), off = placeXY(l); p = { x: b[0] + off.x, y: b[1] + off.y }; }
+      }
+    } catch (e) { p = null; }
+    if (p) out.push({ x: p.x, y: p.y, name: o.name, hull: o.hull, fight: o.fight, docked: !!o.loc });
+  }
+  return out;
+}
+function pilotsText(list) {
+  if (list.length === 1) return list[0].name + ' · ' + list[0].hull + (list[0].fight ? ' (in combat)' : '');
+  return list.length + ' pilots: ' + list.slice(0, 8).map(o => o.name).join(', ') + (list.length > 8 ? ' and ' + (list.length - 8) + ' more' : '');
+}
+
 /* Blue preview course. Display only: same shared physics as the server, recomputed every 3 s because the planets move
    (and at once when the slider, the pick or the button changes). The real course is planned by the server at confirm. */
 let pv = { key: '', plan: null };
@@ -300,6 +325,8 @@ function previewPlan() {
 
 const map = createMap($('map'), {
   ship: shipPoint,
+  others: otherPoints,
+  pickPilots: list => say(pilotsText(list), 'muted'),
   speed: shipSpeedKms,
   preview: previewPlan,
   selectedBody,
