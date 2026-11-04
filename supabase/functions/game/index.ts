@@ -164,6 +164,11 @@ async function me(db, user) {
     await resolveFor(db, ch.id); // settle any finished trip before reporting
     await db.rpc('xp_settle', { p_character: ch.id }); // pay XP for trips that just finished
     await freightResolve(db, ch.id, false); // then settle freight that has arrived or run out of time
+    // 093: a ship that arrived at a HIDDEN place its pilot has no grant for (the place was hidden while it was flying there) does not dock: it stops in space beside it
+    try {
+      const { data: dk } = await db.from('ships').select('id,state,location_id').eq('id', ch.active_ship_id).maybeSingle();
+      if (dk && dk.state === 'docked') await combatCall('releaseFromHidden', db, ch, dk);
+    } catch (e) { console.error('release from hidden skipped', e); }
     out.locations = (await visibleLocations(db, ch.id)).map(pub);   // after the settling: a ship that has just docked at a hidden place sees it
     await db.rpc('quest_checks', { p_character: ch.id });   // 059/061: server-finished mission steps (arrive:<place>, rig_fit, skill_buy; best effort)
     const [ships, actions, events] = await Promise.all([
