@@ -332,7 +332,7 @@ const map = createMap($('map'), {
   selectedBody,
   /* places a little away from their planet (offset > 0): the map draws them once zoomed in far enough, and they can be tapped */
   places: () => (S.last && S.last.locations || []).filter(l => Number(l.offset_au) > 0 && bodyIdx(l.anchor_body) > 0)
-    .map(l => ({ id: l.id, name: l.name, body: bodyIdx(l.anchor_body), off: Number(l.offset_au), ang: (Number(l.angle_deg) || 0) * Math.PI / 180 })),
+    .map(l => ({ id: l.id, name: l.name, kind: l.kind, body: bodyIdx(l.anchor_body), off: Number(l.offset_au), ang: (Number(l.angle_deg) || 0) * Math.PI / 180 })),
   selectedPlace: () => (mode === 'hold' && deps ? deps.dest : selected),
   pickPlace: id => {
     if (zoneShip && zoneShip.location_id === id && zonePlace(zoneShip)) { openChipMenu(); return; }   /* the place the ship is docked at: the ship menu (it holds the zone choices) */
