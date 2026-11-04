@@ -211,6 +211,10 @@ function ui() {
   R.end.b.onclick = ev => {
     ev.stopPropagation();
     if (!view || endBusy) return;                                           // one change at a time
+    if (view.me.stance === 'free' && view.me.drained) {                     // 2026-11-02: switching ON is not possible until the endurance has refilled
+      toast("Can't activate until your endurance is above " + Math.round((view.me.end_recover || 0.25) * 100) + '%.', true);
+      return;
+    }
     endWant = view.me.stance === 'free'; endAt = Date.now(); endBusy = true; // true = we asked for ON: the chip shows it AT ONCE
     paintBars(true);
     send('combat_stance', { stance: endWant ? 'full' : 'free' })
