@@ -133,11 +133,22 @@ function card(q) {
   });
   c.appendChild(el('div', 'mqr', (q.status === 'claimed' ? 'Reward paid: ' : 'Reward: ') + rewardText(q.reward)));
   if (q.status === 'active' && q.due_at) { const d = el('div', 'mdue', leftText(q)); d.dataset.due = q.due_at; c.appendChild(d); }
-  if (q.status === 'offered' && q.time_limit_minutes) c.appendChild(el('div', 'mdue', 'Timed mission: you have ' + words(Number(q.time_limit_minutes)) + ' from the moment you accept.'));
-  if (Number(q.claims) > 0 && q.status !== 'claimed') c.appendChild(el('div', 'mqr', 'Completed ' + q.claims + (Number(q.claims) === 1 ? ' time' : ' times')));
-  if (q.status === 'failed') c.appendChild(el('div', 'mdue', 'The time ran out.'));
+  if (q.status === 'offered' && q.time_limit_minutes && !q.wave) c.appendChild(el('div', 'mdue', 'Timed mission: you have ' + words(Number(q.time_limit_minutes)) + ' from the moment you accept.'));
+  if (q.wave) {                                                          /* 090: the wave clock of a wave mission */
+    let wl = null;
+    if (q.status === 'offered') wl = q.wave.open ? ['Available for ', q.wave.ends_at] : ['Not available. Next wave in ', q.wave.next_at];
+    else if (q.status === 'failed' || q.status === 'claimed') wl = ['Not available. Next wave in ', q.wave.next_at];
+    if (wl) { const w = el('div', 'mdue'); w.dataset.until = new Date(wl[1]).getTime(); w.dataset.pre = wl[0]; w.textContent = wl[0] + clock(w.dataset.until - nowMs()); c.appendChild(w); }
+  }
+  if (q.repeats && (Number(q.claims) > 0 || Number(q.fails) > 0)) {      /* 090: the history of a repeatable mission */
+    const p = [];
+    if (Number(q.claims) > 0) p.push('Completed ' + q.claims + (Number(q.claims) === 1 ? ' time' : ' times'));
+    if (Number(q.fails) > 0) p.push('Failed ' + q.fails + (Number(q.fails) === 1 ? ' time' : ' times'));
+    c.appendChild(el('div', 'mqr', p.join(' \u00b7 ')));
+  }
+  if (q.status === 'failed' && !q.wave) c.appendChild(el('div', 'mdue', 'The time ran out.'));
   if (q.status === 'ready') { const b = el('button', '', 'Claim reward'); b.onclick = () => act('mission_claim', q, b, 'Reward claimed: ' + rewardText(q.reward)); c.appendChild(b); }
-  if (q.status === 'offered') { const b = el('button', '', 'Accept mission'); b.onclick = () => act('mission_accept', q, b, 'Mission accepted: ' + q.title); c.appendChild(b); }
+  if (q.status === 'offered') { const b = el('button', '', 'Accept mission'); b.onclick = () => act('mission_accept', q, b, 'Mission accepted: ' + q.title); if (q.wave && !q.wave.open) b.disabled = true; c.appendChild(b); }
   return c;
 }
 
@@ -188,7 +199,13 @@ setInterval(() => {                                   /* waiting for the tutoria
 setInterval(() => {                                   /* countdowns of timed missions (none exist yet) */
   if (S.current !== 'missions') return;
   div.querySelectorAll('.mdue[data-due]').forEach(d => { d.textContent = leftText({ due_at: d.dataset.due }); });
+  div.querySelectorAll('.mdue[data-until]').forEach(d => {              /* 090: wave clocks; at zero ask the server what the new state is (at most every 5 s) */
+    const ms = Number(d.dataset.until) - nowMs();
+    if (ms > 0) d.textContent = d.dataset.pre + clock(ms);
+    else if (Date.now() - waveLoadAt > 5000) { waveLoadAt = Date.now(); load(); }
+  });
 }, 1000);
+let waveLoadAt = 0;
 
 /* A screen was opened or a server action succeeded: if an open mission has an undone step named like it, report it.
    A trade ('trade_at') also finishes steps named after what was done and where: 'buy', 'sell', 'buy:earth', 'sell:luna'. */
