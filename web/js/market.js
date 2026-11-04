@@ -71,7 +71,13 @@ function sortGoods(list) {
   document.head.appendChild(st);
 })();
 
-const dockedAt = () => { const s = S.last && (S.last.ships || [])[0]; return s && s.state === 'docked' ? s.location_id : null; };
+/* 2026-11-02: only a place WITH a market counts as 'docked here' for this screen: docking at a range or a zone no longer switches the Market screen */
+const dockedAt = () => {
+  const s = S.last && (S.last.ships || [])[0];
+  if (!s || s.state !== 'docked') return null;
+  const l = ((S.last && S.last.locations) || []).find(x => x.id === s.location_id);
+  return l && (!Array.isArray(l.svc) || l.svc.includes('market')) ? s.location_id : null;
+};
 // Default place: where the ship is docked; else the last place it docked (remembered); else the start of the current trip.
 function defaultLoc() {
   const dl = dockedAt(); if (dl) return dl;
