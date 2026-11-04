@@ -18,6 +18,12 @@
 //      with the most profit per game day of flight, BUY (trade_market), write the bot_trips row,
 //      launch the flight (a scheduled_actions row + the ship's plan, the same as queue_travel).
 // Arrival (docking) is done by the existing resolver (pg_cron, every minute).
+// 2026-11-02 (092) BALANCING: step 3 no longer asks for the best profit. SQL bot_balance(place, floor, gap) takes the producer good HERE with the highest
+// percent in stock (stock / target_stock), finds the place that consumes it with the LOWEST percent (goods that bots already have in flight to a place count as
+// stock there, so bots do not herd), and lists every other producer good here that the same place also consumes. The bot loads them in that order until the hold
+// is full, never taking a producer below `balance_floor` (0.5) of its target, and flies to that place. One bot_trips row per good, all for the same flight.
+// Nothing to ship from here: the bot hops EMPTY to a random other market place. Settings (game_state 'bots'): balance_floor (default 0.5), balance_gap (default 0.1:
+// the destination must be at least 10 percentage points lower than the source).
 // Turn guard (042): SQL bot_claim_tick will not start a turn while the last one runs (busy mark, released in
 // botTick's finally). Every change to a bot_trips row also says status = 'flying', so a late turn can never
 // overwrite a trip another turn has already closed.
@@ -70,25 +76,28 @@ async function botTurn(db, cfg, t0) {
   if (be) throw be;
   const shipIds = (bots ?? []).map(b => b.active_ship_id).filter(Boolean);
   if (shipIds.length) {
-    const [rs, rt, rl] = await Promise.all([
+    const [rs, rt, rl, rm] = await Promise.all([
       db.from('ships').select('id,character_id,state,location_id,hold_size').in('id', shipIds),
       db.from('bot_trips').select('*').eq('status', 'flying'),
       db.from('locations').select('*').eq('hidden', false),   // 059: bots never see hidden places
+      db.from('markets').select('location_id'),
     ]);
     if (rs.error) throw rs.error;
     if (rt.error) throw rt.error;
     if (rl.error) throw rl.error;
+    if (rm.error) throw rm.error;
     const shipOf = {}; for (const s of rs.data ?? []) shipOf[s.id] = s;
-    const tripOf = {}; for (const t of rt.data ?? []) tripOf[t.character_id] = t;
+    const tripsOf = {}; for (const t of rt.data ?? []) { if (!tripsOf[t.character_id]) tripsOf[t.character_id] = []; tripsOf[t.character_id].push(t); }   // 092: one row per good
     const locById = {}; for (const l of rl.data ?? []) locById[l.id] = l;
+    const marketIds = [...new Set((rm.data ?? []).map((x) => x.location_id))].filter((id) => locById[id]);   // places with a market that bots may see
 
     // Bots with a docked ship; those that can SELL come first.
     const ready = [];
     for (const b of bots ?? []) {
       const ship = shipOf[b.active_ship_id];
-      if (ship && ship.state === 'docked') ready.push({ bot: b, ship, trip: tripOf[b.id] ?? null });
+      if (ship && ship.state === 'docked') ready.push({ bot: b, ship, trips: tripsOf[b.id] ?? [] });
     }
-    ready.sort((a, b) => (b.trip ? 1 : 0) - (a.trip ? 1 : 0));
+    ready.sort((a, b) => (b.trips.length ? 1 : 0) - (a.trips.length ? 1 : 0));
     sum.ready = ready.length;
 
     const memo = {}; // flight plans shared by every bot in this turn
@@ -96,7 +105,7 @@ async function botTurn(db, cfg, t0) {
       if (Date.now() - t0 > 90000) break; // stay well inside the function's time limit
       sum.ran++;
       try {
-        await runBot(db, r.bot, r.ship, r.trip, locById, memo, nowT, g, sum);
+        await runBot(db, r.bot, r.ship, r.trips, locById, memo, nowT, g, sum, cfg, marketIds);
       } catch (e) {
         console.error('bot failed', r.bot.id, e);
         note(e);
@@ -128,12 +137,12 @@ async function cargoOf(db, shipId) {
   return data ?? [];
 }
 
-async function runBot(db, bot, ship, trip, locById, memo, nowT, g, sum) {
+async function runBot(db, bot, ship, trips, locById, memo, nowT, g, sum, cfg, marketIds) {
   const here = locById[ship.location_id];
   if (!here) return;
 
-  // 1. an open trip whose goods are at the sell place: sell and close the trip
-  if (trip) {
+  // 1. open trips (one row per good, all for the same flight): at the sell place sell each good and close its row
+  for (const trip of trips) {
     if (ship.location_id === trip.sell_location) {
       const c = (await cargoOf(db, ship.id)).find(x => x.good_id === trip.good_id);
       if (c && c.quantity > 0) {
@@ -167,47 +176,72 @@ async function runBot(db, bot, ship, trip, locById, memo, nowT, g, sum) {
   if (left.length) left = await cargoOf(db, ship.id);
   if (left.length) { sum.idle++; return; } // cannot sell it here: try again next turn
 
-  // 3. plan, buy, launch
-  const { data: cands, error: cerr } = await db.rpc('bot_candidates', { p_character: bot.id, p_location: here.id });
-  if (cerr) throw cerr;
-  let pick = null, pickTrip = null, pickDest = null, best = 0;
-  for (const c of cands ?? []) {
-    const dest = locById[c.o_dest];
-    if (!dest) continue;
-    const t = tripFor(memo, here, dest, nowT, g);
-    if (!t || !t.ok || !(t.days > 0)) continue;
-    const score = Number(c.o_profit) / t.days; // profit per game day of flight
-    if (score > best) { best = score; pick = c; pickTrip = t; pickDest = dest; }
+  // 3. BALANCE (092): the producer good here with the highest percent in stock goes to the place with the lowest percent
+  const floor = Number(cfg.balance_floor ?? 0.5), gap = Number(cfg.balance_gap ?? 0.1);
+  const { data: plan, error: perr } = await db.rpc('bot_balance', { p_location: here.id, p_floor: floor, p_gap: gap });
+  if (perr) throw perr;
+  const list = plan ?? [];
+  const dest = list.length ? locById[list[0].o_dest] : null;
+  const tp = dest ? tripFor(memo, here, dest, nowT, g) : null;
+  if (!dest || !tp || !tp.ok || !(tp.days > 0)) {
+    // nothing to ship from here (or no flight to that place): hop EMPTY to a random other market place
+    const others = (marketIds ?? []).filter((id) => id !== here.id);
+    if (!others.length) { sum.idle++; return; }
+    const w = locById[others[Math.floor(Math.random() * others.length)]];
+    const wt = w ? tripFor(memo, here, w, nowT, g) : null;
+    if (!wt || !wt.ok || !(wt.days > 0)) { sum.idle++; return; }
+    await launch(db, bot, ship, here, w, wt, nowT, g, []);
+    sum.hopped = (sum.hopped || 0) + 1;
+    return;
   }
-  if (!pick) { sum.idle++; return; }
 
-  const buy = await trade(db, bot.id, here.id, 'buy', pick.o_good, Number(pick.o_qty));
-  if (!buy || !buy.ok) { sum.idle++; note0(sum, 'buy ' + pick.o_good + ': ' + (buy && buy.error)); return; }
-  sum.bought++;
+  // load the goods in order (highest percent first) while the hold and the credits allow; the floor limits each good
+  const bought = [];
+  for (const c of list) {
+    const { data: q, error: qe } = await db.rpc('market_quote', { p_character: bot.id, p_location: here.id, p_kind: 'buy', p_good: c.o_good, p_quantity: null, p_stack: 'cargo' });
+    if (qe) throw qe;
+    const maxq = Math.floor(Number(q && q.max_quantity) || 0);
+    if (maxq < 1) break;                                           // the hold (or the credits) are full
+    const take = Math.min(maxq, Math.floor(Number(c.o_avail)));
+    if (take < 1) continue;
+    const buy = await trade(db, bot.id, here.id, 'buy', c.o_good, take);
+    if (!buy || !buy.ok) { note0(sum, 'buy ' + c.o_good + ': ' + (buy && buy.error)); continue; }
+    sum.bought++;
+    bought.push({ c, buy, qty: Number(buy.quantity ?? take) });
+  }
+  if (!bought.length) { sum.idle++; return; }
 
-  const r = pickTrip.r;
-  const { data: row, error: te } = await db.from('bot_trips').insert({
-    character_id: bot.id, ship_id: ship.id, good_id: pick.o_good, buy_location: here.id, sell_location: pickDest.id,
-    quantity: Number(buy.quantity ?? pick.o_qty), cost: Number(buy.total), started_t: nowT, arrive_t: r.arriveT, status: 'flying',
-    note: { expected_revenue: Number(pick.o_revenue), expected_profit: Number(pick.o_profit), g },
-  }).select('id').single();
-  if (te) throw te; // goods stay in the hold; the next turn sells them here
+  const r = tp.r, ids = [];
+  for (const b of bought) {
+    const { data: row, error: te } = await db.from('bot_trips').insert({
+      character_id: bot.id, ship_id: ship.id, good_id: b.c.o_good, buy_location: here.id, sell_location: dest.id,
+      quantity: b.qty, cost: Number(b.buy.total), started_t: nowT, arrive_t: r.arriveT, status: 'flying',
+      note: { balance: true, src_pct: Number(b.c.o_pct), dest_pct: Number(b.c.o_dest_pct), g },
+    }).select('id').single();
+    if (te) throw te; // goods stay in the hold; the next turn sells them here
+    ids.push(row.id);
+  }
+  await launch(db, bot, ship, here, dest, tp, nowT, g, ids);
+}
 
+// Start the flight: a scheduled action (the existing resolver docks the ship) and the ship's plan. tripIds = the bot_trips rows to mark failed if the launch fails.
+async function launch(db, bot, ship, here, dest, tp, nowT, g, tripIds) {
+  const r = tp.r;
+  const failTrips = async () => {
+    if (tripIds.length) await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { problem: 'launch_failed' } }).in('id', tripIds).eq('status', 'flying');
+  };
   const { data: action, error: ae } = await db.from('scheduled_actions').insert({
-    character_id: bot.id, ship_id: ship.id, action_type: pickTrip.hop ? 'hop' : 'travel',
-    payload: { from: here.id, to: pickDest.anchor_body, to_location: pickDest.id, departT: nowT, arriveT: r.arriveT, g, distance_au: r.distanceAU, pulse: null, xp_paid: true, bot: true },
+    character_id: bot.id, ship_id: ship.id, action_type: tp.hop ? 'hop' : 'travel',
+    payload: { from: here.id, to: dest.anchor_body, to_location: dest.id, departT: nowT, arriveT: r.arriveT, g, distance_au: r.distanceAU, pulse: null, xp_paid: true, bot: true },
     resolve_at: new Date(realMsAt(r.arriveT)).toISOString(),
   }).select('id').single();
-  if (ae) {
-    await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { problem: 'launch_failed' } }).eq('id', row.id).eq('status', 'flying');
-    throw ae;
-  }
+  if (ae) { await failTrips(); throw ae; }
   const { error: se } = await db.from('ships')
-    .update({ state: pickTrip.hop ? 'hopping' : 'traveling', plan: r.plan, location_id: null })
+    .update({ state: tp.hop ? 'hopping' : 'traveling', plan: r.plan, location_id: null })
     .eq('id', ship.id).eq('state', 'docked');
   if (se) {
     await db.from('scheduled_actions').update({ status: 'failed' }).eq('id', action.id);
-    await db.from('bot_trips').update({ status: 'failed', finished_t: nowT, note: { problem: 'launch_failed' } }).eq('id', row.id).eq('status', 'flying');
+    await failTrips();
     throw se;
   }
 }
