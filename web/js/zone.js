@@ -540,7 +540,7 @@ export async function zoneShow() {                        // 'Return to the zone
 export async function zoneCheck() {                       // fly.js asks now and then while docked at a zone place: are we already inside?
   if (view || busy || Date.now() - lastCheck < 20000) return;
   lastCheck = Date.now(); busy = true;
-  try { const v = await call('combat_zone', {}); if (v && v.in_zone) { away = false; apply(v); } else outInfo = v; } catch (e) { /* the popup stays as it is */ }
+  try { const v = await call('combat_zone', {}); if (v && v.in_zone) { away = false; apply(v); } else { outInfo = v; if (v && v.released && S.refresh) S.refresh(); } } catch (e) { /* the popup stays as it is */ }
   finally { busy = false; infoChanged(); }
 }
 export function resetZone() {
