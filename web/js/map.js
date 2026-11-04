@@ -83,7 +83,24 @@ export function createMap(cv, hooks) {
       ctx.beginPath(); ctx.arc(X(0), Y(0), r, 0, 7); ctx.stroke();
     });
     hits = []; const selB = hooks.selectedBody();
-    ctx.font = 'bold 24px system-ui,sans-serif'; ctx.textBaseline = 'middle';   /* 2026-11-02: planet and place names: twice as big, bold */
+    /* OTHER PILOTS (091): small blue ships, drawn FIRST so the planets and places lie on top of them; their names are grey. Ones that fall on the same spot on the
+       screen (a crowd docked at one place) are ONE marker with a count. A docked marker sits a little beside its place, so the place can still be touched.
+       A red ring = in a fight. */
+    ctx.font = '12px system-ui,sans-serif'; ctx.textBaseline = 'middle';
+    const crowd = new Map();
+    (hooks.others ? hooks.others() : []).forEach(o => {
+      const px = X(o.x), py = Y(o.y);
+      if (px < -20 || py < -20 || px > w + 20 || py > h + 20) return;
+      const k = Math.round(px / 14) + ':' + Math.round(py / 14) + (o.docked ? 'd' : 'f');
+      let g = crowd.get(k); if (!g) { g = { x: px + (o.docked ? 11 : 0), y: py + (o.docked ? 9 : 0), list: [] }; crowd.set(k, g); }
+      g.list.push(o);
+    });
+    crowd.forEach(g => {
+      ctx.fillStyle = '#4fb3ff'; ctx.beginPath(); ctx.arc(g.x, g.y, 2, 0, 7); ctx.fill();                       /* pilot dots half as big (2026-11-02) */
+      if (g.list.some(o => o.fight)) { ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(g.x, g.y, 4, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
+      ctx.fillStyle = '#6f7b8c'; ctx.fillText(g.list.length > 1 ? String(g.list.length) : g.list[0].name, g.x + 6, g.y + 3);   /* grey names */
+    });
+    ctx.font = 'bold 18px system-ui,sans-serif';                                  /* planet names: between the old size (12) and the 24 we tried; bold */
     BODIES.forEach(b => {
       const p = b.a ? bodyPos(b, gd) : [0, 0], x = X(p[0]), y = Y(p[1]);
       if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
@@ -96,6 +113,7 @@ export function createMap(cv, hooks) {
     /* places that sit a little away from their planet (moons, stations): drawn only when zoomed in far enough to tell apart.
        Display only: a place is its planet's position plus its fixed offset at its fixed angle (the same frame hops are flown in). */
     const selP = hooks.selectedPlace ? hooks.selectedPlace() : null;
+    ctx.font = 'bold 24px system-ui,sans-serif';                                  /* place names (moons, stations): twice the old size, bold */
     (hooks.places ? hooks.places() : []).forEach(q => {
       if (q.off * view.s < 10) return;
       const bp = bodyPos(BODIES[q.body], gd), x = X(bp[0] + q.off * Math.cos(q.ang || 0)), y = Y(bp[1] + q.off * Math.sin(q.ang || 0));
@@ -130,22 +148,7 @@ export function createMap(cv, hooks) {
       }
     }
     ctx.font = '12px system-ui,sans-serif';                                          /* the rest of the map text stays small */
-    /* OTHER PILOTS (091): small blue ships; ones that fall on the same spot on the screen (a crowd docked at one place) are ONE marker with a count.
-       A docked marker sits a little beside its place, so the place can still be touched. A red ring = in a fight. */
-    const crowd = new Map();
-    (hooks.others ? hooks.others() : []).forEach(o => {
-      const px = X(o.x), py = Y(o.y);
-      if (px < -20 || py < -20 || px > w + 20 || py > h + 20) return;
-      const k = Math.round(px / 14) + ':' + Math.round(py / 14) + (o.docked ? 'd' : 'f');
-      let g = crowd.get(k); if (!g) { g = { x: px + (o.docked ? 11 : 0), y: py + (o.docked ? 9 : 0), list: [] }; crowd.set(k, g); }
-      g.list.push(o);
-    });
-    crowd.forEach(g => {
-      ctx.fillStyle = '#4fb3ff'; ctx.beginPath(); ctx.arc(g.x, g.y, 2, 0, 7); ctx.fill();                       /* pilot dots half as big (2026-11-02) */
-      if (g.list.some(o => o.fight)) { ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(g.x, g.y, 4, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
-      ctx.fillStyle = '#9fd4ff'; ctx.fillText(g.list.length > 1 ? String(g.list.length) : g.list[0].name, g.x + 6, g.y + 3);
-      hits.push({ x: g.x, y: g.y, pilots: g.list });
-    });
+    crowd.forEach(g => hits.push({ x: g.x, y: g.y, pilots: g.list }));               /* pilots are tapped after the planets and places: on a tie they lose */
     if (sp) {
       const x = X(sp.x), y = Y(sp.y);
       hits.push({ x, y, ship: true });                          /* the ship can be tapped (hooks.pickShip) */
