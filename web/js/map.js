@@ -83,11 +83,11 @@ export function createMap(cv, hooks) {
       ctx.beginPath(); ctx.arc(X(0), Y(0), r, 0, 7); ctx.stroke();
     });
     hits = []; const selB = hooks.selectedBody();
-    ctx.font = '12px system-ui,sans-serif'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 24px system-ui,sans-serif'; ctx.textBaseline = 'middle';   /* 2026-11-02: planet and place names: twice as big, bold */
     BODIES.forEach(b => {
       const p = b.a ? bodyPos(b, gd) : [0, 0], x = X(p[0]), y = Y(p[1]);
       if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
-      const rad = Math.max(2.5, b.r * 0.7);
+      const rad = Math.max(5, b.r * 1.4);                                          /* 2026-11-02: planet dots twice as big */
       ctx.fillStyle = b.c; ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
       if (b.a) hits.push({ x, y, name: b.n });
       if (b.n === selB) { ctx.strokeStyle = '#e8b64a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, rad + 6, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
@@ -129,6 +129,7 @@ export function createMap(cv, hooks) {
         ctx.fillStyle = '#ffd23d'; ctx.beginPath(); ctx.arc(X(d.x), Y(d.y), 4, 0, 7); ctx.fill();
       }
     }
+    ctx.font = '12px system-ui,sans-serif';                                          /* the rest of the map text stays small */
     /* OTHER PILOTS (091): small blue ships; ones that fall on the same spot on the screen (a crowd docked at one place) are ONE marker with a count.
        A docked marker sits a little beside its place, so the place can still be touched. A red ring = in a fight. */
     const crowd = new Map();
@@ -140,9 +141,9 @@ export function createMap(cv, hooks) {
       g.list.push(o);
     });
     crowd.forEach(g => {
-      ctx.fillStyle = '#4fb3ff'; ctx.beginPath(); ctx.arc(g.x, g.y, 4, 0, 7); ctx.fill();
-      if (g.list.some(o => o.fight)) { ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(g.x, g.y, 7, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
-      ctx.fillStyle = '#9fd4ff'; ctx.fillText(g.list.length > 1 ? String(g.list.length) : g.list[0].name, g.x + 8, g.y + 3);
+      ctx.fillStyle = '#4fb3ff'; ctx.beginPath(); ctx.arc(g.x, g.y, 2, 0, 7); ctx.fill();                       /* pilot dots half as big (2026-11-02) */
+      if (g.list.some(o => o.fight)) { ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(g.x, g.y, 4, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
+      ctx.fillStyle = '#9fd4ff'; ctx.fillText(g.list.length > 1 ? String(g.list.length) : g.list[0].name, g.x + 6, g.y + 3);
       hits.push({ x: g.x, y: g.y, pilots: g.list });
     });
     if (sp) {
