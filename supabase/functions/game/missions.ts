@@ -41,7 +41,8 @@ export async function missionsView(db, user) {
   if (!ch) return json({ error: 'no_character' }, 400);
   // 058: post the pilot's private tutorial freight job when its turn has come (does nothing otherwise; a failure never blocks the list)
   try { await db.rpc('tutorial_freight_post', { p_character: ch.id }); } catch (e) { /* ignore */ }
-  // 086: a repeatable mission whose wait is over is offered again (best effort; a failure never blocks the list)
+  // 090 + 086: a new wave moves its place and hides it at the end of the window; a repeatable mission whose wait is over is offered again (best effort)
+  try { await db.rpc('quest_wave_tick'); } catch (e) { /* ignore */ }
   try { await db.rpc('quest_repeat', { p_character: ch.id }); } catch (e) { /* ignore */ }
   const { data, error } = await db.rpc('quest_list', { p_character: ch.id });
   if (error) throw error;
@@ -64,6 +65,20 @@ export async function missionsView(db, user) {
       }
     }
   } catch (e) { /* the counters are only a display: the list never fails because of them */ }
+  // 090: repeatable and wave missions: the page shows their history, and for a wave the clock (open now, or when the next wave starts)
+  try {
+    const { data: rq } = await db.from('quests').select('id,wave_period_s').or('repeat_after_s.not.is.null,wave_period_s.not.is.null');
+    const rinfo = new Map();
+    for (const x of rq ?? []) {
+      let wave = null;
+      if (x.wave_period_s != null) {
+        const w = await waveOf(db, x.id);
+        if (w) wave = { open: !!w.is_open, ends_at: w.open_until, next_at: w.next_start };
+      }
+      rinfo.set(x.id, wave);
+    }
+    for (const q of data.quests ?? []) if (rinfo.has(q.id)) { q.repeats = true; q.wave = rinfo.get(q.id); }
+  } catch (e) { console.error('wave info failed', e); }
   return json({ ok: true, chains: data.chains, quests: data.quests, ready: data.ready, new: data.new });
 }
 
@@ -81,20 +96,40 @@ export async function missionStep(db, user, body) {
 }
 
 // The player taps Accept on an offered mission. 409 not_offered when it is not waiting for Accept.
+// 090: 1450000 ms -> '24:10', 3725000 ms -> '1:02:05'
+function clockText(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(r).padStart(2, '0');
+}
+async function waveOf(db, quest) {                                // the wave clock of a mission (null = not a wave mission)
+  const { data: qw } = await db.from('quests').select('wave_period_s').eq('id', quest).maybeSingle();
+  if (!qw || qw.wave_period_s == null) return null;
+  const { data: wi, error } = await db.rpc('quest_wave_info', { p_quest: quest });
+  if (error) throw error;
+  return Array.isArray(wi) ? (wi[0] || null) : wi;
+}
+
 export async function missionAccept(db, user, body) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
   if (NEEDS_WEAPON.includes(String(body.quest ?? '')) && !(await hasWeaponFitted(db, ch.id))) {
     return json({ error: 'This mission needs a weapon. Fit one in a weapon slot on the Rigging screen, then come back.' }, 409);   // the page's red bar shows the 'error' text, so the sentence goes there
   }
+  // 090: a wave mission can only be accepted while its wave is open; the timer is then the end of the wave
+  const wave = await waveOf(db, String(body.quest ?? ''));
+  if (wave && !wave.is_open) return json({ error: 'Not available. Next wave in ' + clockText(Date.parse(wave.next_start) - Date.now()) }, 409);
   const { data, error } = await db.rpc('quest_accept', { p_character: ch.id, p_quest: String(body.quest ?? '') });
   if (error) throw error;
   if (!data.ok) return json({ error: data.error }, 409);
+  if (wave) {
+    const { error: due } = await db.from('character_quests').update({ due_at: wave.open_until }).eq('character_id', ch.id).eq('quest_id', String(body.quest ?? '')).eq('status', 'active');
+    if (due) console.error('wave end not saved as the timer', due);
+  }
   await applyEffects(db, ch.id, String(body.quest ?? ''), 'accept');
   // 086: some missions move their place to a new random angle at every accept (quests.randomize_place), so each run looks like a different ship
   try {
-    const { data: qd } = await db.from('quests').select('randomize_place').eq('id', String(body.quest ?? '')).maybeSingle();
-    if (qd && qd.randomize_place) {
+    const { data: qd } = await db.from('quests').select('randomize_place,wave_period_s').eq('id', String(body.quest ?? '')).maybeSingle();
+    if (qd && qd.randomize_place && qd.wave_period_s == null) {                  // 090: a wave mission moves its place when the wave starts, not at every accept
       const angle = Math.round(Math.random() * 3600) / 10;
       const { error: le } = await db.from('locations').update({ angle_deg: angle }).eq('id', qd.randomize_place);
       if (le) console.error('randomize_place failed', le);
