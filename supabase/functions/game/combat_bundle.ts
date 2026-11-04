@@ -1,6 +1,6 @@
 // @ts-nocheck
 // AUTO-BUNDLE of shared/combat.js: do not edit here. Edit shared/combat.js, then rebuild this file (same text, this header on top) and redeploy.
-// Rebuilt 2026-11-02: + FOLLOW has its own subject (order.follow_id); a friendly ship is never a weapons target. Before (2026-11-01): ai 'raider'; (2026-10-31): the DRIFT order, one additive stat rule, thrust heat from the hull's own power, power_pct, no thrust cap.
+// Rebuilt 2026-11-02 (2): + when a pilot's endurance runs out the END switch goes to 'free' (OFF). Before (2026-11-02): FOLLOW has its own subject (order.follow_id), a friendly ship is never a weapons target; (2026-11-01): ai 'raider'; (2026-10-31): the DRIFT order, one additive stat rule, thrust heat from the hull's own power, power_pct, no thrust cap.
 //
 //
 //
@@ -504,7 +504,7 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
     s.vx = st0.vx + ax * dtG;
     s.vy = st0.vy + ay * dtG;
     s.endurance = tb.bar;
-    if (tb.emptied) s.drained = true;
+    if (tb.emptied) { s.drained = true; if (s.ship_id && s.stance !== 'free') s.stance = 'free'; }   // 2026-11-02: the END chip of a pilot flips to OFF when the endurance runs out
     else if (s.drained && s.endurance >= cfg.recover_frac * s.base.pilot.endurance_max) s.drained = false;
 
     // heat
