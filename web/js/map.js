@@ -100,7 +100,7 @@ export function createMap(cv, hooks) {
       if (g.list.some(o => o.fight)) { ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(g.x, g.y, 4, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
       ctx.fillStyle = '#6f7b8c'; ctx.fillText(g.list.length > 1 ? String(g.list.length) : g.list[0].name, g.x + 6, g.y + 3);   /* grey names */
     });
-    ctx.font = 'bold 18px system-ui,sans-serif';                                  /* planet names: between the old size (12) and the 24 we tried; bold */
+    ctx.font = 'bold 14px system-ui,sans-serif';                                  /* planet names: 14 px bold (2026-11-05: the game's largest text size is 14 px, titles apart) */
     BODIES.forEach(b => {
       const p = b.a ? bodyPos(b, gd) : [0, 0], x = X(p[0]), y = Y(p[1]);
       if (x < -40 || y < -40 || x > w + 40 || y > h + 40) return;
@@ -113,7 +113,7 @@ export function createMap(cv, hooks) {
     /* places that sit a little away from their planet (moons, stations): drawn only when zoomed in far enough to tell apart.
        Display only: a place is its planet's position plus its fixed offset at its fixed angle (the same frame hops are flown in). */
     const selP = hooks.selectedPlace ? hooks.selectedPlace() : null;
-    ctx.font = '18px system-ui,sans-serif';                                       /* place names (moons, stations): 18 px, not bold */
+    ctx.font = '14px system-ui,sans-serif';                                       /* place names (moons, stations): 14 px, not bold */
     (hooks.places ? hooks.places() : []).forEach(q => {
       if (q.off * view.s < 10) return;
       const bp = bodyPos(BODIES[q.body], gd), x = X(bp[0] + q.off * Math.cos(q.ang || 0)), y = Y(bp[1] + q.off * Math.sin(q.ang || 0));
@@ -121,7 +121,7 @@ export function createMap(cv, hooks) {
       ctx.fillStyle = '#aab4cf'; ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
       hits.push({ x, y, name: q.name, place: q.id });
       if (q.id === selP) { ctx.strokeStyle = '#e8b64a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 9, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
-      ctx.font = (q.kind === 'moon' ? 'bold ' : '') + '18px system-ui,sans-serif';           /* planets and moons: bold; zones and the rest: not bold (all 18 px) */
+      ctx.font = (q.kind === 'moon' ? 'bold ' : '') + '14px system-ui,sans-serif';           /* planets and moons: bold; zones and the rest: not bold (all 14 px; pilot names stay 12 px) */
       ctx.fillStyle = '#9fb0d4'; ctx.fillText(q.name, x + 8, y);
     });
     /* course lines: blue = preview while choosing, green = launched */
