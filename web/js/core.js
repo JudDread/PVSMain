@@ -74,7 +74,29 @@ export const LS = {
   set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
 };
 
-export function say(t, cls) { const m = $('msg'); m.textContent = t || ''; m.className = cls || ''; }
+/* A message: a small box that floats just under the top bar (or at the top of the page when there is no top bar), then fades. Tap it to close it.
+   Longer text stays longer; errors stay half as long again. say('') closes it at once. */
+let msgTimer = 0;
+export function say(t, cls) {
+  const m = $('msg'); clearTimeout(msgTimer);
+  m.textContent = t || ''; m.className = cls || ''; m.hidden = !t;
+  if (!t) return;
+  const tb = $('topbar'); let top = 8;
+  if (tb && !tb.hidden) top = Math.max(8, Math.round(tb.getBoundingClientRect().bottom) + 6);
+  m.style.top = top + 'px';
+  const ms = Math.min(15000, 2500 + String(t).length * 60) * (cls === 'err' ? 1.5 : 1);
+  msgTimer = setTimeout(() => { m.hidden = true; }, ms);
+  m.onclick = () => { clearTimeout(msgTimer); m.hidden = true; };
+}
+/* a short form of a big number for small boxes: 999, 237.5 K, 54.6 M, 1.2 B, 3.0 T (one decimal; 999,960 gives 1.0 M, never 1000.0 K) */
+export function short(n, compact) {   /* compact: no space and no '.0' (1.2K, 2K, 54.6M), for the small bar labels */
+  n = Number(n); if (!Number.isFinite(n)) return '';
+  const a = Math.abs(n), sg = n < 0 ? '-' : '';
+  if (Math.round(a) < 1000) return sg + Math.round(a);
+  const U = ['K', 'M', 'B', 'T']; let v = a / 1000, i = 0;
+  while (Math.round(v * 10) / 10 >= 1000 && i < U.length - 1) { v /= 1000; i++; }
+  return compact ? sg + v.toFixed(1).replace(/\.0$/, '') + U[i] : sg + v.toFixed(1) + ' ' + U[i];
+}
 export const li = t => { const e = document.createElement('li'); e.textContent = t; return e; };
 
 /* functions told the name and the arguments of every server action that succeeded (missions.js uses this to finish steps named like an action) */
@@ -137,22 +159,21 @@ const clock = sec => { sec = Math.max(0, Math.round(sec)); const h = Math.floor(
 function untilFull(i) {
   if (i.v >= i.mx - 0.05) return 'Full';
   if (i.burning) return 'Burning';
-  if (i.rate > 0) return clock((i.mx - i.v) / i.rate * 3600 / S.last.scale) + ' until full';
-  return '--:-- until full';
+  if (i.rate > 0) return 'Full ' + clock((i.mx - i.v) / i.rate * 3600 / S.last.scale);   /* shortened from 'mm:ss until full' to fit the small label */
+  return 'Full --:--';
 }
-const CR = 'Cr ';   // the credits sign shown in front of the credits number
 // The top bars: credits, XP (with level), endurance, and the profile circle. Display only; called from setShipLine every second.
 function setBars() {
   const ch = S.last && S.last.character, p = S.last && S.last.pilot;
-  $('money').textContent = ch ? CR + whole(ch.credits) : '';
+  $('money').textContent = ch ? short(ch.credits) : '';   /* 237.5 K, 54.6 M (tap the box for the exact amount, see main.js) */
   $('pic').textContent = ch && ch.name ? String(ch.name).trim().charAt(0).toUpperCase() : '?';
   if (!p) return;
   const xp = Number(p.xp), start = Number(p.xp_level_start), next = p.xp_next == null ? null : Number(p.xp_next);
   $('lvl').textContent = String(p.level);
-  $('xpnum').textContent = next == null ? 'XP ' + whole(xp) + ' (top)' : 'XP ' + whole(xp) + ' / ' + whole(next);
+  $('xpnum').textContent = next == null ? 'XP ' + short(xp, true) + ' (top)' : 'XP ' + short(xp, true) + '/' + short(next, true);
   $('xpfill').style.width = (next == null ? 100 : Math.max(0, Math.min(100, (xp - start) / (next - start) * 100))) + '%';
   const i = enduranceInfo(); if (!i) return;
-  $('ennum').textContent = S.enTimer ? untilFull(i) : 'END ' + Math.round(i.v) + ' / ' + Math.round(i.mx);   /* tap the endurance bar: the time until full replaces the numbers */
+  $('ennum').textContent = S.enTimer ? untilFull(i) : 'END ' + short(Math.round(i.v), true) + '/' + short(Math.round(i.mx), true);   /* tap the endurance bar: the time until full replaces the numbers */
   $('enfill').style.width = Math.max(0, Math.min(100, i.v / i.mx * 100)) + '%';
 }
 // The ship line (hull, place or thrust). Credits and endurance now live in the bars.
