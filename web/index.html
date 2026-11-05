@@ -7,14 +7,14 @@
 <title>Vacuum State</title>
 <style>
 [hidden]{display:none!important}
-body{font:16px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:12px 12px 92px}
+body{font:14px/1.4 system-ui,sans-serif;background:#0b0f19;color:#e3e9f7;margin:0;padding:6px 12px 76px}
 #cfg,#auth,#splash{max-width:640px}
 #splash{min-height:78vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px 16px;background:linear-gradient(rgba(7,10,18,.35),rgba(7,10,18,.35)),#070a12 url(img/starscape.webp) center/cover no-repeat}
 #spl-icon{width:360px;height:360px;object-fit:contain;margin-bottom:10px}
 .spl-title{font-size:30px;font-weight:700;letter-spacing:.5px}
 .spl-tag{color:#aab4cc;max-width:26em;margin-top:6px}
 .spl-alpha{color:#e8b64a;font-size:13px;margin:10px 0 16px}
-#spl-go{padding:12px 44px;font-size:17px;margin:0}
+#spl-go{padding:12px 44px;font-size:14px;margin:0}
 .spl-links{margin-top:20px;font-size:14px}.spl-links a{color:#8fb8ff;margin:0 10px}
 #agree{width:auto;margin:0 8px 0 0;vertical-align:middle}.chk{display:block;margin:8px 0;font-size:14px;color:#aab4cc}.chk a{color:#8fb8ff}
 h1{font-size:18px;margin:0 0 10px}h2{font-size:15px;margin:0 0 8px;color:#e8b64a}
@@ -25,13 +25,19 @@ button{background:#e8b64a;color:#14100a;border:0;font-weight:600;margin-right:6p
 button.alt{background:#2a3350;color:#e3e9f7}
 .muted{color:#8d98b2}.err{color:#ff7b6b}.ok{color:#6be08f}
 ul{margin:4px 0;padding-left:18px}
-#msg{min-height:1.4em;margin-bottom:8px}
+/* messages (say() in core.js): a small box that floats over the page for a few seconds, then fades; tap it to close it. core.js puts it just under the top bar. */
+#msg{position:fixed;left:12px;right:12px;top:8px;z-index:50;max-width:616px;margin:0 auto;padding:6px 10px;box-sizing:border-box;background:#131a2a;border:1px solid #3a5a78;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.6);line-height:1.4;cursor:pointer}
+#msg.err{border-color:#ff7b6b}#msg.ok{border-color:#2f7a4a}
 button:disabled{opacity:.45}
 /* screens + nav */
-/* tab bar pinned to the bottom of the screen: square boxes with an icon and a small label */
-#nav{position:fixed;left:0;right:0;bottom:0;z-index:20;display:flex;justify-content:center;gap:12px;margin:0;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));background:#0b0f19;border-top:1px solid #222b40}
-#nav button{width:64px;height:64px;padding:4px 0 2px;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:8px;font-size:12px;font-weight:600;line-height:1.1}
-#nav button svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+/* tab bar pinned to the bottom of the screen: 48 px square boxes with an icon and a small label (12 px); more tabs than fit = it scrolls sideways */
+#nav{position:fixed;left:0;right:0;bottom:0;z-index:20;display:flex;justify-content:flex-start;gap:8px;margin:0;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));background:#0b0f19;border-top:1px solid #222b40;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}
+#nav::-webkit-scrollbar{display:none}
+#nav button:first-child{margin-left:auto}#nav button:last-child{margin-right:auto}   /* centred while all tabs fit; when there are more, the auto margins drop to 0 and the bar scrolls sideways */
+#nav button{flex:0 0 48px;width:48px;height:48px;padding:2px 0 1px;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;border-radius:8px;font-size:12px;font-weight:600;line-height:1.1;overflow:hidden}
+#nav button span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}   /* a label too wide for the box ends in ... until that screen is renamed */
+#nav button svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#nav .tabdot{top:3px;right:5px;width:9px;height:9px}
 #nav button.on{background:#e8b64a;color:#14100a}
 /* travel screen: portrait = stacked, landscape = map beside list */
 .travel{display:flex;flex-direction:column;gap:8px}
@@ -86,6 +92,7 @@ button:disabled{opacity:.45}
 .shm .shd{border-top:1px solid #2c3a52;margin:2px 0}
 .shm button{margin:0;min-height:0;padding:4px 8px;font-size:13px;text-align:left}
 .shm button.zgo{padding:8px 10px;font-size:14px;text-align:center}
+.shm>*{flex:none}   /* the menu scrolls: its rows must keep their height (they were squashed flat, the Enter button included) */
 /* trade screen */
 .trade{display:flex;flex-wrap:wrap;gap:10px}
 .tcol{flex:1 1 320px;min-width:0}
@@ -128,7 +135,7 @@ button:disabled{opacity:.45}
 .lpcaret{color:#e3e9f7;font-size:22px}
 .lptag{color:#6be08f;font-size:12px;font-weight:600;white-space:nowrap}
 .lplist{margin:4px 0 0;background:#0f1523;border:1px solid #222b40;border-radius:8px;max-height:min(50vh,360px);overflow-y:auto}
-.lprow{width:100%;margin:0;padding:12px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;font-size:16px;font-weight:600;color:#e3e9f7;background:transparent;border:0;border-bottom:1px solid #3a4566;border-radius:0}
+.lprow{width:100%;margin:0;padding:12px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;font-size:14px;font-weight:600;color:#e3e9f7;background:transparent;border:0;border-bottom:1px solid #3a4566;border-radius:0}
 .lprow:last-child{border-bottom:0}
 .lprow.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}
 .msec{border:1px solid #222b40;border-radius:6px;margin:6px 0;overflow:hidden}
@@ -139,23 +146,24 @@ button:disabled{opacity:.45}
 .pad{padding:8px}
 .pop .poprow button{margin:0;padding:2px 10px;font-size:14px;line-height:1.3}
 /* frame: top bars (thin, like Torn: VS box | XP bar, endurance bar, credits | profile circle) */
-#topbar{margin:0 0 10px}
-.tbrow{display:flex;align-items:center;gap:10px}
-.vs{width:46px;height:46px;padding:0;margin:0;background:#192033;color:#e8b64a;border:2px solid #e8b64a;border-radius:8px;font-weight:800;letter-spacing:1px;flex:none}
-.pic{width:46px;height:46px;padding:0;margin:0;background:#2a3350;color:#e3e9f7;border:2px solid #444f70;border-radius:50%;font-size:20px;flex:none;overflow:hidden}
-.bars{flex:1;min-width:0;display:flex;align-items:center;gap:10px}
+#topbar{margin:0 0 6px}
+.tbrow{display:flex;align-items:center;gap:6px}
+.vs{width:48px;height:48px;padding:0;margin:0;background:#192033;color:#e8b64a;border:2px solid #e8b64a;border-radius:8px;font-weight:800;letter-spacing:1px;flex:none}
+.pic{width:48px;height:48px;padding:0;margin:0;background:#2a3350;color:#e3e9f7;border:2px solid #444f70;border-radius:50%;font-size:20px;flex:none;overflow:hidden}
+/* three items in one row: XP | endurance | credits. Each label is 11 px with the bar under it; the level number sits at the left of the XP bar */
+.bars{flex:1;min-width:0;display:flex;align-items:center;gap:4px}
 .bitem{flex:1 1 0;min-width:0}
-.blabrow{position:relative}
-.lvl{position:absolute;left:0;top:0;font-weight:700;font-size:14px;line-height:1.15;color:#6aa9f0}
-.blab{font-size:14px;line-height:1.15;color:#c6cfe4;text-align:center;white-space:nowrap;overflow:hidden}
-.bar{height:8px;background:#0c1220;border:1px solid #222b40;border-radius:3px;overflow:hidden;margin-top:2px}
+.blab{font-size:11px;line-height:13px;height:13px;color:#c6cfe4;text-align:center;white-space:nowrap;overflow:hidden}
+.brow{display:flex;align-items:center;gap:3px;margin-top:3px}
+.lvl{flex:none;font-size:11px;line-height:1;font-weight:700;color:#6aa9f0}
+.bar{flex:1;min-width:0;height:8px;background:#0c1220;border:1px solid #222b40;border-radius:3px;overflow:hidden}
 .bar .fill{height:100%;width:0}
 .bar.xp .fill{background:#3b82d6}
 .bar.en .fill{background:#d9483b;transition:width .8s linear}
-#enitem{cursor:pointer;padding:4px 0}
-.money{flex:1 1 0;min-width:0;text-align:center;background:#0f2a1a;border:1px solid #2f7a4a;color:#6be08f;border-radius:8px;padding:6px 4px;font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#enitem{cursor:pointer;padding:2px 0}
+.money{flex:none;width:64px;text-align:center;box-sizing:border-box;background:#0f2a1a;border:1px solid #2f7a4a;color:#6be08f;border-radius:8px;padding:6px 2px;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 /* event line under the bars (tap: the list) */
-.evline{display:flex;gap:8px;align-items:center;margin:8px 0 0;padding:6px 8px;background:#0f1523;border:1px solid #222b40;border-radius:6px;cursor:pointer;font-size:14px}
+.evline{display:flex;gap:8px;align-items:center;margin:4px 0 0;padding:6px 8px;background:#0f1523;border:1px solid #222b40;border-radius:6px;cursor:pointer;font-size:14px}
 .evlast{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#c6cfe4}
 .evcaret{color:#8d98b2;flex:none}
 .evlist{margin:4px 0 0;padding:6px 8px 6px 24px;background:#0f1523;border:1px solid #222b40;border-radius:6px;font-size:14px;max-height:240px;overflow-y:auto}
@@ -165,7 +173,7 @@ button:disabled{opacity:.45}
 </head>
 <body>
 <h1 id="title">Vacuum State</h1>
-<div id="msg"></div>
+<div id="msg" hidden></div>
 
 <section id="cfg" hidden>
   <h2>One-time setup</h2>
@@ -196,15 +204,9 @@ button:disabled{opacity:.45}
     <div class="tbrow">
       <button id="vs" class="vs" title="Home" aria-label="Home">VS</button>
       <div class="bars">
-        <div class="bitem">
-          <div class="blabrow"><span id="lvl" class="lvl">1</span><div class="blab" id="xpnum"></div></div>
-          <div class="bar xp"><div id="xpfill" class="fill"></div></div>
-        </div>
-        <div class="bitem" id="enitem" title="Tap: time until full">
-          <div class="blab" id="ennum"></div>
-          <div class="bar en"><div id="enfill" class="fill"></div></div>
-        </div>
-        <div id="money" class="money" title="Credits"></div>
+        <div class="bitem" id="xpitem"><div class="blab" id="xpnum"></div><div class="brow"><span id="lvl" class="lvl">1</span><div class="bar xp"><div id="xpfill" class="fill"></div></div></div></div>
+        <div class="bitem" id="enitem" title="Tap: time until full"><div class="blab" id="ennum"></div><div class="brow"><div class="bar en"><div id="enfill" class="fill"></div></div></div></div>
+        <div id="money" class="money" title="Credits (tap for the exact amount)"></div>
       </div>
       <button id="pic" class="pic" title="Profile" aria-label="Profile">?</button>
     </div>
