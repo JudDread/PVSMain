@@ -1,7 +1,7 @@
 // main.js - the app shell: login, the 15 s refresh, the 1 s clock tick, buttons outside the screens.
 // Loads fly.js, market.js, assets.js, facilities.js and rigs.js (each registers its own screen).
 import { J2000_MS } from 'physics';
-import { S, $, say, li, call, fmt, curGd, nowMs, locName, screens, openScreen, setShipLine, enduranceNow } from 'core';
+import { S, $, say, li, call, fmt, whole, curGd, nowMs, locName, screens, openScreen, setShipLine, enduranceNow } from 'core';
 import { invalidateDeps, resetFly } from 'fly';
 import { resetMarket } from 'market';
 import { resetAssets } from 'assets';
@@ -126,6 +126,7 @@ $('speed').onclick = async () => {
 
 $('vs').onclick = () => { if (S.last && S.last.character) openScreen('home'); };
 $('pic').onclick = () => { if (S.last && S.last.character) openScreen('profile'); };
+$('money').onclick = () => { const ch = S.last && S.last.character; if (ch) say('Credits: ' + whole(ch.credits), 'ok'); };   /* tap the credits box: the exact amount */
 $('enitem').onclick = () => { S.enTimer = !S.enTimer; setShipLine(); };   /* tap the endurance bar: time until full on / off */
 $('evline').onclick = () => { const l = $('evs'); l.hidden = !l.hidden; $('evcaret').textContent = l.hidden ? '+' : '-'; };   /* tap the event line: full list on / off */
 
