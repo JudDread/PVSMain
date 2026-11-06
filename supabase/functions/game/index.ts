@@ -30,7 +30,7 @@ async function combatCall(fn, ...args) {
 const ACTIVE_ACTIONS = new Set(['queue_travel', 'course_change', 'trade_at', 'load', 'unload', 'unload_all', 'freight_post', 'freight_cancel',
   'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'insurance_choose', 'skill_buy', 'mission_accept', 'mission_claim',
   'rig_fit', 'rig_unfit', 'rig_unfit_all', 'rig_buy', 'rig_sell', 'hull_buy', 'hull_sell',
-  'combat_enter', 'combat_order', 'combat_target', 'combat_stance', 'combat_module']);
+  'combat_enter', 'combat_order', 'combat_target', 'combat_stance', 'combat_module', 'combat_batch']);
 // Actions refused while the flown ship is inside a combat zone (it must fly out of the zone first).
 const BLOCKED_IN_COMBAT = new Set(['queue_travel', 'load', 'unload', 'unload_all', 'ship_leave', 'ship_board', 'rig_fit', 'rig_unfit', 'rig_unfit_all']);
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
@@ -370,6 +370,7 @@ Deno.serve(async (req) => {
       case 'combat_target': return await combatCall('combatTarget', db, user, body);
       case 'combat_stance': return await combatCall('combatStance', db, user, body);
       case 'combat_module': return await combatCall('combatModule', db, user, body);
+      case 'combat_batch': return await combatCall('combatBatch', db, user, body);
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
