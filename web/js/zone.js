@@ -24,7 +24,7 @@ const chips = new Map();                       // ship id -> { w, b, dist, bars,
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
 let pops = [];                                 // floating numbers { id, text, color, born }: red damage, blue shield regeneration
 let popNext = 0;                               // the time (ms) the next number may appear: the numbers are queued one after the other
-const POP_GAP = 220, POP_GAP_MIN = 90, POP_SPAN = 4500;   // ms between numbers; the whole queue is kept under ~4.5 s so it never falls behind the 5-second pictures
+const POP_GAP = 450, POP_GAP_MIN = 250, POP_SPAN = 5000;   // ms between numbers (2026-11-06: longer, they ran together); the whole queue is kept to ~5 s so it does not fall behind the 5-second pictures
 const ptrs = new Map(); const rangeOn = new Set();      // ships whose weapon ranges are shown on the map                        // fingers on the map
 
 const REL = { hos: '#ff5a4a', ally: '#4cd37a', neu: '#f2c744' };
@@ -144,7 +144,7 @@ function grouped(list) {                                // ['RAIL','RAIL','LAS']
   const n = new Map(); list.forEach(x => n.set(x, (n.get(x) || 0) + 1));
   return [...n].map(([k, c]) => c > 1 ? k + 'x' + c : k).join(' ') || 'none';
 }
-const ammoLabel = a => a < 0.05 ? 'no ammo' : 'ammo ' + Math.round(a);
+const ammoLabel = a => a < 0.05 ? '0' : String(Math.round(a));      // just the number: the word did not fit in the chip
 const ORDER_NAME = { attack_max: 'Attack: long range', attack_opt: 'Attack: best range', follow: 'Follow', stop: 'Stop', drift: 'Drift', flee: 'Flee', heading: 'Thrust on a heading' };
 
 /* where a ship is drawn NOW: its last picture moved along speed and acceleration, plus the part of the last correction still fading out */
@@ -411,15 +411,18 @@ function closeZone(v) {
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); optMod.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
-    if (v.ship_state === 'drifting') say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
-    else if (v.ended === 'cleared') {
-      if (okText && !failedRun) modal({ kicker: 'VACUUM STATE', title: 'Mission complete', paras: [okText], buttons: [{ label: 'OK', onClick: closeModal }] });   // a scripted zone with a success text (and the run was not failed)
-      else say('Zone cleared. Your ship is docked at the range.', 'ok');
+    const drifting = v.ship_state === 'drifting';
+    if (v.ended === 'cleared') {                                // (checked FIRST: a one-time mission zone sets the ship drifting when the run ends, and that used to hide this popup)
+      if (okText && !failedRun) {                               // a scripted zone with a success text (and the run was not failed)
+        modal({ kicker: 'VACUUM STATE', title: 'Mission complete', paras: [okText], buttons: [{ label: 'OK', onClick: closeModal }] });
+        if (drifting) say('Your ship is drifting: pick a destination on the Fly screen.', 'ok');
+      } else say(drifting ? 'Zone cleared. Your ship is drifting: pick a destination on the Fly screen.' : 'Zone cleared. Your ship is docked at the range.', 'ok');
       if (wasInstanced && killedDrone) afterKill(killedDrone);
     }
     else if (v.ended === 'retreat') modal({ kicker: 'ESC RANGE CONTROL', title: 'Exercise ended', paras: [v.message || "Exercise ended: hull under 25%. There's a lesson here somewhere. Your ship can be repaired at any location with a market."], buttons: [{ label: 'OK', onClick: closeModal }] });
     else if (v.ended === 'timeout') modal({ kicker: 'VACUUM STATE', title: 'Signal lost', paras: [v.message || 'You blacked out.'], buttons: [{ label: 'OK', onClick: closeModal }] });
     else if (v.ended === 'kill') { /* the insurance popup (insurance.js) tells the pilot; it opens with the next refresh below */ }
+    else if (drifting) say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
     else say('The fight is over. Your ship is docked at the range.', 'ok');
     if (S.refresh) S.refresh();
   } else if (was && S.refresh) S.refresh();   // the fight ended while another pilot's poll worked the zone: still look at the pilot's ships again (a lost ship asks for its delivery place)
@@ -772,7 +775,8 @@ function pickShip(id, px, py) {                                 // a tap on a ch
 /* modules at the bottom: tap = on/off, hold = info, hold and slide = new place */
 function loadOrder() { try { return JSON.parse(localStorage.getItem('zone_mods') || '[]'); } catch (e) { return []; } }
 function saveOrder(a) { try { localStorage.setItem('zone_mods', JSON.stringify(a)); } catch (e) { /* private mode: the order is not kept */ } }
-const modOn = m => { const o = optMod.get(m.i); return o ? o.on : m.on; };      // what is shown: the pilot's own tap first, then the server
+const passive = m => !(Number(m.heat) > 0);                 // no heat = nothing to switch: armor plating, power amplifier, cargo expander... are ALWAYS on (the server holds the same rule)
+const modOn = m => { if (passive(m)) return true; const o = optMod.get(m.i); return o ? o.on : m.on; };      // what is shown: the pilot's own tap first, then the server
 function groupMods(mods) {                                  // identical modules (same id) = ONE chip; the order is the pilot's saved order
   const by = new Map();
   mods.forEach(m => { if (!by.has(m.id)) by.set(m.id, []); by.get(m.id).push(m); });
@@ -792,11 +796,13 @@ function renderModChips() {
 }
 /* a tap on a chip: one module switches; a combined chip switches ALL of its modules (all on -> all off, otherwise all on) */
 function tapGroup(g) {
+  if (g.list.every(passive)) { toast('Always on.'); return; }
   const want = !g.list.every(modOn);
   if (want && g.list[0].family === 'missile' && view.me.ammo < 0.05) { toast('No ammo.', true); return; }
   setMods(g.list.filter(m => modOn(m) !== want), want);
 }
 function setMods(list, on) {
+  list = list.filter(m => !passive(m));
   if (!list.length) return;
   list.forEach(m => optMod.set(m.i, { on, t: Date.now() }));
   modSig = ''; renderModChips();                            // shown at once
@@ -851,6 +857,7 @@ function fillCombo() {
   g.list.forEach((m, i) => {
     const on = modOn(m), b = el('button', on ? '' : 'alt', (i + 1) + '. ' + m.name + ': ' + (on ? 'ON' : 'OFF'));
     b.onclick = ev => { ev.stopPropagation(); if (!on && m.family === 'missile' && view.me.ammo < 0.05) { toast('No ammo.', true); return; } setMods([m], !on); };
+    if (passive(m)) b.disabled = true;                      // always on
     rows.push(b);
   });
   R.combo.replaceChildren(...rows);
@@ -1036,7 +1043,8 @@ function drawMap() {
   pops.forEach(p => {
     const age = (now - p.born) / 1500; if (age < 0) return; const q = pos.get(p.id); if (!q) return;
     c.globalAlpha = 1 - age; c.lineWidth = 3; c.strokeStyle = '#000'; c.fillStyle = p.color || '#ff4a3a';
-    c.strokeText(p.text, q.x, q.y - 14 - age * 34); c.fillText(p.text, q.x, q.y - 14 - age * 34);
+    const px = q.x + (p.text[0] === '+' ? 14 : -14);        // damage a little left, regeneration a little right: they do not print over each other
+    c.strokeText(p.text, px, q.y - 14 - age * 34); c.fillText(p.text, px, q.y - 14 - age * 34);
   });
   c.globalAlpha = 1; c.textAlign = 'left';
 }
