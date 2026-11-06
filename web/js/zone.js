@@ -227,7 +227,7 @@ function ui() {
     }
     endWant = view.me.stance === 'free'; endAt = Date.now(); endBusy = true; // true = we asked for ON: the chip shows it AT ONCE
     paintBars(true);
-    send('combat_stance', { stance: endWant ? 'full' : 'free' })
+    queueStep({ op: 'stance', stance: endWant ? 'full' : 'free' })
       .then(ok => { if (!ok) endWant = null; })                             // the order failed: the chip goes back to what the server says
       .finally(() => { endBusy = false; if (view) paintBars(true); });
   };
@@ -302,13 +302,44 @@ async function poll() {
   catch (e) { toast('No answer yet (' + errText(e) + '). Trying again.', true); }
   finally { busy = false; }
 }
-async function send(action, body) {
-  for (let i = 0; busy && i < 150; i++) await new Promise(r => setTimeout(r, 40));          // an update is in flight: wait for it (up to 6 s) instead of dropping the order
-  if (busy) { toast('The server is slow to answer. Please try again.', true); pending = null; if (!R.menu.hidden) buildMenu(); return false; }
-  busy = true; const t0 = performance.now();
-  try { const v = await call(action, body); rtt = Math.round(performance.now() - t0); apply(v); resetPoll(); return true; }
-  catch (e) { toast(errText(e), true); pending = null; if (!R.menu.hidden) buildMenu(); setTimeout(poll, 300); return false; }   // a refused order: look at the real state again
-  finally { busy = false; }
+/* ORDERS: every change (a module switch, END, a target, a movement order) is a STEP. Steps wait in a queue and leave together in ONE request (combat_batch):
+   when the line is free they go at once; while an update or an earlier order is still on its way, whatever piles up meanwhile goes in one request afterwards.
+   queueStep() answers true / false when its request is done. If the server does not know combat_batch yet (a new page with the old server), the steps go one by one. */
+const stepQ = [];
+let flushing = false, batchOk = true;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const OLD_ACTION = { module: 'combat_module', order: 'combat_order', target: 'combat_target', stance: 'combat_stance' };
+function queueStep(step) { return new Promise(resolve => { stepQ.push({ step, resolve }); flushSteps(); }); }
+async function flushSteps() {
+  if (flushing) return; flushing = true;
+  try {
+    await sleep(0);                                           // steps queued by the same tap leave together
+    while (stepQ.length) {
+      for (let i = 0; busy && i < 150; i++) await sleep(40);  // an update is in flight: wait for it (up to 6 s) instead of dropping the order
+      if (busy) { stepQ.splice(0).forEach(q => q.resolve(false)); toast('The server is slow to answer. Please try again.', true); pending = null; if (!R.menu.hidden) buildMenu(); break; }
+      await sendSteps(stepQ.splice(0, 12));
+    }
+  } finally { flushing = false; }
+}
+async function sendSteps(part) {
+  busy = true; const t0 = performance.now(); const steps = part.map(q => q.step);
+  try {
+    let v = null;
+    if (batchOk) {
+      try { v = await call('combat_batch', { steps }); }
+      catch (e) { if (e && e.message === 'unknown_action') batchOk = false; else throw e; }
+    }
+    if (!batchOk) { for (const s of steps) { const { op, ...rest } = s; v = await call(OLD_ACTION[op], rest); } }
+    rtt = Math.round(performance.now() - t0); apply(v); resetPoll();
+    if (v && v.notes && v.notes.length) {                     // some steps were refused: say so, and show what is really switched
+      toast(v.notes[0], true); steps.filter(s => s.op === 'module').forEach(s => optMod.delete(s.index)); modSig = ''; if (view) renderModChips();
+    }
+    part.forEach(q => q.resolve(true));
+  } catch (e) {
+    toast(errText(e), true); pending = null; if (!R.menu.hidden) buildMenu();
+    steps.filter(s => s.op === 'module').forEach(s => optMod.delete(s.index)); modSig = ''; if (view) renderModChips();
+    part.forEach(q => q.resolve(false)); setTimeout(poll, 300);   // a refused order: look at the real state again
+  } finally { busy = false; }
 }
 /* what the pilot just asked for is SHOWN at once (the server's answer confirms or corrects it a moment later) */
 function optOrder(body) {
@@ -330,7 +361,7 @@ function order(kind, targetId, deg) {
     if (h !== '' && kind !== 'follow') { const n = Number(h); if (!Number.isFinite(n) || n < 1) { toast('The distance must be a number of km, 1 or more.', true); pending = null; if (!R.menu.hidden) buildMenu(); return; } body.hold_km = n; }
   }
   optOrder(body); closeMenus();
-  send('combat_order', body);
+  queueStep({ op: 'order', ...body });
 }
 function orderActive(kind, id) {
   if (kind === 'target') return !!view && view.me.target_id === id;            // 'Set as target': the weapons' target only
@@ -718,7 +749,7 @@ function buildMenu() {
     const b = el('button', wait ? 'pend' : (orderActive(k, menuFor) ? '' : 'alt'), wait ? label + ' ...' : label);
     b.onclick = ev => {
       ev.stopPropagation();
-      if (k === 'target') { const tid = menuFor; view.me.target_id = tid; closeMenus(); frame(true); send('combat_target', { target: tid }); }   // shown at once
+      if (k === 'target') { const tid = menuFor; view.me.target_id = tid; closeMenus(); frame(true); queueStep({ op: 'target', target: tid }); }   // shown at once
       else order(k, menuFor === view.me.id ? null : menuFor);
     };
     rows.push(b);
@@ -765,14 +796,11 @@ function tapGroup(g) {
   if (want && g.list[0].family === 'missile' && view.me.ammo < 0.05) { toast('No ammo.', true); return; }
   setMods(g.list.filter(m => modOn(m) !== want), want);
 }
-async function setMods(list, on) {
+function setMods(list, on) {
   if (!list.length) return;
   list.forEach(m => optMod.set(m.i, { on, t: Date.now() }));
   modSig = ''; renderModChips();                            // shown at once
-  for (const m of list) {                                   // the server switches one module per order, so they go one after the other
-    const ok = await send('combat_module', { index: m.i, on });
-    if (!ok) { list.forEach(x => optMod.delete(x.i)); modSig = ''; if (view) renderModChips(); return; }
-  }
+  list.forEach(m => queueStep({ op: 'module', index: m.i, on }));   // all of them leave in ONE request
 }
 function makeGroupChip(g) {
   const m0 = g.list[0], n = g.list.length, on = g.list.filter(modOn).length, b = el('button', 'zsq' + (on === 0 ? ' off' : '') + (on > 0 && on < n ? ' part' : ''));
