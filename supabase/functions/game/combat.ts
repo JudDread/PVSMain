@@ -8,6 +8,8 @@
 //   combat_order   {kind, target?, hold_km?}   attack_max | attack_opt | follow | stop | flee | heading | drift; hold_km = own station-keeping distance
 //   combat_stance  {stance}                    free | economy | full  (the burn switch)
 //   combat_module  {index, on}                 switch one weapon / rig on or off
+//   combat_batch   {steps: [{op, ...}]}        2026-11-06: several of the above in ONE request (op = module | order | target | stance, up to 12). Each step is checked like its own
+//                                              action; the allowed ones are applied together, the refused ones are named in `notes` of the answer (all refused = an error).
 // There is no 'leave' action: a ship leaves by flying beyond the exit radius (then it drifts on the Fly screen).
 // A fight = a zone + an INSTANCE. Instanced zones (the ESC range) give every pilot his own fight (instance = character id);
 // other zones have one shared fight (instance ''). A zone with retreat_hull_frac stops the fight for a pilot whose hull falls below it.
@@ -799,8 +801,9 @@ export async function combatEnter(db, user, body = {}) {
   return json(await buildView(db, ctx, ship.id));
 }
 
-// ---------- the three commands ----------
+// ---------- the commands ----------
 // Each works the fight forward to now FIRST, then changes my row, then answers with the new view.
+// apply(row, ctx) answers { err } (a refusal: nothing changes), or { notes } (some steps of a batch were refused: their messages go to the page).
 async function command(db, user, apply) {
   const b = await begin(db, user); if (b.err) return b.err;
   const { ship, mine } = b;
@@ -813,31 +816,33 @@ async function command(db, user, apply) {
   const res = await apply(row, ctx);
   if (res && res.err) return res.err;
   const v = await buildView(db, ctx, ship.id);
+  if (v && res && res.notes && res.notes.length) v.notes = res.notes;
   return json(v ?? { ok: true, in_zone: false, left: true });
 }
 
-export async function combatOrder(db, user, body) {
+// ---- one step = one change to my row. stepX(body) checks the request itself (null = bad_request) and answers a function (row, ctx) -> { patch } or { err }.
+function stepOrder(body) {
   const kind = String(body.kind ?? '');
-  if (!ORDER_KINDS.includes(kind)) return json({ error: 'bad_request' }, 400);
+  if (!ORDER_KINDS.includes(kind)) return null;
   let hold = null;
   if (body.hold_km !== undefined && body.hold_km !== null && body.hold_km !== '') {
     hold = Number(body.hold_km);
-    if (!Number.isFinite(hold) || hold < 1) return json({ error: 'bad_request' }, 400);
+    if (!Number.isFinite(hold) || hold < 1) return null;
   }
   let dir = null;
   if (kind === 'heading') {                                   // thrust on a heading in degrees (0 = right on the map, 90 = down, as drawn)
     dir = Number(body.dir_deg);
-    if (!Number.isFinite(dir)) return json({ error: 'bad_request' }, 400);
+    if (!Number.isFinite(dir)) return null;
     dir = ((dir % 360) + 360) % 360;
   }
   const target = body.target ? String(body.target) : null;
-  if (target && !UUID_RE.test(target)) return json({ error: 'bad_request' }, 400);
-  return await command(db, user, async (row, ctx) => {
+  if (target && !UUID_RE.test(target)) return null;
+  return async (row, ctx) => {
     const own = kind === 'stop' || kind === 'flee' || kind === 'heading' || kind === 'drift';
     const patch = { order_kind: kind, order_at: new Date().toISOString(), hold_km: own ? null : hold, order_dir: kind === 'heading' ? dir : null, follow_id: null };
     if (hold != null && hold > num(ctx.zone.exit_radius_km)) return { err: refuse('bad_distance', 'That distance is larger than the zone.') };
     if (target && !own) {
-      const { data: t, error } = await db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
+      const { data: t, error } = await ctx.db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
       if (error) throw error;
       if (!t || t.zone_id !== row.zone_id || t.instance !== row.instance || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
       if (kind === 'follow' && t.side !== row.side) return { err: refuse('bad_target', 'You can only follow a friendly ship.') };
@@ -845,48 +850,86 @@ export async function combatOrder(db, user, body) {
       if (kind === 'follow') patch.follow_id = t.id;                 // 2026-11-02: following a friend does not touch the weapons target
       else patch.target_id = t.id;
     }
-    const { error } = await db.from('combat_ships').update(patch).eq('id', row.id);
-    if (error) throw error;
-  });
+    return { patch };
+  };
 }
 
 // 2026-11-02: choose the weapons' target without changing the movement order (a hostile ship of this fight)
-export async function combatTarget(db, user, body) {
+function stepTarget(body) {
   const target = String(body.target ?? '');
-  if (!UUID_RE.test(target)) return json({ error: 'bad_request' }, 400);
-  return await command(db, user, async (row) => {
-    const { data: t, error } = await db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
+  if (!UUID_RE.test(target)) return null;
+  return async (row, ctx) => {
+    const { data: t, error } = await ctx.db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
     if (error) throw error;
     if (!t || t.zone_id !== row.zone_id || t.instance !== row.instance || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
     if (t.side === row.side) return { err: refuse('bad_target', 'You cannot target a friendly ship.') };
-    const { error: ue } = await db.from('combat_ships').update({ target_id: t.id }).eq('id', row.id);
-    if (ue) throw ue;
-  });
+    return { patch: { target_id: t.id } };
+  };
 }
 
-export async function combatStance(db, user, body) {
+function stepStance(body) {
   const stance = String(body.stance ?? '');
-  if (!STANCES.includes(stance)) return json({ error: 'bad_request' }, 400);
-  return await command(db, user, async (row, ctx) => {
+  if (!STANCES.includes(stance)) return null;
+  return async (row, ctx) => {
     if (stance !== 'free' && row.drained) {                      // 2026-11-02: the END switch cannot go ON until the endurance has refilled to the recover share
       return { err: refuse('end_low', "Can't activate until your endurance is above " + Math.round(num(ctx.cfg.recover_frac, 0.25) * 100) + '%.') };
     }
-    const { error } = await db.from('combat_ships').update({ burn_stance: stance }).eq('id', row.id);
-    if (error) throw error;
-  });
+    return { patch: { burn_stance: stance } };
+  };
 }
 
-export async function combatModule(db, user, body) {
+function stepModule(body) {
   const index = Number(body.index);
-  if (!Number.isInteger(index) || index < 0 || typeof body.on !== 'boolean') return json({ error: 'bad_request' }, 400);
-  return await command(db, user, async (row) => {
+  if (!Number.isInteger(index) || index < 0 || typeof body.on !== 'boolean') return null;
+  return async (row) => {
     const on = Array.isArray(row.modules) ? row.modules.slice() : [];
     const n = row.stats && Array.isArray(row.stats.modules) ? row.stats.modules.length : 0;
     if (index >= n) return { err: refuse('bad_module', 'No such module.') };
     if (body.on && row.stats.modules[index].family === 'missile' && num(row.ammo) < 0.01) return { err: refuse('no_ammo', 'No ammo.') };
     while (on.length < n) on.push(1);
     on[index] = body.on ? 1 : 0;
-    const { error } = await db.from('combat_ships').update({ modules: on }).eq('id', row.id);
+    return { patch: { modules: on } };
+  };
+}
+
+// Runs the steps one after the other on a COPY of my row (a later step sees an earlier one), then writes ONE update.
+// partial = false (a single action): a refused step is the answer, as before. partial = true (a batch): the allowed steps are applied, the refused ones are named in `notes`.
+async function runSteps(db, user, steps, partial) {
+  return await command(db, user, async (row, ctx) => {
+    const c2 = { ...ctx, db };
+    const patch = {}, notes = []; let first = null;
+    for (const step of steps) {
+      const r = await step({ ...row, ...patch }, c2);
+      if (r.err) {
+        if (!partial) return { err: r.err };
+        if (!first) first = r.err;
+        try { const j = await r.err.clone().json(); notes.push(j.message || j.error || 'Refused.'); } catch (_e) { notes.push('Refused.'); }
+        continue;
+      }
+      Object.assign(patch, r.patch);
+    }
+    if (!Object.keys(patch).length) return first ? { err: first } : {};
+    const { error } = await db.from('combat_ships').update(patch).eq('id', row.id);
     if (error) throw error;
+    return { notes };
   });
+}
+
+export async function combatOrder(db, user, body) { const s = stepOrder(body); if (!s) return json({ error: 'bad_request' }, 400); return await runSteps(db, user, [s], false); }
+export async function combatTarget(db, user, body) { const s = stepTarget(body); if (!s) return json({ error: 'bad_request' }, 400); return await runSteps(db, user, [s], false); }
+export async function combatStance(db, user, body) { const s = stepStance(body); if (!s) return json({ error: 'bad_request' }, 400); return await runSteps(db, user, [s], false); }
+export async function combatModule(db, user, body) { const s = stepModule(body); if (!s) return json({ error: 'bad_request' }, 400); return await runSteps(db, user, [s], false); }
+
+// 2026-11-06: several changes in ONE request (one work-the-fight-forward, one update, one answer): switch 4 lasers, the END switch, a target and a movement order together.
+export async function combatBatch(db, user, body) {
+  const list = Array.isArray(body.steps) ? body.steps : null;
+  if (!list || !list.length || list.length > 12) return json({ error: 'bad_request' }, 400);
+  const steps = [];
+  for (const s of list) {
+    const op = String((s && s.op) ?? '');
+    const st = op === 'module' ? stepModule(s) : op === 'order' ? stepOrder(s) : op === 'target' ? stepTarget(s) : op === 'stance' ? stepStance(s) : null;
+    if (!st) return json({ error: 'bad_request' }, 400);
+    steps.push(st);
+  }
+  return await runSteps(db, user, steps, true);
 }
