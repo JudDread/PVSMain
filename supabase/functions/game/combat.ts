@@ -39,11 +39,19 @@ async function loadSettings(db) {
 
 // ---------- row <-> fight state ----------
 // A combat_ships row is the snapshot at snap_at; the fight object is what combat.js works with (extra fields ship_id / drone_type ride along).
+// 2026-11-06: a module that makes no heat has nothing to switch (armor plating, power amplifier, cargo expander...): it is ALWAYS on, whatever the stored row says.
+function onOf(r) {
+  const mods = r.stats && Array.isArray(r.stats.modules) ? r.stats.modules : [];
+  const on = Array.isArray(r.modules) ? r.modules.slice() : [];
+  while (on.length < mods.length) on.push(1);
+  mods.forEach((m, i) => { if (!(num(m.heat) > 0)) on[i] = 1; });
+  return on;
+}
 function fromRow(r) {
   const snapMs = Date.parse(r.snap_at);
   const left = r.tripped && r.shutdown_until ? Math.max(0, (Date.parse(r.shutdown_until) - snapMs) / 1000) : 0;
   return {
-    id: r.id, side: r.side, base: r.stats, on: Array.isArray(r.modules) ? r.modules : [],
+    id: r.id, side: r.side, base: r.stats, on: onOf(r),
     x: num(r.x_km), y: num(r.y_km), vx: num(r.vx_kms), vy: num(r.vy_kms),
     shield: num(r.shield), armor: num(r.armor), hull: num(r.hull), heat: num(r.heat),
     tripped: !!r.tripped, shutdown_left: left, ammo: num(r.ammo), endurance: num(r.endurance), drained: !!r.drained,
@@ -641,25 +649,13 @@ export async function combatZone(db, user, body) {
     const v = ctx ? await buildView(db, ctx, ship.id) : null;
     if (v) { await touchSeen(db, ship.id); return json(v); }
     // the ship is gone from the fight (destroyed or flew out while we worked): fall through to the 'outside' answer
-    const { data: again } = await db.from('ships').select('state').eq('id', ship.id).maybeSingle();
-    let ended = null;                                                // the page sends the id it last saw for itself: how did that ship leave?
-    const last = body && body.last && UUID_RE.test(String(body.last)) ? String(body.last) : null;
-    if (last) {
-      const { data: ev } = await db.from('combat_events').select('kind,actor_id,target_id,note').or('actor_id.eq.' + last + ',target_id.eq.' + last).in('kind', ['kill', 'cleared', 'exit', 'retreat']).order('id', { ascending: false }).limit(5);
-      for (const e of ev ?? []) {
-        if (e.kind === 'kill' && e.target_id === last) { ended = 'kill'; break; }
-        if ((e.kind === 'cleared' || e.kind === 'exit' || e.kind === 'retreat') && e.actor_id === last) { ended = e.kind === 'retreat' && e.note === 'timeout' ? 'timeout' : e.kind; break; }
-      }
-    }
-    let message = null;
-    if (ended === 'retreat') {
-      let pct = 25;
-      const { data: zr } = await db.from('combat_zones').select('retreat_hull_frac').eq('location_id', mine.zone_id).maybeSingle();
-      if (zr && zr.retreat_hull_frac != null) pct = Math.round(num(zr.retreat_hull_frac) * 100);
-      message = 'Exercise ended: hull under ' + pct + "%. There's a lesson here somewhere. Your ship can be repaired at any location with a market.";
-    }
-    if (ended === 'timeout') message = "You must have blacked out from the g's. The last thing you remember is the alarms, then nothing. Somehow you are out of the zone, alive, in a ship that is mostly in one piece. You can call it luck, or you can call it grace. Either way, it's worth a thought.";
-    return json({ ok: true, in_zone: false, left: true, ship_state: again ? again.state : null, ended, message });
+    const last = body && body.last && UUID_RE.test(String(body.last)) ? String(body.last) : mine.id;     // the id the page last saw for itself (or the row we just worked)
+    return json({ ok: true, in_zone: false, left: true, ...(await leaveInfo(db, ship.id, last, mine.zone_id)) });
+  }
+  const lastSeen = body && body.last && UUID_RE.test(String(body.last)) ? String(body.last) : null;
+  if (lastSeen) {                                              // the fight ended between two pictures (another request worked the zone): tell the page how, so its closing popup can show
+    const li = await leaveInfo(db, ship.id, lastSeen, null);
+    if (li.ended) return json({ ok: true, in_zone: false, left: true, ...li });
   }
   if (ship.state !== 'docked' || !ship.location_id) return json({ ok: true, in_zone: false, here: false });
   const { data: zone, error } = await db.from('combat_zones').select('*').eq('location_id', ship.location_id).maybeSingle();
@@ -801,6 +797,31 @@ export async function combatEnter(db, user, body = {}) {
   return json(await buildView(db, ctx, ship.id));
 }
 
+// How did my ship leave the fight (cleared / exit / retreat / kill, from the events of the last 20 minutes) and what state is it in now? The page uses it for its closing popup.
+async function leaveInfo(db, shipId, last, zoneId) {
+  const { data: again } = await db.from('ships').select('state').eq('id', shipId).maybeSingle();
+  let ended = null, zid = zoneId || null;
+  if (last && UUID_RE.test(String(last))) {
+    const since = new Date(Date.now() - 20 * 60000).toISOString();
+    const { data: ev } = await db.from('combat_events').select('kind,actor_id,target_id,note,zone_id').or('actor_id.eq.' + last + ',target_id.eq.' + last).in('kind', ['kill', 'cleared', 'exit', 'retreat']).gte('at', since).order('id', { ascending: false }).limit(5);
+    for (const e of ev ?? []) {
+      if (e.kind === 'kill' && e.target_id === last) { ended = 'kill'; break; }
+      if ((e.kind === 'cleared' || e.kind === 'exit' || e.kind === 'retreat') && e.actor_id === last) { ended = e.kind === 'retreat' && e.note === 'timeout' ? 'timeout' : e.kind; zid = zid || e.zone_id; break; }
+    }
+  }
+  let message = null;
+  if (ended === 'retreat') {
+    let pct = 25;
+    if (zid) {
+      const { data: zr } = await db.from('combat_zones').select('retreat_hull_frac').eq('location_id', zid).maybeSingle();
+      if (zr && zr.retreat_hull_frac != null) pct = Math.round(num(zr.retreat_hull_frac) * 100);
+    }
+    message = 'Exercise ended: hull under ' + pct + "%. There's a lesson here somewhere. Your ship can be repaired at any location with a market.";
+  }
+  if (ended === 'timeout') message = "You must have blacked out from the g's. The last thing you remember is the alarms, then nothing. Somehow you are out of the zone, alive, in a ship that is mostly in one piece. You can call it luck, or you can call it grace. Either way, it's worth a thought.";
+  return { ship_state: again ? again.state : null, ended, message };
+}
+
 // ---------- the commands ----------
 // Each works the fight forward to now FIRST, then changes my row, then answers with the new view.
 // apply(row, ctx) answers { err } (a refusal: nothing changes), or { notes } (some steps of a batch were refused: their messages go to the page).
@@ -811,13 +832,13 @@ async function command(db, user, apply) {
   const ctx = await workZone(db, mine.zone_id, mine.instance, Date.now());
   const { data: row, error } = await db.from('combat_ships').select('*').eq('ship_id', ship.id).maybeSingle();
   if (error) throw error;
-  if (!row) return json({ ok: true, in_zone: false, left: true });
+  if (!row) return json({ ok: true, in_zone: false, left: true, ...(await leaveInfo(db, ship.id, mine.id, mine.zone_id)) });   // the fight ended while this order was worked
   await touchSeen(db, ship.id);                                  // 084: an order counts as 'seen' too
   const res = await apply(row, ctx);
   if (res && res.err) return res.err;
   const v = await buildView(db, ctx, ship.id);
   if (v && res && res.notes && res.notes.length) v.notes = res.notes;
-  return json(v ?? { ok: true, in_zone: false, left: true });
+  return json(v ?? { ok: true, in_zone: false, left: true, ...(await leaveInfo(db, ship.id, mine.id, mine.zone_id)) });
 }
 
 // ---- one step = one change to my row. stepX(body) checks the request itself (null = bad_request) and answers a function (row, ctx) -> { patch } or { err }.
@@ -885,6 +906,7 @@ function stepModule(body) {
     const on = Array.isArray(row.modules) ? row.modules.slice() : [];
     const n = row.stats && Array.isArray(row.stats.modules) ? row.stats.modules.length : 0;
     if (index >= n) return { err: refuse('bad_module', 'No such module.') };
+    if (!body.on && !(num(row.stats.modules[index].heat) > 0)) return { err: refuse('always_on', 'This module is always on.') };
     if (body.on && row.stats.modules[index].family === 'missile' && num(row.ammo) < 0.01) return { err: refuse('no_ammo', 'No ammo.') };
     while (on.length < n) on.push(1);
     on[index] = body.on ? 1 : 0;
