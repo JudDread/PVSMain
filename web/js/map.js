@@ -169,10 +169,11 @@ export function createMap(cv, hooks) {
       .filter(v => v <= want).pop() || 0.001;
     const px = nice * view.s;
     ctx.strokeStyle = '#8d98b2'; ctx.fillStyle = '#8d98b2'; ctx.lineWidth = 2; ctx.textBaseline = 'alphabetic';
-    ctx.beginPath(); ctx.moveTo(10, h - 18); ctx.lineTo(10 + px, h - 18); ctx.stroke();
-    ctx.fillText(nice >= 1 ? nice + ' AU' : (nice * 149.598).toPrecision(2) + ' million km', 10, h - 24);
+    const pb = hooks.insetBottom ? hooks.insetBottom() : 0;   /* room kept clear at the bottom (the Launch row sits on the map) */
+    ctx.beginPath(); ctx.moveTo(10, h - pb - 18); ctx.lineTo(10 + px, h - pb - 18); ctx.stroke();
+    ctx.fillText(nice >= 1 ? nice + ' AU' : (nice * 149.598).toPrecision(2) + ' million km', 10, h - pb - 24);
     const spd = hooks.speed ? hooks.speed() : null;               /* ship speed, km/s (null while docked) */
-    if (spd != null) ctx.fillText('Speed ' + Math.round(spd).toLocaleString() + ' km/s', 10, h - 42);
+    if (spd != null) ctx.fillText('Speed ' + Math.round(spd).toLocaleString() + ' km/s', 10, h - pb - 42);
   }
   let lastDraw = 0;   /* redraw fast (10/s) only while a launched course is animating, else every 0.4 s */
   const _draw = draw;
