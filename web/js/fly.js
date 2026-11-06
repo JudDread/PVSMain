@@ -1,36 +1,30 @@
-// fly.js - the Fly screen: vertical thrust slider on the map, destination list, ship position, blue preview course, Launch / Confirm button
-// 076 lasting states: the ship chip (top right of the map) with shield / armor / hull bars under it; touch it for the ship menu; touch the ship on the map
-//   while docked at a zone and the zone box comes back (the same box as on arrival).
-// under the map (left) and the in-flight buttons under the map (right).
-// Step 4a: moving the thrust slider only makes a POSSIBLE course (blue line + new ETAs). Nothing changes until the
-//   confirm button is pressed.
-// Step 4b: the same works IN FLIGHT. While the ship flies or drifts you can pick a new destination (or the place you
-//   left = cancel the trip), change the thrust, or use Hold the bar / Stop / Coast. Each is only a proposal (blue line)
-//   until you press the confirm button. The server plans the real course from the ship's position and speed right now.
-// Any thrust may launch. Above the free thrust (3 g) the flight PULSES: burn half the bar, refill at 3 g until full,
-// burn again, for the whole trip. The rows show the average thrust that gives.
+// fly.js - the Fly screen (redone 2026-11-05 for phones): the map fills the frame and the controls float on it.
+//   Top left: Inner / System / Ship + the mission timers. Top right: the ship chip with shield / armor / hull bars. Bottom: the arrival chip (in flight) above
+//   the Launch / Destinations row. The destination list and the ship menu (with the zone dialog) are sheets that slide up from the bottom of the map.
+// The thrust slider is gone: every flight asks for the ship's top thrust (maxG, from the server). Above the free thrust (3 g) the flight PULSES: burn half the
+//   bar, refill at 3 g until full, burn again, for the whole trip. The rows show the average thrust that gives.
+// Picking a destination is only a proposal (blue line + its time on the Launch button); nothing changes until Launch / Confirm is pressed. The same works IN FLIGHT:
+//   pick a new destination (or the place you left = cancel the trip). The server plans the real course from the ship's position and speed right now.
+// 076 lasting states: the ship chip menu holds the zone dialog (place info + Enter) when the ship is docked at a combat zone; it opens by itself on arrival.
 import { BODIES, bodyPos, stateAt, shipStateAbs, planTravelPulse, stopPlan, segmentEnd } from 'physics';
-import { S, $, say, call, fmt, whole, curGd, addScreen, locName, enduranceNow, nowMs } from 'core';
+import { S, $, say, call, fmt, whole, curGd, addScreen, screenWatchers, locName, enduranceNow, nowMs } from 'core';
 import { createMap } from 'map';
 import { zoneIn, zoneEnter, zoneShow, zoneCheck, zoneDrones, zoneOnInfo, zoneInfoKnown } from 'zone';
 
 const SHOW_FLIGHT_BUTTONS = false;     /* Hold the bar / Stop / Coast: not in the MVP. Set to true to bring the three buttons back. */
-let reveal = false;                    /* true right after a line is tapped: scroll so the Launch button under it is in view */
-let deps = null, depsAt = 0, selected = null, depsLoading = false, depsOpen = false;   /* depsOpen: the destination list is folded until its label is tapped */
+let deps = null, depsAt = 0, selected = null, depsLoading = false, depsOpen = false;   /* depsOpen: the destination sheet is down until the Destinations button is tapped */
 let mode = null;                       /* in flight only: null (a picked destination) | 'hold' | 'stop' | 'coast' */
-let thrustG = 3;                       /* the slider value (game g); the server decides if it is allowed */
-let thrustBox = null, thrustIn = null, thrustTxt = null, thrustArea = null, loadTimer = null;
+let thrustG = 3, maxG = null;          /* thrustG = the thrust every flight asks for = the ship's top thrust (maxG, from the server's answer); 3 only until the first answer */
 let ctlBox = null; const ctlBtn = {};
-/* time left on the CURRENT trip: shown at the right under the map (in #actr), the same number the Launch / Confirm button shows when the current destination is picked.
-   tripEndMs = the real clock time of arrival, worked out from the destination list each time it loads. Once the thrust slider is moved the list shows a
-   PROPOSAL, so tripEndMs is then left alone (thrustTouched) until a course is confirmed or the ship docks. */
+/* time left on the CURRENT trip: the small chip above the Launch button (#actr), the same number the Launch / Confirm button shows when the current destination is picked.
+   tripEndMs = the real clock time of arrival, worked out from the destination list each time it loads. (thrustTouched is always false now that the slider is gone.) */
 let etaEl = null, tripEndMs = null, thrustTouched = false;
 function drawEta() {
   const box = $('actr'); if (!box) return;
   const show = isFlying() && deps && deps.dest && tripEndMs != null;
   if (!etaEl) {
     etaEl = document.createElement('span');
-    etaEl.style.cssText = 'align-self:center;margin-left:auto;text-align:right;font-size:14px;color:#9fd4ff;white-space:nowrap';
+    etaEl.style.cssText = 'font-size:14px;color:#9fd4ff;white-space:nowrap';
     box.appendChild(etaEl);
   }
   if (!SHOW_FLIGHT_BUTTONS) box.hidden = !show;               /* with the three buttons on, drawControls() looks after the box */
@@ -43,57 +37,6 @@ function drawEta() {
 /* the ship, if it is NOT docked (traveling, hopping or drifting) */
 const flyingShip = () => { const s = S.last && (S.last.ships || [])[0]; return s && s.state !== 'docked' ? s : null; };
 const isFlying = () => !!(deps && deps.flying);
-
-/* ---------- thrust slider: vertical, on the right side of the map (made here, put inside the map box) ---------- */
-/* The slider moves along a list of STOPS: every half g from 1 g up, plus the ship's exact top thrust when that falls between
-   two half steps (skills such as Heavy Burn make it e.g. 6.18 g). The range input counts stops (0, 1, 2...), not g. */
-let thrustStops = [1];
-function stopsFor(maxG) {
-  const m = Math.max(1, Number(maxG) || 1), half = Math.max(1, Math.floor(m * 2) / 2), out = [];
-  for (let g = 1; g <= half + 1e-9; g += 0.5) out.push(g);
-  if (m - half > 0.001) out.push(m);
-  return out;
-}
-const stopIndex = g => { let k = 0; thrustStops.forEach((v, i) => { if (v <= g + 1e-9) k = i; }); return k; };   /* the highest stop at or below g */
-function ensureThrust(maxG) {
-  thrustStops = stopsFor(maxG);
-  if (!thrustBox) {
-    thrustBox = document.createElement('div'); thrustBox.className = 'thr';
-    thrustTxt = document.createElement('div'); thrustTxt.className = 'thrl';
-    thrustArea = document.createElement('div'); thrustArea.className = 'thra';
-    thrustIn = document.createElement('input');
-    thrustIn.type = 'range'; thrustIn.min = '0'; thrustIn.step = '1';
-    thrustIn.oninput = () => {
-      thrustG = thrustStops[Number(thrustIn.value)] ?? thrustG;
-      thrustTouched = true;                                   /* the list now shows a proposal, not the real trip */
-      /* in flight, moving the slider with nothing picked proposes the SAME destination at the new thrust */
-      if (isFlying() && !selected && !mode && deps.dest) selected = deps.dest;
-      if (isFlying() && mode && mode !== 'go') mode = null;
-      drawAll();                                              /* possible course only: nothing is sent */
-      clearTimeout(loadTimer);
-      loadTimer = setTimeout(loadDeps, 400);                  /* fresh ETAs and costs once the finger rests */
-    };
-    thrustArea.appendChild(thrustIn);
-    thrustBox.append(thrustTxt, thrustArea);
-    $('map').parentNode.appendChild(thrustBox);
-    window.addEventListener('resize', sizeThrust);
-  }
-  thrustIn.max = String(thrustStops.length - 1);
-  thrustG = thrustStops[stopIndex(thrustG)];                  /* if the top came down, move to the highest stop that still fits */
-  thrustIn.value = String(stopIndex(thrustG));
-}
-/* the slider is a normal range input turned 90 degrees: its length = the height of its area (max at the top) */
-function sizeThrust() {
-  if (!thrustArea) return;
-  const H = thrustArea.clientHeight, W = thrustArea.clientWidth;
-  if (!H || !W) return;
-  thrustIn.style.width = H + 'px'; thrustIn.style.height = W + 'px'; thrustIn.style.top = H + 'px';
-}
-function drawThrust() {
-  if (!thrustBox) return;
-  thrustTxt.textContent = String(+thrustG.toFixed(2)) + ' g';          /* 6 g, 4.5 g, 6.18 g */
-  thrustIn.value = String(stopIndex(thrustG));
-}
 
 /* ---------- in-flight controls: Hold the bar / Stop / Coast (buttons under the map, right side: #actr in index.html) ---------- */
 function ensureControls() {
@@ -112,7 +55,7 @@ function drawControls() {
   ctlBtn.hold.disabled = !deps.dest;                          /* nothing to hold toward while drifting */
   Object.entries(ctlBtn).forEach(([m, b]) => b.className = mode === m ? 'on' : 'alt');
 }
-function drawAll() { drawThrust(); drawControls(); drawDeps(); drawEta(); map.need(); }
+function drawAll() { drawControls(); drawDeps(); drawEta(); map.need(); }
 
 /* ---------- destination list (docked: departures; in flight: course options from where the ship is now) ---------- */
 async function loadDeps() {
@@ -122,7 +65,7 @@ async function loadDeps() {
   const fl = !!flyingShip();
   try {
     deps = await call(fl ? 'course_options' : 'departures', { g: asked }); depsAt = Date.now();
-    ensureThrust(deps.max_g || 3); ensureControls();
+    maxG = Number(deps.max_g) || 3; thrustG = maxG; ensureControls();   /* always the ship's top thrust (a changed top is picked up here; the list is asked for again below) */
     if (!fl) { tripEndMs = null; thrustTouched = false; }
     else if (!thrustTouched && deps.dest) {                   /* the current destination's time, as the Confirm button would show it */
       const cur = (deps.departures || []).find(x => x.id === deps.dest);
@@ -131,7 +74,7 @@ async function loadDeps() {
     drawAll();
   }
   catch (e) {
-    if (e.message === 'bad_thrust' && e.data && e.data.max_g) { ensureThrust(e.data.max_g); }   /* snaps the slider down to the highest allowed stop */
+    if (e.message === 'bad_thrust' && e.data && e.data.max_g) { maxG = Number(e.data.max_g); thrustG = maxG; }   /* the server says what the top is: ask again with that */
     else say('Error: ' + e.message, 'err');
   }
   finally { depsLoading = false; if (thrustG !== asked) loadDeps(); }
@@ -141,16 +84,19 @@ function selectedBody() {
   const d = deps && deps.departures && deps.departures.find(x => x.id === id);
   return d ? d.anchor_body : null;
 }
+/* the Launch / Confirm button: the word, and under it (small) the trip time of the picked destination */
+function setGo(main, sub) {
+  const go = $('go'); go.replaceChildren(document.createTextNode(main));
+  if (sub) { const s = document.createElement('small'); s.textContent = sub; go.appendChild(s); }
+}
 function drawDeps() {
   const box = $('deps'), go = $('go');
   const st = box.scrollTop;                                   /* keep the list where the finger left it */
   box.replaceChildren();
   const live = !!(deps && (deps.docked || deps.flying));
-  if (thrustBox) thrustBox.hidden = !live;
-  sizeThrust();
   if (!live) {
     box.textContent = 'Destinations appear when your ship is docked or in flight.';
-    go.disabled = true; go.textContent = 'Launch'; map.need(); return;
+    go.disabled = true; setGo('Launch'); map.need(); return;
   }
   const fl = isFlying();
   const list = deps.departures || [];
@@ -158,9 +104,8 @@ function drawDeps() {
   const groups = {};
   list.forEach(d => (groups[d.anchor_body] = groups[d.anchor_body] || []).push(d));
   const pick = list.find(d => d.id === selected);
-  const fresh = deps.g === thrustG;                           /* list matches the slider */
-  const label = (fl ? 'Confirm' : 'Launch') + (!pick ? '' : !fresh ? ' ...' : ' ' + fmt(pick.eta_real_minutes * 60));
-  let revealEl = null;
+  const fresh = deps.g === thrustG;                           /* the list was asked for at the thrust we use now */
+  const main = fl ? 'Confirm' : 'Launch', sub = !pick ? '' : !fresh ? '...' : fmt(pick.eta_real_minutes * 60);
   Object.entries(groups)
     .sort((x, y) => x[1][0].eta_real_minutes - y[1][0].eta_real_minutes)
     .forEach(([, rows]) => {
@@ -175,22 +120,14 @@ function drawDeps() {
         if (d.pulsed) t += '  |  avg ' + d.g_avg.toFixed(1) + ' g';
         e.textContent = t;
         r.append(n, e);
-        r.onclick = () => { selected = d.id; mode = null; reveal = true; drawAll(); };
+        r.onclick = () => { selected = d.id; mode = null; drawAll(); };
         box.appendChild(r);
-        if (d.id === selected && !mode) {                      /* the selected line gets its own Launch button right under it */
-          const lb = document.createElement('button'); lb.className = 'lbtn';
-          lb.textContent = label; lb.disabled = !fresh;
-          lb.onclick = ev => { ev.stopPropagation(); $('go').click(); };   /* the same button and the same checks as the one under the map */
-          box.appendChild(lb); revealEl = lb;
-        }
       });
     });
   box.scrollTop = st;
-  if (revealEl && reveal) revealEl.scrollIntoView({ block: 'nearest' });
-  reveal = false;
-  if (fl && mode) { go.disabled = false; go.textContent = 'Confirm ' + mode; map.need(); return; }   /* hold / stop / coast */
+  if (fl && mode) { go.disabled = false; setGo('Confirm', mode); map.need(); return; }   /* hold / stop / coast */
   go.disabled = !pick || !fresh;
-  go.textContent = label;
+  setGo(main, sub);
   map.need();
 }
 
@@ -328,6 +265,7 @@ const map = createMap($('map'), {
   others: otherPoints,
   pickPilots: list => say(pilotsText(list), 'muted'),
   speed: shipSpeedKms,
+  insetBottom: () => { const b = document.querySelector('#scr-travel .fbar'); return b ? b.offsetHeight + 12 : 0; },   /* the Launch row (and the arrival chip) cover the map's bottom: the scale bar sits above them */
   preview: previewPlan,
   selectedBody,
   /* places a little away from their planet (offset > 0): the map draws them once zoomed in far enough, and they can be tapped */
@@ -349,14 +287,26 @@ $('zInner').onclick = () => map.preset('inner');
 $('zSys').onclick = () => map.preset('sys');
 $('zShip').onclick = () => map.preset('ship');
 
-/* the list pops up over the map: it is as tall as the map area (map + the button row under it) */
-function sizeDeps() {
-  const mc = document.querySelector('#scr-travel .mapcol');
-  if (mc) $('deps').style.setProperty('--depsh', (mc.offsetHeight + 8) + 'px');
+/* the map fills the frame: its height = the window minus what is above it (the top bar) minus the tab bar. Runs when the screen opens, on every resize and when the top bar changes height. */
+function sizeFrame() {
+  const wrap = document.querySelector('#scr-travel .mapwrap'), nav = $('nav');
+  if (!wrap || $('scr-travel').hidden) return;
+  const top = wrap.getBoundingClientRect().top + window.scrollY;
+  const navH = nav && !nav.hidden ? nav.offsetHeight : 0;
+  wrap.style.height = Math.max(240, Math.floor(window.innerHeight - top - navH)) + 'px';
 }
-function showDeps() { if (depsOpen) sizeDeps(); $('deps').hidden = !depsOpen; $('depscaret').textContent = depsOpen ? '-' : '+'; }
-window.addEventListener('resize', () => { if (depsOpen) sizeDeps(); });
-$('depshead').onclick = () => { depsOpen = !depsOpen; showDeps(); };
+window.addEventListener('resize', sizeFrame);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', sizeFrame);
+if (window.ResizeObserver) new ResizeObserver(sizeFrame).observe($('topbar'));
+screenWatchers.push(name => { document.body.classList.toggle('fly', name === 'travel'); sizeFrame(); });   /* body.fly: slimmer page margins, no scrolling space under the map */
+
+/* the destination list is a sheet that slides up from the bottom of the map (above the Launch row): the Destinations button opens and closes it */
+function showDeps() { $('deps').classList.toggle('open', depsOpen); $('depscaret').textContent = depsOpen ? '-' : '+'; }
+function closeDeps() { if (depsOpen) { depsOpen = false; showDeps(); } }
+document.addEventListener('click', ev => {                    /* a touch anywhere else closes the list (composedPath: a tapped row may already be gone from the page) */
+  if (depsOpen && !ev.composedPath().includes($('deps')) && !ev.composedPath().includes($('depshead'))) closeDeps();
+});
+$('depshead').onclick = () => { depsOpen = !depsOpen; if (depsOpen && chipMenu) chipMenu.hidden = true; showDeps(); };
 /* ---------- the ship chip (top right of the map) with 3 small bars under it, and the SHIP MENU ----------
    The server sends ship.cond = { name (hull), weapons[], rigs[] (names), sh/shm (shield now/max), ar/arm, hu/hum, shr/arr (regeneration per real second,
    0 when it is not regenerating), am/amm (missile ammo), fight, market }. Between answers the page only moves shield and armor along their rate
@@ -422,6 +372,7 @@ function namesList(arr) {                                      /* ['Railgun', 'R
 function shipRows(info) {
   const rows = [mkDiv('shn', info.pilot || 'Pilot')];
   if (info.hull) rows.push(mkDiv('shh', info.hull));
+  if (info.maxG) rows.push(mkDiv('shl', 'Max thrust ' + (+Number(info.maxG).toFixed(2)) + ' g'));
   rows.push(mkDiv('shs', 'Weapons'), ...namesList(info.weapons), mkDiv('shs', 'Rigs'), ...namesList(info.rigs));
   if (info.amm > 0) rows.push(mkDiv('shl', 'Ammo: ' + info.am + ' / ' + info.amm));
   return rows;
@@ -452,14 +403,13 @@ function drawChipMenu() {
   const c = condNow;
   const zl = zonePlace(zoneShip);
   const rows = zl ? zoneRows(zl) : [];
-  rows.push(...shipRows({ pilot: pname, hull: c && c.name, weapons: c && c.weapons, rigs: c && c.rigs, am: c ? c.am : 0, amm: c ? c.amm : 0 }));
+  rows.push(...shipRows({ pilot: pname, hull: c && c.name, maxG, weapons: c && c.weapons, rigs: c && c.rigs, am: c ? c.am : 0, amm: c ? c.amm : 0 }));
   const set = document.createElement('button'); set.className = 'alt'; set.textContent = 'Settings (coming soon)'; set.disabled = true;
   rows.push(set);
-  chipMenu.classList.toggle('wide', !!zl);
   chipMenu.replaceChildren(...rows);
   chipBtn.title = pname;
 }
-function openChipMenu() { if (ensureChip() && !chipBox.hidden) { drawChipMenu(); chipMenu.hidden = false; } }
+function openChipMenu() { if (ensureChip() && !chipBox.hidden) { closeDeps(); drawChipMenu(); chipMenu.hidden = false; } }
 function toggleChipMenu() {
   if (!ensureChip() || chipBox.hidden) return;
   if (chipMenu.hidden) openChipMenu(); else chipMenu.hidden = true;
@@ -528,7 +478,7 @@ function drawTimers() {
 setInterval(drawTimers, 1000);
 
 addScreen('travel', 'Fly', $('scr-travel'), {
-  onShow: () => { map.resize(); map.need(); sizeThrust(); },
+  onShow: () => { sizeFrame(); map.resize(); map.need(); },
   update: ship => {
     drawZone(ship);
     drawChip(ship);
@@ -575,6 +525,6 @@ $('go').onclick = async () => {
 
 /* called by main.js */
 export function invalidateDeps() { deps = null; }                      /* ETAs changed (game speed): fetch them again */
-export function resetFly() { tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; if (thrustIn) { thrustIn.value = String(stopIndex(3)); } if (ctlBox) ctlBox.hidden = true; if (chipBox) { chipBox.hidden = true; chipMenu.hidden = true; } condNow = null; condKey = null; zoneOpenFor = null; zoneShip = null; }   /* log out */
+export function resetFly() { tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; maxG = null; if (ctlBox) ctlBox.hidden = true; if (chipBox) { chipBox.hidden = true; chipMenu.hidden = true; } condNow = null; condKey = null; zoneOpenFor = null; zoneShip = null; }   /* log out */
 
 setInterval(drawEta, 1000);                                     /* the countdown ticks once a second (does nothing unless the ship is flying) */
