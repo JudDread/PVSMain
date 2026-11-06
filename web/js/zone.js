@@ -2,7 +2,8 @@
 // One frame that fills the screen. The MAP fills all of it; everything else sits on top of the map:
 //   top left     = settings (gear)            left edge, low = your shield / armor / hull as thin vertical bars
 //   top right    = the other ships as square chips (nearest at the right edge), 3 small bars under each
-//   right middle = zoom chip, endurance chip, heat chip      bottom right = your modules as square chips
+//   bottom       = a row of heat (lying down), endurance and zoom chips, against the right edge, and under it your modules as square chips (48 px, the row scrolls;
+//                  identical modules are ONE chip with a count: tap = all on / all off, hold = a menu of its modules)
 // Touch the map: one finger moves it, two fingers zoom it, a tap on a ship opens its menu, a DOUBLE tap on empty map thrusts that way.
 // The page only DISPLAYS what the server says and REQUESTS orders. Between answers every ship is moved along its speed AND its estimated
 // acceleration, and each new answer is blended in over a moment, so the motion stays smooth at the screen's full speed.
@@ -17,6 +18,8 @@ let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick =
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null, failShown = false;
 let outInfo = null, lastDrone = null, lastInstanced = false, lastSuccess = null, endWant = null, endAt = 0, endBusy = false, endSt = null, heatSt = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
+let comboFor = null, rtt = null;               // comboFor = the module id whose menu is open; rtt = how long the last answer took (ms)
+const optMod = new Map();                      // module index -> { on, t }: what the pilot just asked for, shown AT ONCE until the server says the same
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
 let pops = [];                                 // floating numbers { id, text, color, born }: red damage, blue shield regeneration
@@ -29,7 +32,7 @@ const FAM = { laser: '#ff5a4a', railgun: '#6bb8ff', plasma: '#c58bff', missile: 
 const ZOOM_NAME = ['Zone', 'Me', 'Target', 'Free'];
 
 const CSS = `
-.zn{position:fixed;inset:0;z-index:40;background:#070a12;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;--c:56px;font-family:system-ui,sans-serif;color:#e3e9f7}
+.zn{position:fixed;inset:0;z-index:40;background:#070a12;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;--c:48px;font-family:system-ui,sans-serif;color:#e3e9f7}
 .zn canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .zn button{margin:0}
 .zset{position:absolute;left:6px;top:calc(6px + env(safe-area-inset-top,0px));width:44px;height:44px;padding:7px;background:#131a2a;border:1px solid #3a4a6a;border-radius:8px;color:#e3e9f7}
@@ -38,32 +41,38 @@ const CSS = `
 .ztop::-webkit-scrollbar{display:none}
 .ztop>.zc:first-child{margin-left:auto}   /* few ships: the row sits against the right edge; a full row starts at the gear and the rest slides in from the right */
 .ztop .zsq{touch-action:pan-x}
-.zbot{position:absolute;left:56px;right:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:row-reverse;gap:6px;align-items:flex-end;pointer-events:none}
-.zside{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:6px;align-items:flex-end;pointer-events:none}
+.zbot{position:absolute;left:6px;right:6px;bottom:calc(3px + env(safe-area-inset-bottom,0px));padding:3px;display:flex;flex-direction:row;gap:6px;align-items:flex-end;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;pointer-events:none}
+.zbot::-webkit-scrollbar{display:none}
+.zbot>.zsq,.zbot>div{flex:0 0 auto}
+.zbot>.zsq:first-child{margin-left:auto}   /* few chips: the row sits against the right edge; more than fit: it starts at the left and scrolls (a slide on a chip scrolls it) */
+.zside{position:absolute;right:6px;bottom:calc(var(--c) + 12px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:row;gap:6px;align-items:flex-end;pointer-events:none}   /* heat, endurance, zoom: one row above the module chips, against the right edge */
 .zc{display:flex;flex-direction:column;gap:2px;width:var(--c);flex:0 0 auto;pointer-events:auto}
 .zsq{position:relative;width:var(--c);height:var(--c);padding:6px 6px 14px;border:2px solid #667;border-radius:8px;background:rgba(19,26,42,.88);color:#e3e9f7;pointer-events:auto;touch-action:none;box-sizing:border-box;overflow:hidden}
-.zsq .zd{position:absolute;left:0;right:0;bottom:1px;font-size:10px;line-height:12px;text-align:center;color:#c8d2ea;text-shadow:0 0 3px #000}
+.zsq .zd{position:absolute;left:0;right:0;bottom:1px;font-size:11px;line-height:12px;text-align:center;color:#c8d2ea;text-shadow:0 0 3px #000;white-space:nowrap;overflow:hidden}
+.zsq .zcnt{position:absolute;top:0;right:3px;font-size:11px;line-height:13px;font-weight:700;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000}   /* x4 = four identical modules in this chip; 2/4 = two of them on */
+.zsq.part{border-style:dashed}
 .zsq.sel{box-shadow:0 0 0 2px #fff}
 .zsq.off{opacity:.45}
 .zsq.drag{box-shadow:0 0 0 2px #e8b64a;z-index:5}
 .zsq.bar{padding:0}
-.zsq.tall{height:calc(var(--c) * 2)}
+.zsq.wide{width:calc(var(--c) * 2 + 6px)}
+.zsq.wide .zf{top:0;bottom:0;left:0;right:auto;height:auto;width:0}   /* the heat chip lies on its side: it fills from the left */
 .zsq .zf{position:absolute;left:0;right:0;bottom:0;height:0;opacity:.8}
 .zsq .zt{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-weight:700;font-size:14px;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000}
-.zsq.tall .zt{top:42%}
+
 @keyframes zflash{0%,100%{background:rgba(255,40,30,.9)}50%{background:rgba(19,26,42,.9)}}
 .zsq.flash{animation:zflash .6s infinite}
 .zsq.wait{opacity:.55;border-style:dashed}
 .zsq:active{transform:scale(.93)}
 .zsq.bar.on{box-shadow:inset 0 0 0 2px #9a7bff,0 0 9px rgba(154,123,255,.65)}
-.zsb{position:relative;height:11px;background:#1c2438;border-radius:3px;overflow:hidden}
+.zsb{position:relative;height:13px;background:#1c2438;border-radius:3px;overflow:hidden}
 .zsb i{position:absolute;left:0;top:0;bottom:0;width:0}
-.zsb span{position:relative;display:block;font-size:9px;line-height:11px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000}
-.zbars{position:absolute;left:6px;bottom:calc(var(--c) + 16px + env(safe-area-inset-bottom,0px));height:calc((100% - 62px) / 2);display:flex;gap:3px;pointer-events:none}
+.zsb span{position:relative;display:block;font-size:11px;line-height:13px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000}
+.zbars{position:absolute;left:6px;bottom:calc(var(--c) + 12px + env(safe-area-inset-bottom,0px));height:calc((100% - 62px) / 2);display:flex;gap:3px;pointer-events:none}
 .zvb{position:relative;width:18px;background:rgba(28,36,56,.9);border-radius:4px;overflow:hidden}
 .zvb i{position:absolute;left:0;right:0;bottom:0;height:0}
-.zvb b{position:absolute;left:0;right:0;top:2px;font-size:10px;text-align:center;color:#fff;text-shadow:0 0 2px #000}
-.zvb span{position:absolute;left:0;right:0;bottom:3px;top:16px;writing-mode:vertical-rl;transform:rotate(180deg);font-size:10px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000;white-space:nowrap}
+.zvb b{position:absolute;left:0;right:0;top:2px;font-size:11px;text-align:center;color:#fff;text-shadow:0 0 2px #000}
+.zvb span{position:absolute;left:0;right:0;bottom:3px;top:16px;writing-mode:vertical-rl;transform:rotate(180deg);font-size:11px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000;white-space:nowrap}
 .zmenu{position:absolute;z-index:6;background:#131a2a;border:1px solid #3a5a78;border-radius:8px;padding:6px;display:flex;flex-direction:column;gap:5px;min-width:150px;max-width:270px}
 .zmenu button{padding:3px 8px;min-height:0;line-height:1.25;font-size:13px;text-align:left}
 .zmenu button.pend{opacity:.55;background:#2a3350;color:#9aa6c4;pointer-events:none}
@@ -71,9 +80,9 @@ const CSS = `
 .zmenu .zl{font-size:12px;line-height:1.5;color:#d7e0f2;padding:0 2px}
 .zmenu input{width:100%;box-sizing:border-box}
 .zinfo{position:absolute;z-index:7;right:6px;background:#131a2a;border:1px solid #3a5a78;border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5;max-width:250px;pointer-events:none}
-.zstat{position:absolute;left:56px;right:6px;font-size:11px;color:#aab4cc;text-shadow:0 0 3px #000,0 0 3px #000;pointer-events:none;text-align:right}
+.zstat{position:absolute;left:70px;right:6px;font-size:11px;color:#aab4cc;text-shadow:0 0 3px #000,0 0 3px #000;pointer-events:none;text-align:right}
 .zwarn{position:absolute;left:60px;right:60px;text-align:center;color:#ff7b6b;font-weight:700;font-size:14px;text-shadow:0 0 4px #000,0 0 4px #000;pointer-events:none}
-.ztoast{position:absolute;left:60px;right:10px;bottom:calc(var(--c) + 44px);text-align:center;font-size:13px;color:#fff;background:rgba(19,26,42,.92);border:1px solid #3a5a78;border-radius:8px;padding:6px 8px;pointer-events:none;z-index:8}
+.ztoast{position:absolute;left:70px;right:10px;bottom:calc(var(--c) * 2 + 40px);text-align:center;font-size:13px;color:#fff;background:rgba(19,26,42,.92);border:1px solid #3a5a78;border-radius:8px;padding:6px 8px;pointer-events:none;z-index:8}
 .ztoast.err{border-color:#ff7b6b;color:#ffb0a6}
 .zlog{position:absolute;z-index:6;left:56px;right:6px;top:64px;font-size:12px;line-height:1.55;background:rgba(19,26,42,.94);border:1px solid #3a5a78;border-radius:8px;padding:8px}
 `;
@@ -168,8 +177,8 @@ function mkVBar(letter, color) {               // the vertical bars on the left 
   f.style.background = color; l.textContent = letter; w.append(f, l, t);
   return { w, set(cur, max) { f.style.height = (max > 0 ? Math.max(0, Math.min(100, cur / max * 100)) : 0) + '%'; t.textContent = whole(cur); } };
 }
-function mkBarChip(color, tall) {              // a chip that fills like a bar
-  const b = el('button', 'zsq bar' + (tall ? ' tall' : '')), f = el('div', 'zf'), t = el('div', 'zt'), d = el('div', 'zd');
+function mkBarChip(color, wide) {              // a chip that fills like a bar (wide = twice as wide: the heat chip, which fills from the left)
+  const b = el('button', 'zsq bar' + (wide ? ' wide' : '')), f = el('div', 'zf'), t = el('div', 'zt'), d = el('div', 'zd');
   f.style.background = color; b.append(f, t, d);
   return { b, f, t, d };
 }
@@ -194,15 +203,16 @@ function ui() {
   R.side = el('div', 'zside');
   R.zoomB = el('button', 'zsq'); R.zoomD = el('div', 'zd'); R.zoomB.append(R.zoomD);
   R.end = mkBarChip('#9a7bff', false); R.heat = mkBarChip('#4cd37a', true);
-  R.side.append(R.zoomB, R.end.b, R.heat.b);
+  R.side.append(R.heat.b, R.end.b, R.zoomB);                    // left to right: heat, endurance, zoom
   R.stat = el('div', 'zstat'); R.warn = el('div', 'zwarn'); R.warn.hidden = true;
   R.toast = el('div', 'ztoast'); R.toast.hidden = true;
   R.menu = el('div', 'zmenu'); R.menu.hidden = true;
   R.sets = el('div', 'zmenu'); R.sets.hidden = true;
   R.pop = el('div', 'zmenu'); R.pop.hidden = true;
+  R.combo = el('div', 'zmenu'); R.combo.hidden = true;
   R.info = el('div', 'zinfo'); R.info.hidden = true;
   R.log = el('div', 'zlog'); R.log.hidden = true;
-  root.append(R.cv, R.bars, R.top, R.bot, R.side, R.stat, R.warn, R.toast, R.set, R.sets, R.menu, R.pop, R.info, R.log);
+  root.append(R.cv, R.bars, R.top, R.bot, R.side, R.stat, R.warn, R.toast, R.set, R.sets, R.menu, R.pop, R.combo, R.info, R.log);
   document.body.appendChild(root);
   buildSettings();
   setZoomChip();
@@ -221,44 +231,51 @@ function ui() {
       .then(ok => { if (!ok) endWant = null; })                             // the order failed: the chip goes back to what the server says
       .finally(() => { endBusy = false; if (view) paintBars(true); });
   };
-  R.heat.b.onclick = ev => { ev.stopPropagation(); const open = R.pop.hidden; closeMenus(); if (open) { heatOpen = true; fillHeat(); R.pop.hidden = false; placeLeft(R.pop, R.heat.b); } };
+  R.heat.b.onclick = ev => { ev.stopPropagation(); const open = R.pop.hidden; closeMenus(); if (open) { heatOpen = true; fillHeat(); R.pop.hidden = false; placeAbove(R.pop, R.heat.b); } };
   root.addEventListener('pointerdown', ev => {
     const t = ev.target, inside = x => x && x.contains(t);
-    if (inside(R.menu) || inside(R.sets) || inside(R.pop) || inside(R.set) || inside(R.heat.b) || (t.closest && (t.closest('.zc') || t.closest('.ztop')))) return;
+    if (inside(R.menu) || inside(R.sets) || inside(R.pop) || inside(R.combo) || inside(R.set) || inside(R.heat.b) || (t.closest && (t.closest('.zc') || t.closest('.ztop')))) return;
     closeMenus();
   }, true);
   bindMap();
   window.addEventListener('resize', () => { if (root && !root.hidden) { sizeChips(); frame(true); } });
 }
-function closeMenus() { R.menu.hidden = true; R.sets.hidden = true; R.pop.hidden = true; R.log.hidden = true; menuFor = null; pending = null; logOpen = false; heatOpen = false; }
+function closeMenus() { R.menu.hidden = true; R.sets.hidden = true; R.pop.hidden = true; R.combo.hidden = true; R.log.hidden = true; menuFor = null; pending = null; logOpen = false; heatOpen = false; comboFor = null; }
 function placeBelow(menu, anchor) {
   const a = anchor.getBoundingClientRect(), W = root.clientWidth, w = menu.offsetWidth || 160;
-  menu.style.right = 'auto'; menu.style.top = Math.round(a.bottom + 6) + 'px';
+  menu.style.right = 'auto'; menu.style.bottom = 'auto'; menu.style.top = Math.round(a.bottom + 6) + 'px';
   menu.style.left = Math.max(6, Math.min(W - w - 6, Math.round(a.left))) + 'px';
 }
 function placeAt(menu, px, py) {                // below a point on the map (the player's own ship)
   const W = root.clientWidth, w = menu.offsetWidth || 160;
-  menu.style.right = 'auto'; menu.style.top = Math.round(py + 22) + 'px';
+  menu.style.right = 'auto'; menu.style.bottom = 'auto'; menu.style.top = Math.round(py + 22) + 'px';
   menu.style.left = Math.max(6, Math.min(W - w - 6, Math.round(px - w / 2))) + 'px';
+}
+function placeAbove(menu, anchor) {             // above a chip near the bottom (the heat popup, the menu of a combined module chip)
+  const a = anchor.getBoundingClientRect(), W = root.clientWidth, H = root.clientHeight, w = menu.offsetWidth || 160;
+  menu.style.top = 'auto'; menu.style.right = 'auto';
+  menu.style.bottom = Math.round(H - a.top + 8) + 'px';
+  menu.style.left = Math.max(6, Math.min(W - w - 6, Math.round(a.left + a.width / 2 - w / 2))) + 'px';
 }
 function placeLeft(menu, anchor) {              // to the left of a chip on the right edge
   const a = anchor.getBoundingClientRect(), W = root.clientWidth;
-  menu.style.left = 'auto'; menu.style.right = Math.round(W - a.left + 8) + 'px';
+  menu.style.left = 'auto'; menu.style.bottom = 'auto'; menu.style.right = Math.round(W - a.left + 8) + 'px';
   menu.style.top = Math.max(6, Math.round(a.top)) + 'px';
 }
 
 /* the settings menu: only what has no place of its own */
 function buildSettings() {
   const m = R.sets; m.replaceChildren();
+  R.rtt = el('div', 'zh', '');
   const mk = (label, fn, cls) => { const b = el('button', cls || 'alt', label); b.onclick = ev => { ev.stopPropagation(); fn(b); }; return b; };
   R.setRange = mk('', () => { showRanges = !showRanges; syncSettings(); drawMap(); });
   R.hold = document.createElement('input'); R.hold.type = 'number'; R.hold.inputMode = 'numeric'; R.hold.placeholder = 'Distance to keep, km (empty = automatic)';
   m.append(R.setRange,
     el('div', 'zh', 'Distance for the next attack order'), R.hold,
     mk('Event log', () => { closeMenus(); logOpen = true; fillLog(); R.log.hidden = false; }),
-    mk('Hide this screen', () => { closeMenus(); root.hidden = true; away = true; stopTimers(); pollT = setInterval(() => { if (!document.hidden) poll(); }, KEEPALIVE_MS); }));
+    mk('Hide this screen', () => { closeMenus(); root.hidden = true; away = true; stopTimers(); pollT = setInterval(() => { if (!document.hidden) poll(); }, KEEPALIVE_MS); }), R.rtt);
 }
-function syncSettings() { R.setRange.textContent = 'Weapon ranges: ' + (showRanges ? 'ON' : 'OFF'); }
+function syncSettings() { R.setRange.textContent = 'Weapon ranges: ' + (showRanges ? 'ON' : 'OFF'); R.rtt.textContent = 'Last answer: ' + (rtt == null ? '-' : (rtt / 1000).toFixed(1) + ' s'); }
 function fillLog() {
   R.log.replaceChildren(...(view ? view.events.filter(e => e.kind !== 'regen').slice(-8).map(e => el('div', '', evText(e))) : []));
   if (!R.log.childNodes.length) R.log.textContent = 'Nothing has happened yet.';
@@ -273,20 +290,35 @@ function startTimers() {
 function stopTimers() { clearInterval(pollT); cancelAnimationFrame(raf); pollT = 0; raf = 0; }
 
 /* ---------- talking to the server ---------- */
+function resetPoll() {                           // an order's answer is a full picture: the next 5-second update waits 5 s from NOW (no extra requests)
+  if (!pollT) return;
+  clearInterval(pollT);
+  pollT = setInterval(() => { if (!document.hidden) poll(); }, away ? KEEPALIVE_MS : POLL_MS);
+}
 async function poll() {
   if (busy) return;
-  busy = true;
-  try { apply(await call('combat_zone', { last: lastMe })); }
+  busy = true; const t0 = performance.now();
+  try { const v = await call('combat_zone', { last: lastMe }); rtt = Math.round(performance.now() - t0); apply(v); }
   catch (e) { toast('No answer yet (' + errText(e) + '). Trying again.', true); }
   finally { busy = false; }
 }
 async function send(action, body) {
-  for (let i = 0; busy && i < 60; i++) await new Promise(r => setTimeout(r, 100));          // an update is in flight: wait for it (up to 6 s) instead of dropping the order
+  for (let i = 0; busy && i < 150; i++) await new Promise(r => setTimeout(r, 40));          // an update is in flight: wait for it (up to 6 s) instead of dropping the order
   if (busy) { toast('The server is slow to answer. Please try again.', true); pending = null; if (!R.menu.hidden) buildMenu(); return false; }
-  busy = true;
-  try { apply(await call(action, body)); return true; }
-  catch (e) { toast(errText(e), true); pending = null; if (!R.menu.hidden) buildMenu(); return false; }
+  busy = true; const t0 = performance.now();
+  try { const v = await call(action, body); rtt = Math.round(performance.now() - t0); apply(v); resetPoll(); return true; }
+  catch (e) { toast(errText(e), true); pending = null; if (!R.menu.hidden) buildMenu(); setTimeout(poll, 300); return false; }   // a refused order: look at the real state again
   finally { busy = false; }
+}
+/* what the pilot just asked for is SHOWN at once (the server's answer confirms or corrects it a moment later) */
+function optOrder(body) {
+  if (!view) return;
+  const me = view.me, o = { kind: body.kind };
+  if (body.target && (body.kind === 'attack_max' || body.kind === 'attack_opt')) me.target_id = body.target;   // the weapons' target changes only with an attack order
+  if (body.kind === 'follow') o.follow_id = body.target;
+  if (body.kind === 'heading') o.dir_deg = body.dir_deg;
+  if (body.hold_km) o.hold_km = body.hold_km;
+  me.order = o; frame(true);
 }
 function order(kind, targetId, deg) {
   const body = { kind };
@@ -297,6 +329,7 @@ function order(kind, targetId, deg) {
     const h = R.hold.value.trim();
     if (h !== '' && kind !== 'follow') { const n = Number(h); if (!Number.isFinite(n) || n < 1) { toast('The distance must be a number of km, 1 or more.', true); pending = null; if (!R.menu.hidden) buildMenu(); return; } body.hold_km = n; }
   }
+  optOrder(body); closeMenus();
   send('combat_order', body);
 }
 function orderActive(kind, id) {
@@ -312,6 +345,7 @@ function apply(v) {
   if (!v.in_zone) { closeZone(v); return; }
   ui();
   view = v; recv = Date.now(); lastMe = v.me.id;
+  (v.me.modules || []).forEach(m => { const o = optMod.get(m.i); if (o && (m.on === o.on || Date.now() - o.t > 8000)) optMod.delete(m.i); });
   if (v.run_failed && !failShown) {                              // 085: the escort target was lost: the run no longer counts (the fight goes on)
     failShown = true;
     modal({ kicker: 'VACUUM STATE', title: 'Mission failed', paras: [v.fail_text || 'The mission has failed.'], buttons: [{ label: 'OK', onClick: closeModal }] });
@@ -343,7 +377,7 @@ function closeZone(v) {
   lastDrone = null; lastCheck = 0; tourAbort(); tourChecked = false;
   failShown = false;
   view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; popNext = 0; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
-  prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
+  prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); optMod.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
     if (v.ship_state === 'drifting') say('You flew out of the zone. Your ship is drifting: pick a destination on the Fly screen.', 'ok');
@@ -546,7 +580,7 @@ export async function zoneCheck() {                       // fly.js asks now and
 export function resetZone() {
   failShown = false; lastSuccess = null;
   view = null; sel = null; away = false; lastCheck = 0; cam = null; modSig = ''; lastEv = null; lastMe = null; pops = []; popNext = 0; zoomMode = 0;
-  prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); stopTimers(); chips.clear();
+  prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); optMod.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
 }
 
@@ -597,11 +631,7 @@ function fillHeat() {
 }
 
 /* ---------- rendering the chips and bars (after each picture) ---------- */
-function sizeChips() {
-  const n = Math.max(4, view ? (view.me.modules || []).length : 0);   // the size follows the pilot's own chips: the ship row scrolls instead of shrinking
-  const c = Math.max(38, Math.min(58, Math.floor((root.clientWidth - 70) / n) - 6));
-  root.style.setProperty('--c', c + 'px');
-}
+function sizeChips() { /* the chips are 48 px everywhere (--c in the CSS); the bottom row scrolls instead of shrinking them */ }
 /* the endurance chip (tap = all or none: ON = full burn, OFF = free burn only) and the heat chip. Called on every screen frame: the fill moves smoothly,
    the texts (text = true) only ~4 times a second. A tap on the endurance chip shows the wanted state AT ONCE and keeps it until the server says the same. */
 function paintBars(text) {
@@ -612,7 +642,7 @@ function paintBars(text) {
   R.end.f.style.height = pct(ef) + '%'; R.end.f.style.background = eon ? '#9a7bff' : '#667';
   // heat chip: green to 40%, yellow to the first penalty, red above, flashing while shut down
   const hf = m.heat_cap > 0 ? heatNow() / m.heat_cap : 0, hw = m.heat_warn || 0.8, hcol = hf <= 0.4 ? '#4cd37a' : hf <= hw ? '#f2c744' : '#ff5a4a';
-  R.heat.f.style.height = pct(hf) + '%'; R.heat.f.style.background = hcol;
+  R.heat.f.style.width = pct(hf) + '%'; R.heat.f.style.background = hcol;
   if (!text) return;
   R.end.t.textContent = pct(ef) + '%'; R.end.d.textContent = eon ? 'END ON' : 'END OFF';
   R.end.b.style.borderColor = m.drained ? '#ff5a4a' : (eon ? '#9a7bff' : '#667');
@@ -686,7 +716,11 @@ function buildMenu() {
   d.items.forEach(([k, label]) => {
     const wait = pending && pending.kind === k && pending.id === menuFor;
     const b = el('button', wait ? 'pend' : (orderActive(k, menuFor) ? '' : 'alt'), wait ? label + ' ...' : label);
-    b.onclick = ev => { ev.stopPropagation(); pending = { kind: k, id: menuFor }; buildMenu(); if (k === 'target') send('combat_target', { target: menuFor }); else order(k, menuFor === view.me.id ? null : menuFor); };
+    b.onclick = ev => {
+      ev.stopPropagation();
+      if (k === 'target') { const tid = menuFor; view.me.target_id = tid; closeMenus(); frame(true); send('combat_target', { target: tid }); }   // shown at once
+      else order(k, menuFor === view.me.id ? null : menuFor);
+    };
     rows.push(b);
   });
   R.menu.replaceChildren(...rows);
@@ -707,56 +741,103 @@ function pickShip(id, px, py) {                                 // a tap on a ch
 /* modules at the bottom: tap = on/off, hold = info, hold and slide = new place */
 function loadOrder() { try { return JSON.parse(localStorage.getItem('zone_mods') || '[]'); } catch (e) { return []; } }
 function saveOrder(a) { try { localStorage.setItem('zone_mods', JSON.stringify(a)); } catch (e) { /* private mode: the order is not kept */ } }
-function modKeys(mods) { const seen = {}; return mods.map(m => { seen[m.id] = (seen[m.id] || 0) + 1; return m.id + '#' + seen[m.id]; }); }
+const modOn = m => { const o = optMod.get(m.i); return o ? o.on : m.on; };      // what is shown: the pilot's own tap first, then the server
+function groupMods(mods) {                                  // identical modules (same id) = ONE chip; the order is the pilot's saved order
+  const by = new Map();
+  mods.forEach(m => { if (!by.has(m.id)) by.set(m.id, []); by.get(m.id).push(m); });
+  const saved = loadOrder();
+  return [...by.entries()].map(([id, list]) => ({ id, list }))
+    .sort((a, b) => { const A = saved.indexOf(a.id), B = saved.indexOf(b.id); return (A < 0 ? 999 : A) - (B < 0 ? 999 : B); });
+}
 function renderModChips() {
-  const mods = view.me.modules || [], keys = modKeys(mods), saved = loadOrder();
-  const idx = mods.map((m, i) => i).sort((a, b) => { const A = saved.indexOf(keys[a]), B = saved.indexOf(keys[b]); return (A < 0 ? 999 + a : A) - (B < 0 ? 999 + b : B); });
+  const mods = view.me.modules || [], groups = groupMods(mods);
   R.bot.querySelectorAll('.zsq[data-fam="missile"] .zd').forEach(d => { d.textContent = ammoLabel(view.me.ammo); });      // the ammo number follows the fight
-  const sig = idx.map(i => keys[i] + (mods[i].on ? '1' : '0')).join(',');
-  if (sig === modSig) return;
+  const sig = groups.map(g => g.id + ':' + g.list.map(m => modOn(m) ? 1 : 0).join('')).join(',');
+  if (sig === modSig) { if (comboFor) fillCombo(); return; }
   modSig = sig; R.bot.replaceChildren();
   if (!mods.length) { const n = el('div', '', 'No weapons or rigs fitted.'); n.style.cssText = 'font-size:12px;color:#aab4cc;padding:8px;pointer-events:none'; R.bot.appendChild(n); return; }
-  idx.forEach(i => R.bot.appendChild(makeModChip(mods[i], keys[i])));
+  groups.forEach(g => R.bot.appendChild(makeGroupChip(g)));
+  if (comboFor) fillCombo();
 }
-function makeModChip(m, key) {
-  const b = el('button', 'zsq' + (m.on ? '' : ' off')); b.innerHTML = modIcon(m); b.dataset.key = key;
-  b.style.color = FAM[m.family] || '#cfd8ea'; b.style.borderColor = m.on ? '#e8b64a' : '#445';
-  b.dataset.fam = m.family || '';
-  b.appendChild(el('div', 'zd', m.family === 'missile' ? ammoLabel(view.me.ammo) : (m.heat ? m.heat + '/s' : (m.on ? 'ON' : 'OFF'))));
-  let timer = 0, long = false, dragging = false, x0 = 0;
+/* a tap on a chip: one module switches; a combined chip switches ALL of its modules (all on -> all off, otherwise all on) */
+function tapGroup(g) {
+  const want = !g.list.every(modOn);
+  if (want && g.list[0].family === 'missile' && view.me.ammo < 0.05) { toast('No ammo.', true); return; }
+  setMods(g.list.filter(m => modOn(m) !== want), want);
+}
+async function setMods(list, on) {
+  if (!list.length) return;
+  list.forEach(m => optMod.set(m.i, { on, t: Date.now() }));
+  modSig = ''; renderModChips();                            // shown at once
+  for (const m of list) {                                   // the server switches one module per order, so they go one after the other
+    const ok = await send('combat_module', { index: m.i, on });
+    if (!ok) { list.forEach(x => optMod.delete(x.i)); modSig = ''; if (view) renderModChips(); return; }
+  }
+}
+function makeGroupChip(g) {
+  const m0 = g.list[0], n = g.list.length, on = g.list.filter(modOn).length, b = el('button', 'zsq' + (on === 0 ? ' off' : '') + (on > 0 && on < n ? ' part' : ''));
+  b.innerHTML = modIcon(m0); b.dataset.key = g.id; b.dataset.fam = m0.family || '';
+  b.style.color = FAM[m0.family] || '#cfd8ea'; b.style.borderColor = on > 0 ? '#e8b64a' : '#445';
+  const heat = g.list.reduce((s, m) => s + (m.heat || 0), 0);
+  b.appendChild(el('div', 'zd', m0.family === 'missile' ? ammoLabel(view.me.ammo) : (heat ? String(+heat.toFixed(1)) + '/s' : (on ? 'ON' : 'OFF'))));
+  if (n > 1) b.appendChild(el('div', 'zcnt', on > 0 && on < n ? on + '/' + n : 'x' + n));
+  let timer = 0, long = false, dragging = false, scrolling = false, x0 = 0, lx = 0;
   b.onpointerdown = ev => {
-    ev.stopPropagation(); b.setPointerCapture(ev.pointerId); x0 = ev.clientX; long = false; dragging = false;
-    timer = setTimeout(() => { long = true; b.classList.add('drag'); showInfo(m, b); if (navigator.vibrate) navigator.vibrate(15); }, 450);
+    ev.stopPropagation(); b.setPointerCapture(ev.pointerId); x0 = lx = ev.clientX; long = dragging = scrolling = false;
+    timer = setTimeout(() => { long = true; b.classList.add('drag'); if (n > 1) openCombo(g); else showInfo(m0, b); if (navigator.vibrate) navigator.vibrate(15); }, 450);
   };
   b.onpointermove = ev => {
     const dx = ev.clientX - x0;
-    if (!long) { if (Math.abs(dx) > 10) clearTimeout(timer); return; }
-    if (Math.abs(dx) > 14) { dragging = true; R.info.hidden = true; b.style.transform = 'translateX(' + dx + 'px)'; }
+    if (!long) {                                            // a quick slide scrolls the row (the page scrolls it by hand: the chips take the touch)
+      if (Math.abs(dx) > 10) { clearTimeout(timer); scrolling = true; }
+      if (scrolling) R.bot.scrollLeft -= ev.clientX - lx;
+      lx = ev.clientX; return;
+    }
+    if (Math.abs(dx) > 14) { dragging = true; R.info.hidden = true; if (n > 1) { R.combo.hidden = true; comboFor = null; } b.style.transform = 'translateX(' + dx + 'px)'; }
   };
   const done = ev => {
     clearTimeout(timer); b.classList.remove('drag'); R.info.hidden = true;
-    if (dragging) {
+    if (dragging) {                                         // hold and slide = a new place in the row
       const sibs = [...R.bot.querySelectorAll('.zsq')].filter(x => x !== b);
-      const place = sibs.filter(x => { const r = x.getBoundingClientRect(); return r.left + r.width / 2 > ev.clientX; }).length;   // how many chips are further right
-      const keys = sibs.map(x => x.dataset.key); keys.splice(place, 0, key);
+      const place = sibs.filter(x => { const r = x.getBoundingClientRect(); return r.left + r.width / 2 < ev.clientX; }).length;   // how many chips are further left
+      const keys = sibs.map(x => x.dataset.key); keys.splice(place, 0, g.id);
       saveOrder(keys); b.style.transform = ''; modSig = ''; renderModChips();
-    } else if (!long && ev.type === 'pointerup') {
-      if (!m.on && m.family === 'missile' && view.me.ammo < 0.05) toast('No ammo.', true);
-      else send('combat_module', { index: m.i, on: !m.on });
-    }
-    long = dragging = false;
+    } else if (!long && !scrolling && ev.type === 'pointerup') tapGroup(g);
+    long = dragging = scrolling = false;
   };
   b.onpointerup = done; b.onpointercancel = done;
   b.oncontextmenu = ev => ev.preventDefault();
   return b;
 }
-function showInfo(m, anchor) {
+/* hold a combined chip: a menu with each of its modules (tap one to switch just that one) */
+function openCombo(g) { closeMenus(); comboFor = g.id; fillCombo(); R.combo.hidden = false; placeCombo(); }
+function placeCombo() {
+  const a = R.bot.querySelector('.zsq[data-key="' + (window.CSS && CSS.escape ? CSS.escape(comboFor) : comboFor) + '"]');
+  if (a) placeAbove(R.combo, a);
+}
+function fillCombo() {
+  const g = view && groupMods(view.me.modules || []).find(x => x.id === comboFor);
+  if (!g) { R.combo.hidden = true; comboFor = null; return; }
+  const m0 = g.list[0], rows = [el('div', 'zh', m0.name + ' x' + g.list.length)];
+  infoLines(m0).slice(2).forEach(t => rows.push(el('div', 'zl', t)));
+  g.list.forEach((m, i) => {
+    const on = modOn(m), b = el('button', on ? '' : 'alt', (i + 1) + '. ' + m.name + ': ' + (on ? 'ON' : 'OFF'));
+    b.onclick = ev => { ev.stopPropagation(); if (!on && m.family === 'missile' && view.me.ammo < 0.05) { toast('No ammo.', true); return; } setMods([m], !on); };
+    rows.push(b);
+  });
+  R.combo.replaceChildren(...rows);
+  if (!R.combo.hidden) placeCombo();
+}
+function infoLines(m) {
   const me = view.me, w = (me.weapons || []).find(x => x.id === m.id), d = (me.dps_list || []).find(x => x.id === m.id);
-  const lines = [m.name, (m.family || m.kind) + (m.on ? '' : '  (OFF)')];
+  const lines = [m.name, (m.family || m.kind) + (modOn(m) ? '' : '  (OFF)')];
   lines.push('Heat: ' + (m.heat || 0) + ' per second');
   if (m.family === 'missile') lines.push('Ammo left: ' + Math.round(me.ammo));
   if (w) { lines.push('Best range: ' + km(w.opt_km), 'Longest range: ' + km(w.max_km)); lines.push(d ? 'Damage now: ' + d.dps + '/s  (' + pct(d.acc) + '% hit)' : 'Damage: needs a target in range'); }
-  R.info.replaceChildren(...lines.map((t, i) => el('div', i ? '' : 'zh', t)));
+  return lines;
+}
+function showInfo(m, anchor) {
+  R.info.replaceChildren(...infoLines(m).map((t, i) => el('div', i ? '' : 'zh', t)));
   R.info.hidden = false;
   R.info.style.bottom = Math.round(root.clientHeight - anchor.getBoundingClientRect().top + 8) + 'px';
 }
@@ -846,7 +927,7 @@ function frame(full) {
     R.stat.textContent = (ORDER_NAME[ord.kind] || ord.kind) + (ord.kind === 'heading' && ord.dir_deg != null ? ' ' + Math.round(ord.dir_deg) + '°' : '') +
       (ord.kind === 'follow' ? (fol ? ': ' + fol.name : '') : (tgt && ['attack_max', 'attack_opt'].includes(ord.kind) ? ': ' + tgt.name : '')) + (ord.hold_km ? ' at ' + km(ord.hold_km) : '') +
       '  |  speed ' + (vv => Math.hypot(vv.x, vv.y))(velOf(m.id) || { x: m.vx, y: m.vy }).toFixed(1) + ' km/s  |  thrust ' + g.toFixed(1) + ' g';
-    R.stat.style.bottom = 'calc(' + (parseInt(getComputedStyle(root).getPropertyValue('--c')) + 14) + 'px + env(safe-area-inset-bottom,0px))';
+    R.stat.style.bottom = 'calc(' + (2 * parseInt(getComputedStyle(root).getPropertyValue('--c')) + 18) + 'px + env(safe-area-inset-bottom,0px))';
   }
   drawMap();
 }
