@@ -67,9 +67,16 @@ $('scr-market').after(scr);
     '#ahire .hin { width: 64px; height: 36px; flex: none; margin: 0; padding: 0 8px; text-align: right; font-size: 15px; box-sizing: border-box; }',
     '#ahire .hin.pin { width: 100px; }',
     '#ahire .arow button, #ahire .abtns button { flex: none; height: 34px; min-height: 0; margin: 0; padding: 0 12px; font-size: 13px; }',
-    '#ahire .htot { margin-top: 10px; color: #fff; font-weight: 500; }',
-    '#ahire .abtns { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }',
-    '#aship { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }',
+    '#ahire .htop { display: flex; justify-content: space-between; align-items: baseline; }',
+    '#ahire .hnm { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #2f3a58; margin-top: 6px; color: #fff; }',
+    '#ahire .hnm .hn { font-weight: 500; }',
+    '#ahire .hst { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; border-top: 1px solid #2f3a58; padding-top: 8px; }',
+    '#ahire .hst .sl { font-size: 11px; color: #8d98b2; }',
+    '#ahire .hst .sv { font-size: 15px; font-weight: 500; color: #fff; }',
+    '#ahire .hft { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }',
+    '#ahire .hft .arow { gap: 8px; }',
+    '#ahire .err:not(:empty) { margin-top: 6px; }',
+        '#aship { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }',
     '#aship .abox { background: #131a2a; border: 2px solid #e8b64a; border-radius: 10px; padding: 12px; width: 100%; max-width: 420px; max-height: 92%; overflow-y: auto; box-sizing: border-box; }',
     '#aship .abox div { margin: 8px 0; }',
     '#aship .abtns { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }',
@@ -454,20 +461,29 @@ shipDlg.bo.onclick = async () => {
 const hire = (() => {
   const root = document.createElement('div'); root.id = 'ahire'; root.hidden = true;
   root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true');
-  const box = el('div', 'abox'), vInfo = el('div', 'muted');
+  const box = el('div', 'abox');
+  const vPlace = el('span', 'muted'), vName = el('span', 'hn'), vHave = el('span', '');
+  const top = el('div', 'htop'); top.append(el('h2', '', 'Hire a hauler'), vPlace);
+  const nm = el('div', 'hnm'); nm.append(vName, vHave);
   const dest = document.createElement('select'); dest.setAttribute('aria-label', 'Destination');
   const q = document.createElement('input'); q.type = 'number'; q.inputMode = 'numeric'; q.min = '1'; q.step = '1'; q.className = 'hin'; q.setAttribute('aria-label', 'Quantity');
   const price = document.createElement('input'); price.type = 'number'; price.inputMode = 'decimal'; price.min = '0'; price.step = '0.01'; price.className = 'hin pin'; price.placeholder = 'credits'; price.setAttribute('aria-label', 'Pay per CU');
   const chips = el('div', ''), qrow = el('div', 'arow'), qcol = el('div', ''), pcol = el('div', ''), line = el('div', 'hline');
-  qrow.append(q, chips); qcol.append(el('div', 'alab', 'Quantity (CU)'), qrow); pcol.append(el('div', 'alab', 'Pay per CU'), price); line.append(qcol, pcol);
-  const total = el('div', 'htot'), credits = el('div', 'muted'), err = el('div', 'err');
+  qrow.append(q, chips); qcol.append(el('div', 'alab', 'Quantity'), qrow); pcol.append(el('div', 'alab', 'Pay per CU'), price); line.append(qcol, pcol);
+  const stat = (label) => { const c = el('div', ''), v = el('div', 'sv'); c.append(el('div', 'sl', label), v); return { c, v }; };
+  const sPay = stat('Pay'), sBonus = stat('Bonus pool'), sTot = stat('You pay now');
+  const hst = el('div', 'hst'); hst.append(sPay.c, sBonus.c, sTot.c);
+  const err = el('div', 'err'), credits = el('span', 'muted');
   const bc = el('button', 'alt', 'Cancel'), bp = el('button', '', 'Post');
-  const btns = el('div', 'abtns'); btns.append(bc, bp);
-  q.addEventListener('focus', () => setTimeout(() => { try { q.select(); } catch (x) {} }, 0));
-  box.append(el('h2', '', 'Hire a hauler'), vInfo, el('div', 'alab', 'Deliver to'), dest, line, total, credits, err, btns);
+  bc.type = 'button'; bp.type = 'button';
+  const btns = el('div', 'arow'); btns.append(bc, bp);
+  const ft = el('div', 'hft'); ft.append(credits, btns);
+  q.addEventListener('focus', () => setTimeout(() => { try { q.select(); } catch (x) {} }, 0));   // touching the box selects the whole number
+  q.addEventListener('click', () => { try { q.select(); } catch (x) {} });
+  box.append(top, nm, el('div', 'alab', 'Deliver to'), dest, line, hst, err, ft);
   root.appendChild(box);
   document.body.appendChild(root);
-  return { root, vInfo, q, chips, dest, price, total, credits, err, bc, bp };
+  return { root, vPlace, vName, vHave, q, chips, dest, price, sPay: sPay.v, sBonus: sBonus.v, sTot: sTot.v, credits, err, bc, bp };
 })();
 let hs = null, hbusy = false;   // hs = { good, name, pickup, have }
 
@@ -486,10 +502,10 @@ function hireCheck() {
 function refreshHire() {
   if (!hs) return;
   const c = hireCheck(), cr = num(S.last && S.last.character && S.last.character.credits);
-  hire.total.className = 'htot';
-  if (c.total != null) hire.total.textContent = 'You pay now: ' + money(c.cost) + ' (' + money(c.total) + ' pay + ' + money(c.bonus) + ' bonus pool)';
-  else { hire.total.className = 'muted'; hire.total.textContent = 'Enter a quantity and a price (up to 2 decimals).'; }
-  hire.credits.textContent = 'Your credits: ' + money(cr);
+  hire.sPay.textContent = c.total != null ? money(c.total) : '-';
+  hire.sBonus.textContent = c.total != null ? money(c.bonus) : '-';
+  hire.sTot.textContent = c.total != null ? money(c.cost) : '-';
+  hire.credits.textContent = 'Your credits ' + short(cr, true);
   let msg = '';
   if (!isNaN(c.q) && c.q > hs.have) msg = 'You only have ' + whole(hs.have) + ' stored here.';
   else if (c.cost != null && c.cost > cr) msg = 'Not enough credits for that.';
@@ -500,7 +516,7 @@ function refreshHire() {
 function closeHire() { hire.root.hidden = true; document.body.style.overflow = ''; hs = null; }
 function openHire(it, q) {
   hs = { good: it.good_id, name: it.name, pickup: aloc, have: it.quantity };
-  hire.vInfo.textContent = it.name + ', picked up at ' + locName(aloc);
+  hire.vPlace.textContent = locName(aloc); hire.vName.textContent = it.name; hire.vHave.textContent = 'You have ' + whole(it.quantity);
   hire.q.value = q;
   hire.chips.replaceChildren();
   { const ab = el('button', 'alt', 'All'); ab.type = 'button'; ab.onclick = () => { hire.q.value = hs.have; refreshHire(); }; hire.chips.appendChild(ab); }
