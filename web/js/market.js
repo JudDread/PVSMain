@@ -1,5 +1,6 @@
 // market.js - the Market screen (goods in markets, in storage and in the hold). Display only: the server decides every trade.
-import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine, createPicker, qtyControl, SHIP_SVG } from 'core';
+// 2026-11-07 phone layout: 3-column Cargo / Stored rows, 4-column Produced / Consumed rows, one-line quantity pop-up (the browser works out the first number and a '~' price; the server quotes only for the confirmation).
+import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine, createPicker, short, SHIP_SVG } from 'core';
 import { applyBackdrop } from 'backdrop';
 
 const ARROW_OPEN = '\u25BE ', ARROW_SHUT = '\u25B8 ';
@@ -43,8 +44,9 @@ function sortGoods(list) {
 (() => {
   const st = document.createElement('style');
   st.textContent = [
-    '#mbody .mrow, #mbody .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; }',
-    '#mbody .sub { line-height: 1.15 !important; }',
+    '#mbody .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; }',
+    '#mbody .mrow, #mbody .crow { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 48px !important; line-height: 1.2 !important; align-items: center !important; }',
+    '#mbody .sub { line-height: 1.15 !important; font-size: 11px !important; }',
     '#mbody .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; }',
     '#mbody .sech button { padding: 2px 10px !important; min-height: 0 !important; }',
     '#mbody .mhead { padding-top: 2px !important; padding-bottom: 2px !important; min-height: 0 !important; }',
@@ -54,12 +56,20 @@ function sortGoods(list) {
     '#mbody .sech button.ub { background: #e8b64a !important; color: #14100a !important; border: 0 !important; border-radius: 6px !important; font-weight: 700 !important; padding: 5px 14px !important; }',
     '#mbody .sech button.ub:disabled { opacity: .45; }',
     '#mbody .sech select { background: #192033 !important; color: #e3e9f7 !important; border: 1px solid #333d57 !important; border-radius: 6px !important; font: inherit; font-size: 13px !important; padding: 2px 6px !important; margin: 0 !important; width: auto !important; max-width: 48% !important; min-height: 0 !important; }',
-    '.mpop { background: rgba(120,160,210,0.10); border: 1px solid rgba(120,160,210,0.35); border-radius: 8px; padding: 10px; margin: 4px 0 8px; }',
-    '.mpop .mpinfo { margin-bottom: 8px; }',
-    '.mpop .mi { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }',
-    '.mpop .mi b { font-weight: 700; }',
-    '.mpbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }',
-    '.mpbar > button { margin: 0; padding: 8px 14px; }',
+    '.crow, .shead { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr) minmax(0,.9fr); column-gap: 8px; padding: 3px 8px; align-items: center; }',
+    '.crow { border-top: 1px solid #1c2438; cursor: pointer; font-size: 13px; }',
+    '.crow.sel { background: #2a3350; outline: 2px solid #e8b64a; outline-offset: -2px; }',
+    '.shead { font-size: 11px; color: #8d98b2; border-bottom: 1px solid #222b40; }',
+    '.mpop { background: rgba(120,160,210,0.10); border: 1px solid rgba(120,160,210,0.35); border-radius: 8px; padding: 6px 8px; margin: 4px 0 6px; }',
+    '.mprow { display: flex; align-items: center; gap: 5px; }',
+    '.mpe { flex: 1; min-width: 0; }',
+    '.mpl { font-size: 11px; color: #8d98b2; line-height: 1.1; white-space: nowrap; }',
+    '.mpv { font-size: 15px; font-weight: 500; line-height: 1.2; white-space: nowrap; }',
+    '.mprow input.qin, .frrow input.qin { width: 64px; height: 36px; flex: none; margin: 0; padding: 0 8px; text-align: right; font-size: 15px; box-sizing: border-box; }',
+    '.mprow button, .frrow button { flex: none; height: 34px; min-height: 0; margin: 0; padding: 0 9px; font-size: 13px; }',
+    '.mpmsg { font-size: 11px; margin-top: 4px; color: #ff7b6b; }',
+    '.pop.frp { display: block; border-bottom: 3px solid #6be08f; padding: 6px 8px; }',
+    '.frrow { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin-top: 5px; }',
     '.mcf { position: fixed; inset: 0; z-index: 9000; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; padding: 16px; }',
     '.mcfbox { background: #131a2a; border: 1px solid #3a4666; border-radius: 10px; padding: 16px; max-width: 360px; width: 100%; box-sizing: border-box; }',
     '.mcft { font-weight: 700; font-size: 16px; margin-bottom: 10px; text-align: center; }',
@@ -102,11 +112,12 @@ function curItem() {
 const isSel = (loc, kind, good) => !!msel && msel.loc === loc && msel.kind === kind && msel.good === good;
 const isDD = (loc, kind, good) => !!dd && dd.loc === loc && dd.kind === kind && dd.good === good;
 const buyDest = d => (buyTo === 'hold' && d.here) ? 'hold' : 'storage';
+// why nothing can be bought right now. The hold is ALWAYS checked: the per-minute column of the destinations list assumes the goods ride in the hold, even when you buy into storage.
 function buyBlockReason(d, g) {
   if (!g || g.stock < 1) return 'Sold out';
   if (d.credits / g.buy_price < 1) return 'Low funds';
-  if (buyDest(d) === 'hold' && (d.hold_size - d.hold_used + 1e-9) / g.hold_per_unit < 1) return 'Hold full';
-  return 'Sold out';
+  if ((d.hold_size - d.hold_used + 1e-9) / g.hold_per_unit < 1) return 'Hold full';
+  return 'None can be loaded';
 }
 const maxLoad = (d, x) => Math.max(0, Math.min(x.quantity, Math.floor((d.hold_size - d.hold_used + 1e-9) / x.hold_per_unit)));
 
@@ -191,15 +202,14 @@ async function loadDD() {
   } catch (e) { if (dd === me) me.data = { error: e.message }; }
   finally { ddBusy = false; drawMarket(); if (dd && dd !== me) loadDD(); }
 }
-// stock number, then stock as a percent of the node's TARGET stock (100% = base price; the price uses this) in brackets, with P: (this place produces) or C: (this place consumes) in front
-function stockTag(x) {
-  if (!(x.target_stock > 0)) return whole(x.stock);
-  return whole(x.stock) + ' (' + (x.role === 'producer' ? 'P:' : x.role === 'consumer' ? 'C:' : '') + Math.round(100 * x.stock / x.target_stock) + '%)';
-}
+const abbr = n => short(n, true);                                   // 1.2K, 54.6M (same short form as the credits at the top)
+const sgs = n => (Number(n) > 0 ? '+' : '') + short(n, true);       // +100, -80, +1.2K
+const pctOf = (stock, target) => target > 0 ? Math.round(100 * stock / target) + '%' : '';   // stock as a percent of the node's TARGET stock (100% = base price; the price uses this)
+const pctTag = x => x.target_stock > 0 ? '(' + pctOf(x.stock, x.target_stock) + ')' : abbr(x.stock);
 function ddBox() {
   const box = el('div', 'routes'), d = dd.data, md = mc[dd.loc] && mc[dd.loc].d;
   const close = () => box;   // no Close button: tap the row again to close (same as the buy/sell window)
-  const GRID = 'display:grid;grid-template-columns:minmax(0,1.3fr) repeat(3,minmax(0,1fr));column-gap:10px;align-items:start';
+  const GRID = 'display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr) minmax(0,.7fr) minmax(0,.8fr);column-gap:6px;align-items:start';
   if (!d) { box.appendChild(el('div', 'muted', 'Loading destinations...')); return close(); }
   if (d.error) { box.appendChild(el('div', 'err', d.error === 'no_market' ? 'This place does not trade that.' : 'Could not load: ' + d.error)); return close(); }
   if (d.docked === false && dd.kind === 'cargo') { box.appendChild(el('div', 'muted', 'Dock somewhere to compare destinations.')); return close(); }
@@ -207,7 +217,7 @@ function ddBox() {
   if (dd.kind === 'goods') {
     const g = md && (md.goods || []).find(x => x.good_id === dd.good);
     const why = d.hypothetical && md ? buyBlockReason(md, g) : null;
-    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : 'None in stock here') + ', so the per-minute column shows N/A.'));
+    if (d.hypothetical) box.appendChild(el('div', 'muted', (why === 'Hold full' ? 'Your hold is full' : why === 'Low funds' ? 'You cannot afford any' : why === 'Sold out' ? 'None in stock here' : 'None can be loaded') + ', so the per-minute column shows N/A.'));
     if (!d.rows.length) { box.appendChild(el('div', 'muted', 'No other place trades this good.')); return close(); }
     hd.append(el('span', '', 'Destination'), el('span', 'num', g && g.role === 'consumer' ? 'Buy from' : 'Sells to'), el('span', 'num', 'Each'), el('span', 'num', 'Per min'));
     box.appendChild(hd);
@@ -215,9 +225,9 @@ function ddBox() {
       const r = el('div', 'rrow'); r.style.cssText = GRID;
       r.append(
         cell('', x.name, 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
-        cell('num', money(x.sell_price), stockTag(x)),
-        cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-        d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
+        cell('num', abbr(x.sell_price), pctTag(x)),
+        cell('num ' + tone(x.profit_each), sgs(x.profit_each)),
+        d.hypothetical ? cell('num muted', 'N/A') : cell('num ' + tone(x.ppm), sgs(x.ppm)));
       box.appendChild(r);
     });
     box.appendChild(el('div', 'muted hint', 'Trips start at ' + locName(d.origin_id) + ', where the goods are. Sorted by profit per minute. Snapshot: prices change while you fly.'));
@@ -230,9 +240,9 @@ function ddBox() {
     const r = el('div', 'rrow'); r.style.cssText = GRID;
     r.append(
       cell('', x.is_here ? x.name + ' (here)' : x.name, x.is_here ? 'no travel' : 'ETA ' + fmt(x.eta_real_minutes * 60) + (x.sun_danger ? ' (near the Sun!)' : '')),
-      cell('num', money(x.sell_price), stockTag(x)),
-      cell('num ' + tone(x.profit_each), sgn(x.profit_each)),
-      x.is_here ? cell('num muted', 'now') : cell('num ' + tone(x.ppm), sgn(x.ppm)));
+      cell('num', abbr(x.sell_price), pctTag(x)),
+      cell('num ' + tone(x.profit_each), sgs(x.profit_each)),
+      x.is_here ? cell('num muted', 'now') : cell('num ' + tone(x.ppm), sgs(x.ppm)));
     box.appendChild(r);
   });
   box.appendChild(el('div', 'muted hint', 'Trips start at ' + locName(d.location_id) + ', where the goods are. ' + (d.remote ? 'Your ship is not there, so selling there right now adds the remote fee. ' : '') + 'Snapshot: prices change while you fly.'));
@@ -264,33 +274,95 @@ function wireRow(r, key, o) {
 }
 function toggleSel(loc, kind, good) { if (isDD(loc, kind, good)) { dd = null; msel = null; mEdited = false; drawMarket(); return; } msel = isSel(loc, kind, good) ? null : { loc, kind, good }; mEdited = false; drawMarket(); }
 
-/* ---- the quantity pop-up: built ONCE and moved under the selected row on every redraw, so a number you are typing survives.
-   While the box has focus, redraws wait until you leave it. ---- */
+/* ---- the quantity pop-up (phone layout): ONE line = '$ each (avg)' estimate | number box | small buttons.
+   Built ONCE and moved under the selected row on every redraw, so a number you are typing survives. While the box has focus, redraws wait until you leave it.
+   The BROWSER works out the first number and the '~' price (no server call: speed and egress); the SERVER quotes the exact price only in the confirmation box. ---- */
 const isTyping = () => { const a = document.activeElement; return !!(a && ((a.classList && a.classList.contains('qin')) || a.tagName === 'SELECT')); };
 function qtyOf(inp) { const v = inp.value; if (v === '') return NaN; const q = Number(v); return Number.isInteger(q) && q >= 0 ? q : NaN; }
-// the biggest number the box may hold: buying = the server's maximum; selling / loading = what you have
-function popMax() {
-  const it = curItem(); if (!it || !msel) return 0;
-  if (msel.kind === 'goods') { const mq = quotes[qKey(0)]; return mq && mq.d && mq.d.ok ? mq.d.max_quantity : 0; }
-  return it.quantity;
+const gOf = (d, it) => (d.goods || []).find(x => x.good_id === it.good_id) || null;   // this place's market row of a good (stock, target stock, spot prices)
+// the most that can be bought: what is in stock, what the credits buy at today's price, and (buying into the hold) what fits. The server checks again.
+function maxBuy(d, g) {
+  if (!g || !(g.buy_price > 0)) return 0;
+  let m = Math.min(Math.floor(g.stock + 1e-9), Math.floor(d.credits / g.buy_price + 1e-9));
+  if (buyDest(d) === 'hold') m = Math.min(m, Math.floor((d.hold_size - d.hold_used + 1e-9) / g.hold_per_unit));
+  return Math.max(0, m);
 }
+// the number the box starts with. Selling: the units that bring this place's stock up to 50% of its target (all you hold if that is fewer; 0 when the place is already at 50% or more).
+// Buying: the units that take its stock down to 80% (90% when trading remotely), but no more than the stock, the free hold space (hold) or the credits allow.
+function defaultQty(d, it) {
+  if (msel.kind === 'goods') {
+    const mx = maxBuy(d, it), t = d.here ? 0.8 : 0.9;
+    const to = it.target_stock > 0 ? Math.floor(it.stock - t * it.target_stock + 1e-9) : mx;
+    return Math.max(0, Math.min(mx, to));
+  }
+  if (it.sell_here == null) return 0;
+  const g = gOf(d, it);
+  if (!g || !(g.target_stock > 0)) return it.quantity;
+  return Math.max(0, Math.min(it.quantity, Math.floor(0.5 * g.target_stock - g.stock + 1e-9)));
+}
+// the '~' price each: buying = today's price; selling = between today's price for one unit and the whole-stack average the server worked out (a straight line between them)
+function estEach(d, it, q) {
+  if (!(q >= 1)) return null;
+  if (msel.kind === 'goods') return it.buy_price;
+  const g = gOf(d, it), spot = g ? g.sell_price : null, full = it.sell_here;
+  if (spot != null && full != null && it.quantity > 1) return spot + (full - spot) * Math.min(1, (q - 1) / (it.quantity - 1));
+  return full != null ? full : spot;
+}
+function allQty() { const it = curItem(), d = curData(); if (!it || !d) return 0; return msel.kind === 'goods' ? maxBuy(d, it) : it.quantity; }
 const pop = (() => {
-  const root = el('div', 'mpop'), info = el('div', 'mpinfo'), bar = el('div', 'mpbar');
-  const q = qtyControl({
-    steps: [1, 10], getMax: popMax, inputClass: 'qin',
-    onChange: () => { mEdited = true; refreshPop(); },
-    extras: [['full', () => { const it = curItem(), d = curData(); return it && d ? maxLoad(d, it) : 0; }]],   // storage only: as much as fits the free hold space
-  });
-  const inp = q.input, b1 = el('button', '', ''), b2 = el('button', 'alt', '');
-  b1.type = 'button'; b2.type = 'button';
-  bar.append(q.root, b1, b2);        // one row: the number box with its buttons, then Buy / Sell, then the other button
-  root.append(info, bar);
+  const root = el('div', 'mpop'), row = el('div', 'mprow'), msg = el('div', 'mpmsg');
+  const e = el('div', 'mpe'), val = el('div', 'mpv');
+  e.append(el('div', 'mpl', '$ each (avg)'), val);
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.inputMode = 'numeric'; inp.step = '1'; inp.min = '0'; inp.className = 'qin'; inp.setAttribute('aria-label', 'Quantity');
+  const mk = (txt, alt) => { const b = el('button', alt ? 'alt' : '', txt); b.type = 'button'; return b; };
+  const bAll = mk('All', true), bFull = mk('Full', true), b1 = mk('', false), b2 = mk('', true);
+  row.append(e, inp, bAll, bFull, b1, b2); root.append(row, msg);
+  const selectAll = () => { try { inp.select(); } catch (x) {} };
+  inp.addEventListener('focus', () => setTimeout(selectAll, 0));   // touching the box selects the whole number
+  inp.addEventListener('click', selectAll);
+  inp.addEventListener('input', () => { mEdited = true; refreshPop(); });
   inp.addEventListener('blur', () => setTimeout(() => { if (mRedraw && !isTyping()) { mRedraw = false; drawMarket(); } }, 350));
+  bAll.onclick = () => { inp.value = allQty(); mEdited = true; refreshPop(); };
+  bFull.onclick = () => { const it = curItem(), d = curData(); inp.value = it && d ? maxLoad(d, it) : 0; mEdited = true; refreshPop(); };   // storage only: as much as fits the free hold space
   b1.onclick = () => doAct('main'); b2.onclick = () => doAct('second');
-  return { root, inp, q, b1, b2, info };
+  return { root, inp, val, msg, bAll, bFull, b1, b2 };
 })();
-/* ---- server quotes: the exact price of an order and the real maximum come from the server ('quote'), never from the page.
-   A quote with quantity 0 = "just tell me the most I can do". Answers are kept 15 s; typing waits 300 ms before asking. ---- */
+let popKey = null;   // which row / button choice the box was last filled for: a change (or a finished trade) puts the starting number back
+function refreshPop() {
+  const it = curItem(), d = curData(); if (!it || !d || !msel) return;
+  const p = pop, k = msel.kind, buy = k === 'goods';
+  const key = [msel.loc, k, msel.good, buy ? buyDest(d) : ''].join('|');
+  if (key !== popKey) { popKey = key; mEdited = false; p.inp.value = defaultQty(d, it); }
+  const q = qtyOf(p.inp), bad = isNaN(q) || q < 1;
+  let note = '';
+  p.bFull.hidden = k !== 'storage';
+  if (buy) {
+    const dest = buyDest(d);
+    p.b1.textContent = 'Buy'; p.b2.textContent = 'To: ' + (dest === 'hold' ? 'Hold' : 'Storage'); p.b2.disabled = mbusy || !d.here;
+    let off = bad || mbusy;
+    if (isNaN(q)) note = 'Enter a whole number.';
+    else if (!bad) {
+      if (q > Math.floor(it.stock + 1e-9)) { off = true; note = 'Only ' + whole(it.stock) + ' in stock.'; }
+      else if (q * it.buy_price > d.credits) { off = true; note = 'Not enough credits.'; }
+      else if (dest === 'hold' && q * it.hold_per_unit > d.hold_size - d.hold_used + 1e-9) { off = true; note = 'Not enough hold space.'; }
+    }
+    p.b1.disabled = off;
+  } else {
+    const sells = it.sell_here != null, cargo = k === 'cargo';
+    p.b1.textContent = 'Sell'; p.b1.disabled = bad || !sells || q > it.quantity || mbusy;
+    p.b2.textContent = cargo ? 'Unload' : 'Load';
+    p.b2.disabled = cargo ? (bad || q > it.quantity || mbusy) : (bad || !d.here || q > it.quantity || q > maxLoad(d, it) || mbusy);
+    if (isNaN(q)) note = 'Enter a whole number.';
+    else if (q > it.quantity) note = 'You only have ' + whole(it.quantity) + '.';
+    else if (!sells) note = 'This place does not buy that.';
+  }
+  const e = estEach(d, it, q);
+  p.val.textContent = e == null ? '-' : '~' + abbr(e);
+  p.msg.textContent = note; p.msg.hidden = !note;
+}
+function placePop(d, kind, it) { refreshPop(); return pop.root; }
+/* ---- server quotes: used ONLY by the confirmation box (the exact total, and the price guard). A quote is kept 15 s. ---- */
 const quotes = {};                      // key -> { d: answer | null, err, at }
 const qBusy = {};
 let qTimer = null, qTimerKey = null;
@@ -303,8 +375,7 @@ function wantQuote(q) {
   if (have && Date.now() - have.at <= 15000) return have;
   if (qBusy[key] || qTimerKey === key) return have || null;
   const args = { location: msel.loc, kind: qKind(), good: msel.good, quantity: q, stack: qStack(d) };
-  if (q === 0) { qBusy[key] = true; fetchQuote(key, args); }
-  else { clearTimeout(qTimer); qTimerKey = key; qTimer = setTimeout(() => { qTimerKey = null; qBusy[key] = true; fetchQuote(key, args); }, have ? 0 : 300); }
+  qBusy[key] = true; fetchQuote(key, args);
   return have || null;
 }
 async function fetchQuote(key, args) {
@@ -313,10 +384,6 @@ async function fetchQuote(key, args) {
   catch (e) { rec = { d: null, err: e, at: Date.now() }; }
   qBusy[key] = false; quotes[key] = rec;
   refreshConfirm();
-  if (!msel || !curData()) return;
-  // the maximum has arrived and you have not typed your own number: fill it in
-  if (msel.kind === 'goods' && !mEdited && !isTyping() && key === qKey(0) && rec.d && rec.d.ok) pop.inp.value = rec.d.max_quantity;
-  refreshPop();
 }
 const clearQuotes = () => { Object.keys(quotes).forEach(k => delete quotes[k]); };
 function problemText(qd) {
@@ -326,49 +393,6 @@ function problemText(qd) {
   if (p === 'not_enough_credits') return 'Not enough credits: this costs ' + money(r.total) + '.';
   if (p === 'not_enough_cargo' || p === 'not_enough_stored') return 'You do not have that many.';
   return 'This cannot be done right now.';
-}
-// two labelled numbers from the server's quote: the whole order and the average price of one item
-function infoRow(label, value) { const r = el('div', 'mi'); r.append(el('span', '', label), el('b', '', value)); return r; }
-function priceRows(info, qd) {
-  if (qd && qd.d && qd.d.ok) { info.appendChild(infoRow('Total price', money(qd.d.total))); info.appendChild(infoRow('Price each (average)', money(qd.d.unit_price))); }
-  else if (qd && qd.err) info.appendChild(el('div', 'muted', 'Could not get the exact price: ' + marketError(qd.err)));
-  else info.appendChild(el('div', 'muted', 'Checking the price...'));
-}
-function refreshPop() {
-  const it = curItem(), d = curData(); if (!it || !d) return;
-  const q = qtyOf(pop.inp), bad = isNaN(q) || q < 1, p = pop;
-  p.info.replaceChildren();
-  if (msel.kind === 'goods') {
-    const dest = buyDest(d), mq = wantQuote(0);
-    p.b1.textContent = 'Buy'; p.b1.disabled = bad || mbusy;
-    p.b2.textContent = 'To: ' + (dest === 'hold' ? 'Hold' : 'Storage'); p.b2.disabled = mbusy || !d.here;
-    if (isNaN(q)) p.info.appendChild(el('div', 'muted', !mEdited ? 'Checking the most you can buy...' : 'Enter a whole number.'));
-    else if (q >= 1) {
-      const qd = wantQuote(q); priceRows(p.info, qd);
-      if (qd && qd.d && qd.d.ok && qd.d.problem) p.info.appendChild(el('div', 'err', problemText(qd)));
-      if (qd && qd.d && qd.d.can_do === false) p.b1.disabled = true;
-    }
-    if (mq && mq.d && mq.d.ok && mq.d.max_quantity === 0) p.info.appendChild(el('div', 'err', 'You cannot buy any right now: ' + ({ stock: 'sold out', credits: 'low funds', hold: 'hold full' }[mq.d.limit] || 'not available') + '.'));
-    return;
-  }
-  const sells = it.sell_here != null, cargo = msel.kind === 'cargo';
-  p.b1.textContent = 'Sell'; p.b1.disabled = bad || !sells || q > it.quantity || mbusy;
-  if (cargo) { p.b2.textContent = 'Unload'; p.b2.disabled = bad || q > it.quantity || mbusy; }
-  else { p.b2.textContent = 'Load'; p.b2.disabled = bad || !d.here || q > it.quantity || q > maxLoad(d, it) || mbusy; }
-  if (isNaN(q)) p.info.appendChild(el('div', 'muted', 'Enter a whole number.'));
-  if (!sells) p.info.appendChild(el('div', 'muted', 'This place does not buy that.'));
-  else if (!isNaN(q) && q >= 1 && q <= it.quantity) {
-    const qd = wantQuote(q); priceRows(p.info, qd);
-    if (qd && qd.d && qd.d.ok && qd.d.problem) p.info.appendChild(el('div', 'err', problemText(qd)));
-  }
-  if (!isNaN(q) && q > it.quantity) p.info.appendChild(el('div', 'err', 'You only have ' + whole(it.quantity) + '.'));
-}
-function placePop(d, kind, it) {
-  const p = pop;
-  if (!mEdited) { if (kind === 'goods') { const mq = quotes[qKey(0)]; p.inp.value = mq && mq.d && mq.d.ok ? mq.d.max_quantity : ''; } else p.inp.value = it.quantity; }
-  p.q.extras[0].hidden = kind !== 'storage';
-  refreshPop();
-  return p.root;
 }
 
 /* ---- the confirmation box for a buy or a sell: shows the numbers the server quoted, then Cancel / Confirm ---- */
@@ -430,23 +454,25 @@ function section(parent, loc, key, title, count, btn, drawBody, defOpen) {
   if (open) drawBody(box);
   parent.appendChild(box);
 }
+function stackHead(box) {
+  const h = el('div', 'shead'); h.append(el('span', '', 'Good'), el('span', 'num', 'Best'), el('span', 'num', 'Price')); box.appendChild(h);
+}
+// three columns: number x name over what I paid | the place with the HIGHEST price (name over price and stock %) | the price here over the change from what I paid
 function stackRow(box, d, loc, kind, x, cb) {
   const sel = isSel(loc, kind, x.good_id);
-  const r = el('div', 'row' + (sel ? ' sel' : ''));
-  const left = cell('', whole(x.quantity) + ' x ' + x.name, x.avg_cost != null ? 'paid ' + money(x.avg_cost) + ' each' : 'cost unknown');
-  if (cb && cb.best) {
-    const b = cb.best, inc = cb.cost_known ? '' : ' income';
-    left.appendChild(el('span', 'sub ' + tone(b.is_here ? b.profit_total : b.ppm), b.is_here
-      ? 'Best: sell here, ' + sgn(b.profit_total) + inc
-      : 'Best: ' + b.name + ' (' + fmt(b.eta_real_minutes * 60) + '), ' + sgn(b.profit_total) + inc + ', ' + sgn(b.ppm) + '/min' + (b.sun_danger ? ' near the Sun!' : '')));
-  } else if (cb) left.appendChild(el('span', 'sub muted', 'No place buys this.'));
+  const r = el('div', 'crow' + (sel ? ' sel' : ''));
+  const left = cell('', whole(x.quantity) + ' x ' + x.name, x.avg_cost != null ? 'paid ' + abbr(x.avg_cost) : 'cost unknown');
+  const mid = el('span', 'num');
+  if (!cb) mid.appendChild(el('span', 'muted', '...'));
+  else if (cb.top) { const t = cb.top; mid.append(t.name, el('span', 'sub', abbr(t.sell_price) + (t.target_stock > 0 ? ' (' + pctOf(t.stock, t.target_stock) + ')' : ''))); }
+  else mid.appendChild(el('span', 'muted', 'none'));
   const right = el('span', 'num');
-  if (x.sell_here == null) right.appendChild(el('span', 'muted', 'not sold here'));
+  if (x.sell_here == null) right.appendChild(el('span', 'muted', 'not sold'));
   else {
-    right.appendChild(el('span', 'get', 'sells here for ' + money(x.sell_here)));
-    if (x.profit_each != null) right.appendChild(el('span', 'sub ' + tone(x.profit_each), sgn(x.profit_each) + ' each, ' + sgn(x.profit_total) + ' for ' + whole(x.quantity)));
+    right.appendChild(document.createTextNode(abbr(x.sell_here)));
+    right.appendChild(el('span', 'sub ' + (x.profit_each != null ? tone(x.profit_each) : 'muted'), x.profit_each != null ? sgs(x.profit_each) : 'cost ?'));
   }
-  r.append(left, right);
+  r.append(left, mid, right);
   wireRow(r, kind + ':' + loc + ':' + x.good_id, { open: () => openDD(loc, kind, x.good_id), close: closeDD, isOpen: () => isDD(loc, kind, x.good_id), tap: () => toggleSel(loc, kind, x.good_id) });
   box.appendChild(r);
   if (sel) box.appendChild(placePop(d, kind, x));
@@ -473,14 +499,14 @@ function freightError(e) {
   return 'Error: ' + m;
 }
 function frPop(d, loc, x, scale) {
-  const root = el('div', 'pop sell'), left = el('div', 'popl'), right = el('div', 'popr');
-  const row = el('div', 'poprow'), brow = el('div', 'poprow'), info = el('div', 'popinfo');
-  const max = frMax(d, x), win = fmt(x.window_days * 86400 / scale);
+  const root = el('div', 'pop sell frp'), info = el('div', 'popinfo'), row = el('div', 'frrow');
+  const max = frMax(d, x);
   if (frQty[x.contract_id] === undefined) frQty[x.contract_id] = String(max);
   const inp = document.createElement('input');
   inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.step = '1'; inp.className = 'qin'; inp.setAttribute('aria-label', 'Units to haul');
   inp.value = frQty[x.contract_id];
-  const acc = el('button', '', 'Accept'), chips = el('div', 'chips');
+  const all = el('button', 'alt', 'All'), acc = el('button', '', 'Accept');
+  all.type = 'button'; acc.type = 'button';
   const upd = () => {
     const q = qtyOf(inp); info.replaceChildren();
     let why = null, soft = false;
@@ -489,13 +515,13 @@ function frPop(d, loc, x, scale) {
     else if (isNaN(q) || q < 1) why = 'Enter a whole number of 1 or more.';
     else if (q > x.units_open) why = 'Only ' + whole(x.units_open) + ' are open.';
     else if (q * x.hold_each > frFree(d) + 1e-9) why = 'Not enough free hold space: needs ' + r2(q * x.hold_each) + ', free ' + r2(frFree(d)) + '.';
-    if (!isNaN(q) && q >= 1) info.appendChild(el('div', '', 'For ' + whole(q) + (x.hold_each > 1 ? ' (' + whole(q * x.hold_each) + ' CU)' : '') + ': ' + money(q * x.pay_per_unit) + ' on delivery, plus up to ' + money(q * x.bonus_max_per_cu) + ' bonus if early.'));
-    info.appendChild(el('div', 'muted', 'Deliver within ' + win + ' of accepting. Late = the load fails. The bonus shrinks as time passes. Uses ' + r2(x.hold_each) + ' hold per unit.'));
+    if (!isNaN(q) && q >= 1) info.appendChild(el('div', '', 'For ' + whole(q) + (x.hold_each > 1 ? ' (' + whole(q * x.hold_each) + ' CU)' : '') + ': ' + abbr(q * x.pay_per_unit) + ' on delivery, bonus up to ' + abbr(q * x.bonus_max_per_cu)));
     if (why) info.appendChild(el('div', soft ? 'muted' : 'err', why));
     acc.disabled = !!why || frBusy;
   };
-  const chip = (label, fn) => { const b = el('button', 'alt', label); b.onclick = () => { fn(); frQty[x.contract_id] = inp.value; upd(); }; chips.appendChild(b); };
-  chip('1', () => { inp.value = 1; }); chip('10', () => { inp.value = 10; }); chip('Max', () => { inp.value = max; });
+  all.onclick = () => { inp.value = max; frQty[x.contract_id] = inp.value; upd(); };
+  inp.addEventListener('focus', () => setTimeout(() => { try { inp.select(); } catch (e) {} }, 0));
+  inp.addEventListener('click', () => { try { inp.select(); } catch (e) {} });
   inp.addEventListener('input', () => { frQty[x.contract_id] = inp.value; upd(); });
   inp.addEventListener('blur', () => setTimeout(() => { if (mRedraw && !isTyping()) { mRedraw = false; drawMarket(); } }, 350));
   acc.onclick = async () => {
@@ -510,7 +536,7 @@ function frPop(d, loc, x, scale) {
     } catch (e) { say(freightError(e), 'err'); }
     finally { frBusy = false; mRedraw = false; clearQuotes(); refreshMarket(); }
   };
-  row.append(inp, chips); brow.append(acc); left.append(info); right.append(row, brow); root.append(left, right);
+  row.append(inp, all, acc); root.append(info, row);
   upd();
   return root;
 }
@@ -521,7 +547,7 @@ function drawFreight(box, d, loc, items) {
     const r = el('div', 'row' + (sel ? ' sel' : ''));
     r.append(
       cell('', 'To ' + x.dest_name + (x.mine ? ' (yours)' : ''), whole(x.units_open * he) + ' CU open, window ' + fmt(x.window_days * 86400 / scale)),
-      cell('num get', money(x.pay_per_unit / he) + ' / CU', 'bonus up to ' + money(x.bonus_max_per_cu / he)));
+      cell('num get', abbr(x.pay_per_unit / he) + ' / CU', 'bonus up to ' + abbr(x.bonus_max_per_cu / he)));
     r.onclick = () => { frSel = sel ? null : x.contract_id; drawMarket(); };
     box.appendChild(r);
     if (sel) box.appendChild(frPop(d, loc, x, scale));
@@ -541,11 +567,14 @@ function placeSelect(sk, P) {
   s.addEventListener('blur', () => setTimeout(() => { if (mRedraw && !isTyping()) { mRedraw = false; drawMarket(); } }, 350));
   return s;
 }
-/* one list of goods with its sortable header. showBest: the 'Best' column = the other place with the best price
-   (producer list: pays the most; consumer list: cheapest to buy). Touch a header to sort by it. */
+/* one list of goods with its sortable header. showBest (Produced / Consumed): four columns Good | Best | Price | Stock.
+   Best = the other place with the best price (producer list: pays the most; consumer list: cheapest to buy). Price = what the buy price is here in Produced
+   and what the sell-at price is here in Consumed. Touch a header to sort by it. Without a role (old fallback) the old four columns stay. */
+const G4 = 'minmax(0,1.05fr) minmax(0,1fr) minmax(0,.7fr) minmax(0,1.05fr)';
 function goodsSection(parent, loc, d, key, title, list, showBest) {
-  const grid = showBest ? '' : '1fr 84px 84px 72px';   // without the Best column the old four columns
+  const grid = showBest ? G4 : '1fr 84px 84px 72px';
   const sk = loc + ':' + key, P = showBest ? (selLoc[sk] || 'ALL') : 'ALL';
+  const pk = key === 'consumed' ? 'sell_price' : 'buy_price';
   let rows = list, wait = false;
   if (P !== 'ALL') {
     const pd = mc[P] && mc[P].d;
@@ -556,13 +585,14 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
       rows = list.filter(g => idx[g.good_id]).map(g => { const o = idx[g.good_id]; return { ...g, best_name: locName(P), best_price: key === 'produced' ? o.sell_price : o.buy_price, pl_stock: o.stock, pl_base: o.target_stock }; });
     }
   }
+  if (showBest) rows = rows.map(g => ({ ...g, price: g[pk] }));
   const selBox = showBest ? placeSelect(sk, P) : null;
   section(parent, loc, key, title, wait ? list.length : rows.length, selBox, box => {
     if (wait) { box.appendChild(el('div', 'muted pad', 'Loading ' + locName(P) + '...')); return; }
-    const hd = el('div', 'mhead'); if (grid) hd.style.gridTemplateColumns = grid;
-    const cols = [['name', 'Good', '']];
-    if (showBest) cols.push(['best_price', 'Best', 'num']);
-    cols.push(['buy_price', 'Buy for', 'num'], ['sell_price', 'Sell at', 'num'], ['stock', 'Stock', 'num']);
+    const hd = el('div', 'mhead'); hd.style.gridTemplateColumns = grid;
+    const cols = showBest
+      ? [['name', 'Good', ''], ['best_price', 'Best', 'num'], ['price', 'Price', 'num'], ['stock', 'Stock', 'num']]
+      : [['name', 'Good', ''], ['buy_price', 'Buy for', 'num'], ['sell_price', 'Sell at', 'num'], ['stock', 'Stock', 'num']];
     cols.forEach(([col, label, cls]) => {
       const sp = el('span', cls), b = document.createElement('button');
       b.type = 'button'; b.textContent = label + (gSort.col === col ? (gSort.dir === 1 ? ' \u25B2' : ' \u25BC') : '');
@@ -573,14 +603,14 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
     if (!rows.length) box.appendChild(el('div', 'muted pad', 'Nothing in this list is traded at ' + locName(P) + '.'));
     sortGoods(rows).forEach(g => {
       const sel = isSel(loc, 'goods', g.good_id);
-      const r = el('div', 'mrow' + (sel ? ' sel' : '')); if (grid) r.style.gridTemplateColumns = grid;
-      const cells = [cell('', g.name)];
+      const r = el('div', 'mrow' + (sel ? ' sel' : '')); r.style.gridTemplateColumns = grid;
+      const stockCell = cell('num', abbr(g.stock), g.target_stock > 0 ? '(' + pctOf(g.stock, g.target_stock) + ')' : '');
       if (showBest) {
-        if (P !== 'ALL') cells.push(cell('num', money(g.best_price), whole(g.pl_stock) + (g.pl_base > 0 ? ' (' + Math.round(100 * g.pl_stock / g.pl_base) + '%)' : '')));
-        else cells.push(g.best_name ? cell('num', g.best_name, money(g.best_price)) : cell('num muted', '-'));
-      }
-      cells.push(cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), cell('num', whole(g.stock), g.target_stock > 0 ? '(' + Math.round(100 * g.stock / g.target_stock) + '%)' : ''));
-      r.append(...cells);
+        const best = P !== 'ALL'
+          ? cell('num', abbr(g.best_price), abbr(g.pl_stock) + (g.pl_base > 0 ? ' (' + pctOf(g.pl_stock, g.pl_base) + ')' : ''))
+          : (g.best_name ? cell('num', g.best_name, abbr(g.best_price)) : cell('num muted', '-'));
+        r.append(cell('', g.name), best, cell('num ' + (key === 'consumed' ? 'get' : 'pay'), abbr(g.price)), stockCell);
+      } else r.append(cell('', g.name), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), stockCell);
       wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
       box.appendChild(r);
       if (sel) box.appendChild(placePop(d, 'goods', g));
@@ -598,6 +628,7 @@ function drawLoc(parent, loc) {
     const scl = (S.last && S.last.scale) || 60, gd = curGd();
     section(parent, loc, 'cargo', 'Cargo, hold ' + r2(d.hold_used) + ' / ' + r2(d.hold_size), cargo.length + haul.length, ub, box => {
       if (!cargo.length && !haul.length) box.appendChild(el('div', 'muted pad', 'Empty'));
+      if (cargo.length) stackHead(box);
       cargo.forEach(x => stackRow(box, d, loc, 'cargo', x, c.bestCg && c.bestCg[x.good_id]));
       haul.forEach(h => {
         const r = el('div', 'row'), left = h.deadline_t != null && gd != null ? (h.deadline_t - gd) * 86400 / scl : null;
@@ -608,6 +639,7 @@ function drawLoc(parent, loc) {
   }
   section(parent, loc, 'storage', 'Stored here', stored.length, null, box => {
     if (!stored.length) box.appendChild(el('div', 'muted pad', 'Nothing of yours is stored here.'));
+    if (stored.length) stackHead(box);
     stored.forEach(x => stackRow(box, d, loc, 'storage', x, c.bestSt && c.bestSt[x.good_id]));
   });
   /* goods: split by what this place does with them (role comes from the server, migration 036); without it: one plain list */
@@ -673,7 +705,7 @@ async function execute(action, args, okText) {
   mbusy = true; refreshPop(); drawMarket();
   try { const r = await call(action, args); say(okText(r), 'ok'); }
   catch (e) { say(marketError(e), 'err'); }
-  finally { mbusy = false; mEdited = false; mRedraw = false; clearQuotes(); refreshMarket(); }
+  finally { mbusy = false; mEdited = false; popKey = null; mRedraw = false; clearQuotes(); refreshMarket(); }
 }
 function runTrade(s) {
   if (mbusy) return;
