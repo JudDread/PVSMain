@@ -764,10 +764,10 @@ function buildMenu() {
 }
 function pickShip(id, px, py) {                                 // a tap on a chip or on a ship on the map
   if (!view) return;
-  if (menuFor === id && !R.menu.hidden) { closeMenus(); return; }
-  closeMenus();
   const isMe = id === view.me.id;
-  if (!isMe) sel = id;
+  if (menuFor === id && !R.menu.hidden) { closeMenus(); if (!isMe) { sel = null; frame(true); } return; }     // the same chip again: close its menu AND deselect it (the red ring goes back to MY target)
+  closeMenus();
+  sel = isMe ? null : id;                                        // my own ship: the menu shows MY target and no chip stays selected
   menuFor = id; if (!buildMenu()) return;
   R.menu.hidden = false;
   if (isMe) placeAt(R.menu, px, py); else placeBelow(R.menu, chips.get(id).w);
