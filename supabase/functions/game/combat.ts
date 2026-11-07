@@ -183,10 +183,17 @@ async function workZone(db, zoneId, instance, nowMs) {
 // 085 SCRIPTED ZONES (combat_zones.script): a list of {key, after_s, drone}. A drone type's own `spawn` list gives the places (km past the centre on the line
 // from where the pilot entered), `side` its side (a friendly escort target is 'players') and `start_speed_kms` its speed toward the pilot's entry point.
 // after_s 0 = when the pilot enters; later = real seconds after the pilot entered (advanceZone). Only instanced zones use it.
-async function scriptDrones(db, dtId, ang, cfg, pilotCfg, t) {
+// 2026-11-06: a script entry may also say {edge: true, speed_kms: N}: the drone then appears at a RANDOM angle on the zone's edge (99% of the exit distance) moving toward the centre at N km/s
+// (the drone type's own spawn list is not used for it).
+async function scriptDrones(db, dtId, ang, cfg, pilotCfg, t, entry, zone) {
   const { data: dt, error } = await db.from('drone_types').select('*').eq('id', dtId).maybeSingle();
   if (error) throw error;
   if (!dt) { console.error('script drone type missing', dtId); return []; }
+  if (entry && entry.edge) {
+    const a = Math.random() * 2 * Math.PI, r = num(zone && zone.exit_radius_km) * 0.99, sp = num(entry.speed_kms != null ? entry.speed_kms : dt.start_speed_kms);
+    const d = await buildDrone(db, dt, { x: r * Math.cos(a), y: r * Math.sin(a) }, cfg, pilotCfg, t, { vx: -sp * Math.cos(a), vy: -sp * Math.sin(a) });
+    return d ? [d] : [];
+  }
   const spawn = Array.isArray(dt.spawn) && dt.spawn.length ? dt.spawn : [{ past_center_km: 0 }];
   const pts = spreadPositions(spawn.map((p) => ({ x: -num(p.past_center_km) * Math.cos(ang), y: -num(p.past_center_km) * Math.sin(ang) })));
   const sp = num(dt.start_speed_kms);
@@ -347,7 +354,7 @@ async function advanceZone(db, ctx, nowMs) {
       for (const e of scriptLater) {
         if (scriptDone.has(e.key) || nowT < scriptEnter + num(e.after_s) * 1000) continue;
         scriptDone.add(e.key); scriptNew.push(e.key);                  // marked first: a bad drone type must not be retried every step
-        for (const d of await scriptDrones(db, e.drone, scriptAng, cfg, ctx.pilotCfg, gameDaysAt(nowMs))) { res.ships.push(d); newDrones.add(d.id); }
+        for (const d of await scriptDrones(db, e.drone, scriptAng, cfg, ctx.pilotCfg, gameDaysAt(nowMs), e, zone)) { res.ships.push(d); newDrones.add(d.id); }
       }
     }
   }
@@ -588,7 +595,7 @@ async function buildView(db, ctx, myShipId) {
       sh: Math.round(s.shield), ar: Math.round(s.armor), hu: Math.round(s.hull),
       weapons: st.weapons.map((w) => ({ fam: w.fam, opt_km: Math.round(w.optR), max_km: Math.round(w.maxR) })),
       mods: s.base.modules.map((m) => ({ n: m.name, k: m.kind, f: m.family || null })),
-      tripped: s.tripped,
+      tripped: s.tripped, tid: s.targetId || null,                  // 2026-11-06: who this ship is shooting at (the page draws it when the ship is selected)
     };
   }).sort((a, b) => a.dist_km - b.dist_km);
 
@@ -746,7 +753,7 @@ export async function combatEnter(db, user, body = {}) {
     inserts[0].script_done = now0.map((e) => e.key);
     if (loc && loc.pvp === false) {
       for (const e of now0) {
-        for (const d of await scriptDrones(db, e.drone, ang, cfg, pilotCfg, t)) { inserts.push(toInsert(d, { ship_id: null, drone_type: d.drone_type, ai: d.ai || null })); spawned = true; }
+        for (const d of await scriptDrones(db, e.drone, ang, cfg, pilotCfg, t, e, zone)) { inserts.push(toInsert(d, { ship_id: null, drone_type: d.drone_type, ai: d.ai || null })); spawned = true; }
       }
     }
   }
