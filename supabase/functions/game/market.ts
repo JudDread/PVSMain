@@ -134,6 +134,12 @@ function pickBest(rows) {
   if (here && (!bestOther || here.sell_price >= topPrice)) return here;
   return bestOther;
 }
+// "top" (2026-11-07, phone Market): the OTHER place that pays the highest average price for the whole stack, with its stock and target stock.
+function pickTop(rows) {
+  let t = null;
+  for (const r of rows) { if (r.is_here) continue; if (!t || r.sell_price > t.sell_price) t = r; }
+  return t ? { location_id: t.location_id, name: t.name, sell_price: t.sell_price, stock: t.stock, target_stock: t.target_stock } : null;
+}
 // body.source: 'hold' (default: what the docked ship carries, measured from where it is docked)
 //              'storage' + body.location: what I keep at that location, measured from THAT location (where the goods are).
 async function cargoPrelude(db, user, body) {
@@ -170,7 +176,7 @@ export async function cargoRoutes(db, user, body) {
   for (const c of x.cargo) {
     const rows = await cargoOptions(db, x.ch, x.ship, x.from, x.locs, c, x.cache, x.departT);
     items.push({ good_id: c.good_id, name: c.name, unit: c.unit, quantity: c.quantity, avg_cost: c.avg_cost,
-      cost_known: c.avg_cost != null, best: pickBest(rows) });
+      cost_known: c.avg_cost != null, best: pickBest(rows), top: pickTop(rows) });
   }
   return json({ ok: true, docked: x.docked, source: x.source, location_id: x.from.id, remote: x.remote, items });
 }
