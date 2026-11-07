@@ -1,9 +1,9 @@
-// assets.js - the Assets screen.
+// assets.js - the Assets screen. (2026-11-07 phone layout: white / grey text like the Market, one-line pop-ups, no explanations: the Library explains.)
 // TOP (always shown, whatever place is chosen): the ship I fly (touch it to rig it) and its Hold.
 // Then the place picker and, for the chosen place (each section hides when empty): Hulls here (touch one to rig it) -> Rigs and weapons here -> Stored here -> Freight.
 // Display only: the server decides everything. Data: 'storage', 'freight_mine', 'freight_hauling'.
 // Creates its own screen block (#scr-assets) and the "Hire hauler" pop-up (#ahire), so index.html needs only the import-map line.
-import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc, hullName, createPicker, openScreen, qtyControl } from 'core';
+import { S, $, say, call, fmt, locName, money, whole, r2, el, cell, LS, addScreen, setShipLine, curGd, dockedAt, defaultLoc, hullName, createPicker, openScreen, short } from 'core';
 import { applyBackdrop } from 'backdrop';
 import { hullPic } from 'rigtext';
 import { openRigging } from 'rigs';
@@ -29,9 +29,11 @@ $('scr-market').after(scr);
 (() => {
   const st = document.createElement('style');
   st.textContent = [
-    '.ascope .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; }',
-    '.ascope .sub { line-height: 1.15 !important; }',
-    '.ascope .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; }',
+    '.ascope .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; color: #fff; font-weight: 500; font-size: 13px; align-items: center; border-top: 0 !important; border-bottom: 1px solid #2f3a58 !important; }',
+    '.ascope .row.one { padding-top: 7px !important; padding-bottom: 7px !important; }',
+    '.ascope .row button { flex: none; height: 34px; min-height: 0; margin: 0; padding: 0 9px; font-size: 13px; }',
+    '.ascope .sub { line-height: 1.15 !important; font-size: 11px !important; font-weight: 400 !important; }',
+    '.ascope .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 500 !important; letter-spacing: 0.02em; color: #fff !important; }',
     '.ascope .sech button { padding: 2px 10px !important; min-height: 0 !important; }',
     '.ascope .sech button.ub { background: #e8b64a !important; color: #14100a !important; border: 0 !important; border-radius: 6px !important; font-weight: 700 !important; padding: 5px 14px !important; }',
     '.ascope .sech button.ub:disabled { opacity: .45; }',
@@ -39,24 +41,34 @@ $('scr-market').after(scr);
     '.ascope .scard { display: flex; align-items: center; gap: 10px; padding: 8px; border: 1px solid #333d57; border-radius: 10px; background: #131a2a; margin: 0 0 8px; }',
     '.ascope .scard.tap { cursor: pointer; }',
     '.ascope .smid { flex: 1 1 auto; min-width: 0; }',
-    '.ascope .sname { font-weight: 700; color: #f3d28a; }',
+    '.ascope .sname { font-weight: 500; font-size: 14px; color: #fff; }',
     '.ascope .scaret { font-size: 24px; color: #8d98b2; padding: 0 4px; }',
     '.ascope .hl { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }',
     '.ascope .row.tap { cursor: pointer; }',
     '.ascope .rigsub { padding: 6px 8px 0; font-size: 12px; color: #8d98b2; }',
-    '.apop { box-sizing: border-box; border: 1px solid #4a6190; background: #131a2a; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }',
-    '.apoptitle { font-weight: 700; color: #f3d28a; margin-bottom: 4px; }',
-    '.apopinfo div { margin: 2px 0; font-size: 13px; }',
-    '.apoprow { margin-top: 8px; display: flex; gap: 8px; justify-content: flex-end; }',
-    '.apoprow button { margin: 0; padding: 8px 18px; }',
-    '#ahire { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }',
+    '.apop { box-sizing: border-box; background: rgba(120,160,210,0.10); border: 1px solid rgba(120,160,210,0.35); border-radius: 8px; padding: 6px 8px; margin: 4px 0 6px; }',
+    '.apop.fr { background: rgba(107,224,143,0.08); border: 0; border-left: 3px solid #6be08f; border-bottom: 3px solid #6be08f; border-radius: 0 0 0 6px; }',
+    '.aprow { display: flex; align-items: center; gap: 5px; }',
+    '.ape { flex: 1; min-width: 0; }',
+    '.apl { font-size: 11px; color: #8d98b2; line-height: 1.1; white-space: nowrap; }',
+    '.apv { font-size: 15px; font-weight: 500; line-height: 1.2; white-space: nowrap; color: #fff; }',
+    '.aprow input.ain { width: 64px; height: 36px; flex: none; margin: 0; padding: 0 8px; text-align: right; font-size: 15px; box-sizing: border-box; }',
+    '.aprow button { flex: none; height: 34px; min-height: 0; margin: 0; padding: 0 9px; font-size: 13px; }',
+    '.apmsg { font-size: 11px; color: #8d98b2; }',
+    '.apmsg:not(:empty) { margin-top: 4px; }',
+    '.apmsg .err { color: #ff7b6b; }',
+    '#ahire { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: flex-start; justify-content: center; padding: 24px 12px 12px; box-sizing: border-box; }',
     '#ahire .abox { background: #131a2a; border: 2px solid #e8b64a; border-radius: 10px; padding: 12px; width: 100%; max-width: 420px; max-height: 92%; overflow-y: auto; box-sizing: border-box; }',
-    '#ahire .alab { font-size: 13px; color: #8d98b2; margin: 8px 0 0; }',
-    '#ahire .aval { font-weight: 600; }',
-    '#ahire .arow { display: flex; gap: 6px; align-items: center; }',
-    '#ahire .arow input { flex: 1 1 auto; min-width: 0; }',
-    '#ahire .abtns { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }',
-    '#ahire .abtns button { margin: 0; padding: 8px 18px; }',
+    '#ahire h2 { font-size: 16px; font-weight: 500; color: #fff; margin: 0 0 4px; }',
+    '#ahire .alab { font-size: 11px; color: #8d98b2; margin: 8px 0 2px; }',
+    '#ahire select { width: 100%; height: 36px; margin: 0; padding: 0 8px; }',
+    '#ahire .hline { display: flex; gap: 10px; align-items: flex-end; justify-content: space-between; }',
+    '#ahire .arow { display: flex; gap: 5px; align-items: center; }',
+    '#ahire .hin { width: 64px; height: 36px; flex: none; margin: 0; padding: 0 8px; text-align: right; font-size: 15px; box-sizing: border-box; }',
+    '#ahire .hin.pin { width: 100px; }',
+    '#ahire .arow button, #ahire .abtns button { flex: none; height: 34px; min-height: 0; margin: 0; padding: 0 12px; font-size: 13px; }',
+    '#ahire .htot { margin-top: 10px; color: #fff; font-weight: 500; }',
+    '#ahire .abtns { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }',
     '#aship { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 12px; box-sizing: border-box; }',
     '#aship .abox { background: #131a2a; border: 2px solid #e8b64a; border-radius: 10px; padding: 12px; width: 100%; max-width: 420px; max-height: 92%; overflow-y: auto; box-sizing: border-box; }',
     '#aship .abox div { margin: 8px 0; }',
@@ -135,16 +147,23 @@ async function refreshAssets() {
 }
 
 /* ---------- the dropdown under a selected row: built ONCE, moved on every redraw, so a number you type survives ---------- */
-function popMax() { const it = curRow(); return it && asel && (asel.kind === 'cargo' || asel.kind === 'storage') ? num(it.quantity) : 0; }
-function fullMax() { const it = curRow(); return it && asel && asel.kind === 'storage' ? maxLoad(it) : 0; }
 const pop = (() => {
-  const root = el('div', 'apop'), title = el('div', 'apoptitle'), info = el('div', 'apopinfo'), brow = el('div', 'apoprow');
-  const q = qtyControl({ steps: [1, 10], getMax: popMax, inputClass: 'ain', extras: [['Full', fullMax]], onChange: () => { aEdited = true; refreshPop(); } });
-  const b1 = el('button', '', ''), b2 = el('button', 'alt', '');
-  brow.append(b1, b2); root.append(title, info, q.root, brow);
-  q.input.addEventListener('blur', () => setTimeout(() => { if (aRedraw && !isTyping()) { aRedraw = false; drawAssets(); } }, 350));
+  const root = el('div', 'apop'), row = el('div', 'aprow'), msg = el('div', 'apmsg');
+  const e = el('div', 'ape'), lab = el('div', 'apl'), val = el('div', 'apv'); e.append(lab, val);
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.inputMode = 'numeric'; inp.step = '1'; inp.min = '0'; inp.className = 'ain'; inp.setAttribute('aria-label', 'Quantity'); inp.value = 0;
+  const mk = (txt, alt) => { const b = el('button', alt ? 'alt' : '', txt); b.type = 'button'; return b; };
+  const bAll = mk('All', true), bFull = mk('Full', true), b1 = mk('', false), b2 = mk('', true);
+  row.append(e, inp, bAll, bFull, b1, b2); root.append(row, msg);
+  const selectAll = () => { try { inp.select(); } catch (x) {} };
+  inp.addEventListener('focus', () => setTimeout(selectAll, 0));   // touching the box selects the whole number
+  inp.addEventListener('click', selectAll);
+  inp.addEventListener('input', () => { aEdited = true; refreshPop(); });
+  inp.addEventListener('blur', () => setTimeout(() => { if (aRedraw && !isTyping()) { aRedraw = false; drawAssets(); } }, 350));
+  bAll.onclick = () => { const it = curRow(); inp.value = it ? num(it.quantity) : 0; aEdited = true; refreshPop(); };
+  bFull.onclick = () => { const it = curRow(); inp.value = it ? maxLoad(it) : 0; aEdited = true; refreshPop(); };   // 'Full' = as much as fits the free hold
   b1.onclick = () => doAct(1); b2.onclick = () => doAct(2);
-  return { root, title, info, row: q.root, brow, inp: q.input, full: q.extras[0], b1, b2 };
+  return { root, e, lab, val, msg, inp, bAll, bFull, b1, b2 };
 })();
 
 function curRow() {
@@ -157,11 +176,12 @@ function curRow() {
 }
 function placePop(it) {
   const p = pop, k = asel.kind, qty = k === 'cargo' || k === 'storage';
-  p.row.style.display = qty ? '' : 'none';
+  p.root.classList.toggle('fr', !qty);   // freight pop-ups get the green side and bottom line, like the Market
+  p.inp.style.display = qty ? '' : 'none';
+  p.bAll.style.display = qty ? '' : 'none';
+  p.bFull.style.display = k === 'storage' ? '' : 'none';
   p.b2.style.display = k === 'storage' ? '' : 'none';
-  p.full.style.display = k === 'storage' ? '' : 'none';   // 'Full' = as much as fits the free hold
-  p.title.style.display = qty ? 'none' : '';
-  p.title.textContent = k === 'open' ? 'Open freight: ' + it.good_name : 'Freight on board';
+  p.e.style.display = k === 'cargo' ? 'none' : '';
   if (qty && !aEdited) p.inp.value = it.quantity;
   refreshPop();
   return p.root;
@@ -169,34 +189,33 @@ function placePop(it) {
 function refreshPop() {
   const it = curRow(); if (!it || !asel) return;
   const p = pop, k = asel.kind, here = k === 'cargo' ? !!dockedAt() : dockedAt() === aloc;   // unloading needs the ship docked anywhere; loading needs it docked HERE
-  p.info.replaceChildren();
-  const line = (cls, t) => p.info.appendChild(el('div', cls, t));
+  p.msg.replaceChildren();
+  const line = (cls, t) => p.msg.appendChild(el('div', cls, t));
   if (k === 'cargo' || k === 'storage') {
     const q = qtyOf(p.inp), bad = isNaN(q) || q < 1, over = !isNaN(q) && q > it.quantity;
     if (isNaN(q)) line('', 'Enter a whole number (1 or more).');
     if (over) line('err', 'You only have ' + whole(it.quantity) + '.');
-    if (k === 'cargo') { p.b1.textContent = 'Unload'; p.b1.disabled = bad || over || abusy || !here; line('muted', 'Moves goods from the hold into storage here.'); return; }
+    if (k === 'cargo') {
+      p.b1.textContent = 'Unload'; p.b1.disabled = bad || over || abusy || !here;
+      if (!here) line('', 'Unloading needs your ship docked.');
+      return;
+    }
+    p.lab.textContent = 'Free hold'; p.val.textContent = r2(freeHold());
     p.b1.textContent = 'Load'; p.b1.disabled = bad || over || !here || q > maxLoad(it) || abusy;
     p.b2.textContent = 'Hire hauler'; p.b2.disabled = bad || over || abusy;
-    line('muted', here ? 'Hold space free: ' + r2(freeHold()) + '.' : 'Loading needs your ship docked here.');
-    line('muted', 'Hire hauler: another pilot carries these goods to a place you choose, for a price you set.');
+    if (!here) line('', 'Loading needs your ship docked here.');
     return;
   }
   if (k === 'open') {
     const open = num(it.units_open), pay = num(it.price_per_unit);
-    p.b1.textContent = 'Cancel contract'; p.b1.disabled = abusy;
-    line('', 'Goes to ' + locName(it.dest_location) + '. Pays the hauler ' + money(pay) + ' per CU.');
     const fee = r100(open * pay * CANCEL_FEE_PCT), back = r100(open * num(it.bonus_per_unit));
-    line('muted', 'Cancelling returns ' + whole(open) + ' units to storage at ' + locName(it.pickup_location) + ' and refunds ' + money(r100(open * pay + back - fee)) + ' credits (' + money(r100(open * pay)) + ' pay' + (back > 0 ? ' + ' + money(back) + ' bonus pool' : '') + ' minus a ' + money(fee) + ' fee that is kept).');
-    if (num(it.units_in_transit) > 0) line('muted', 'Loads already on the way are not affected.');
+    p.lab.textContent = 'Refund'; p.val.textContent = short(r100(open * pay + back - fee), true);
+    p.b1.textContent = 'Cancel contract'; p.b1.disabled = abusy;
     return;
   }
   // freight on board my ship (the hauler's view: no good name, no owner)
+  p.lab.textContent = 'Bonus now'; p.val.textContent = '~' + short(it.bonus_now_total || 0, true);
   p.b1.textContent = aconfirm ? 'Tap again to abandon' : 'Abandon'; p.b1.disabled = abusy;
-  line('', 'Deliver to: ' + (it.dest_name || locName(it.dest_location)));
-  line('', 'Payment for delivery: ' + money(num(it.units) * num(it.pay_per_unit)) + ' (' + money(it.pay_per_unit) + ' per CU)');
-  line('', 'Current bonus: about ' + money(it.bonus_now_total || 0) + ' (' + money(it.bonus_now_per_cu || 0) + ' per CU, falling to 0)');
-  const t = el('div', ''); t.append('Time remaining: ', timerSpan(it.deadline_t)); p.info.appendChild(t);
   if (aconfirm) line('err', 'The load goes back to the queue, and you may lose market reputation.');
 }
 
@@ -226,8 +245,8 @@ function toggle(kind, id) {
   aEdited = false; aconfirm = false; drawAssets();
 }
 function stackRow(box, kind, x, selectable) {
-  const sel = isSel(kind, x.good_id), r = el('div', 'row' + (sel ? ' sel' : ''));
-  r.append(cell('', whole(x.quantity) + ' x ' + x.name, x.avg_cost != null ? 'paid ' + money(x.avg_cost) + ' each' : 'cost unknown'), el('span', 'num', ''));
+  const sel = isSel(kind, x.good_id), r = el('div', 'row one' + (sel ? ' sel' : ''));
+  r.append(el('span', '', whole(x.quantity) + ' x ' + x.name));
   if (selectable) r.onclick = () => toggle(kind, x.good_id);
   box.appendChild(r);
   if (sel) box.appendChild(placePop(x));
@@ -431,29 +450,24 @@ shipDlg.bo.onclick = async () => {
   } finally { sbusy = false; d.bo.disabled = false; d.bc.disabled = false; }
 };
 
-/* ---------- the "Hire hauler" pop-up: centred, on top of everything, nothing else works until it closes ---------- */
+/* ---------- the "Hire hauler" pop-up: on top of everything, near the top of the screen (so the keyboard does not cover it); nothing else works until it closes ---------- */
 const hire = (() => {
   const root = document.createElement('div'); root.id = 'ahire'; root.hidden = true;
   root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true');
-  const box = el('div', 'abox');
-  const vGood = el('div', 'aval'), vPick = el('div', 'aval');
-  const q = document.createElement('input'); q.type = 'number'; q.inputMode = 'numeric'; q.min = '1'; q.step = '1'; q.setAttribute('aria-label', 'Quantity');
-  const chips = el('div', 'chips');
-  const qrow = el('div', 'arow'); qrow.append(q, chips);
+  const box = el('div', 'abox'), vInfo = el('div', 'muted');
   const dest = document.createElement('select'); dest.setAttribute('aria-label', 'Destination');
-  const price = document.createElement('input'); price.type = 'number'; price.inputMode = 'decimal'; price.min = '0'; price.step = '0.01'; price.placeholder = 'credits per CU'; price.setAttribute('aria-label', 'Pay per CU');
-  const total = el('div', ''), credits = el('div', 'muted'), err = el('div', 'err');
+  const q = document.createElement('input'); q.type = 'number'; q.inputMode = 'numeric'; q.min = '1'; q.step = '1'; q.className = 'hin'; q.setAttribute('aria-label', 'Quantity');
+  const price = document.createElement('input'); price.type = 'number'; price.inputMode = 'decimal'; price.min = '0'; price.step = '0.01'; price.className = 'hin pin'; price.placeholder = 'credits'; price.setAttribute('aria-label', 'Pay per CU');
+  const chips = el('div', ''), qrow = el('div', 'arow'), qcol = el('div', ''), pcol = el('div', ''), line = el('div', 'hline');
+  qrow.append(q, chips); qcol.append(el('div', 'alab', 'Quantity (CU)'), qrow); pcol.append(el('div', 'alab', 'Pay per CU'), price); line.append(qcol, pcol);
+  const total = el('div', 'htot'), credits = el('div', 'muted'), err = el('div', 'err');
   const bc = el('button', 'alt', 'Cancel'), bp = el('button', '', 'Post');
   const btns = el('div', 'abtns'); btns.append(bc, bp);
-  box.append(el('h2', '', 'Hire a hauler'),
-    el('div', 'alab', 'Goods'), vGood, el('div', 'alab', 'Pickup (where the goods are)'), vPick,
-    el('div', 'alab', 'Quantity (CU)'), qrow,
-    el('div', 'alab', 'Deliver to'), dest,
-    el('div', 'alab', 'Pay per CU (cargo unit), for the hauler'), price,
-    el('div', 'alab', ''), total, credits, err, btns);
+  q.addEventListener('focus', () => setTimeout(() => { try { q.select(); } catch (x) {} }, 0));
+  box.append(el('h2', '', 'Hire a hauler'), vInfo, el('div', 'alab', 'Deliver to'), dest, line, total, credits, err, btns);
   root.appendChild(box);
   document.body.appendChild(root);
-  return { root, vGood, vPick, q, chips, dest, price, total, credits, err, bc, bp };
+  return { root, vInfo, q, chips, dest, price, total, credits, err, bc, bp };
 })();
 let hs = null, hbusy = false;   // hs = { good, name, pickup, have }
 
@@ -472,8 +486,8 @@ function hireCheck() {
 function refreshHire() {
   if (!hs) return;
   const c = hireCheck(), cr = num(S.last && S.last.character && S.last.character.credits);
-  hire.total.className = '';
-  if (c.total != null) hire.total.textContent = 'You pay now: ' + money(c.cost) + ' = ' + money(c.total) + ' pay (' + whole(c.q) + ' x ' + money(c.price) + ') + ' + money(c.bonus) + ' bonus pool (fast-delivery bonus, paid by you; what the hauler does not earn comes back). All held until delivery. If you cancel you get it back minus ' + money(r100(c.total * CANCEL_FEE_PCT)) + ' (1% of the pay).';
+  hire.total.className = 'htot';
+  if (c.total != null) hire.total.textContent = 'You pay now: ' + money(c.cost) + ' (' + money(c.total) + ' pay + ' + money(c.bonus) + ' bonus pool)';
   else { hire.total.className = 'muted'; hire.total.textContent = 'Enter a quantity and a price (up to 2 decimals).'; }
   hire.credits.textContent = 'Your credits: ' + money(cr);
   let msg = '';
@@ -486,10 +500,10 @@ function refreshHire() {
 function closeHire() { hire.root.hidden = true; document.body.style.overflow = ''; hs = null; }
 function openHire(it, q) {
   hs = { good: it.good_id, name: it.name, pickup: aloc, have: it.quantity };
-  hire.vGood.textContent = it.name; hire.vPick.textContent = locName(aloc);
+  hire.vInfo.textContent = it.name + ', picked up at ' + locName(aloc);
   hire.q.value = q;
   hire.chips.replaceChildren();
-  [['1', () => 1], ['10', () => 10], ['All', () => hs.have]].forEach(([l, f]) => { const b = el('button', 'alt', l); b.onclick = () => { hire.q.value = f(); refreshHire(); }; hire.chips.appendChild(b); });
+  { const ab = el('button', 'alt', 'All'); ab.type = 'button'; ab.onclick = () => { hire.q.value = hs.have; refreshHire(); }; hire.chips.appendChild(ab); }
   const locs = ((S.last && S.last.locations) || []).filter(l => l.id !== aloc && (!l.svc || l.svc.includes('hangar'))).sort((a, b) => a.name.localeCompare(b.name));
   hire.dest.replaceChildren(...locs.map(l => { const o = document.createElement('option'); o.value = l.id; o.textContent = l.name; return o; }));
   const mem = LS.get('pvs_hdest'); if (mem && locs.some(l => l.id === mem)) hire.dest.value = mem;
