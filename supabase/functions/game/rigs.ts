@@ -7,6 +7,7 @@
 //   rig_fit         body.rig, body.ship (optional)  fit one rig from storage here (first) or the hold
 //   rig_unfit       body.fit                        take one fitted rig off; it goes to storage
 //   rig_unfit_all   body.ship (optional)            take EVERY rig off one ship
+//   rig_apply       body.ship (optional), body.ops  [{op:'fit'|'unfit', rig}] (1-60)  ALL the planned changes in ONE call, all or nothing (migration 094); the Rigging screen uses this
 //   facilities      body.location (optional)        what a place offers; with no place: which places have a facility
 //   shipyard        body.location                   the rig store of a place: what it sells, what I have there to sell
 //   rig_buy         body.location, body.rig, body.qty    buy; the rigs go to storage AT that place (you need not be there)
@@ -51,7 +52,21 @@ export async function rigsView(db, user, body) {
   if (!sa.ok) return json({ error: 'bad_request' }, 400);
   const ch = await ready(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
-  return await ask(db, 'rig_view', { p_character: ch.id, p_ship: sa.ship });
+  const { data, error } = await db.rpc('rig_view', { p_character: ch.id, p_ship: sa.ship });
+  if (error) throw error;
+  if (!data || data.ok === false) return json(data ?? { error: 'rig_view_failed' }, 409);
+  // 094: the Rigging screen plans changes in the browser with the same power and hold rules, so every rig row also says what it adds
+  // to the ship's power output (effects.power_output) and to its hold (effects.hold_cu).
+  const rows = [...(data.fitted ?? []), ...(data.here ?? [])];
+  const ids = [...new Set(rows.map(r => r.rig_id))];
+  if (ids.length) {
+    const { data: rg, error: e2 } = await db.from('rigs').select('id, effects').in('id', ids);
+    if (e2) throw e2;
+    const fx = {};
+    (rg ?? []).forEach(r => { fx[r.id] = r.effects || {}; });
+    rows.forEach(r => { const e = fx[r.rig_id] || {}; r.power_bonus = Number(e.power_output) || 0; r.hold_bonus = Number(e.hold_cu) || 0; });
+  }
+  return json(data);
 }
 
 export async function rigFit(db, user, body) {
@@ -78,6 +93,24 @@ export async function rigUnfitAll(db, user, body) {
   const ch = await ready(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
   return await ask(db, 'rig_unfit_all', { p_character: ch.id, p_ship: sa.ship });
+}
+
+// 094: body.ops = the planned steps IN ORDER, each {op:'fit'|'unfit', rig}. SQL runs them with rig_fit / rig_unfit and undoes everything if one is refused.
+// A refusal answers 409 {error, ...numbers, step}.
+const OPS_MAX = 60;
+export async function rigApply(db, user, body) {
+  const sa = shipArg(body);
+  const ops = body.ops;
+  if (!sa.ok || !Array.isArray(ops) || ops.length < 1 || ops.length > OPS_MAX) return json({ error: 'bad_request' }, 400);
+  const clean = [];
+  for (const o of ops) {
+    const op = o ? o.op : null, rig = String(o && o.rig !== undefined ? o.rig : '');
+    if ((op !== 'fit' && op !== 'unfit') || !RIG_RE.test(rig)) return json({ error: 'bad_request' }, 400);
+    clean.push({ op, rig });
+  }
+  const ch = await ready(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  return await ask(db, 'rig_apply', { p_character: ch.id, p_ship: sa.ship, p_ops: clean });
 }
 
 // No body.location: which places have a facility at all (for the place list), e.g. { places: [{ location_id, kinds: ['shipyard'] }] }.
