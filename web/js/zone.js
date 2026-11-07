@@ -41,7 +41,7 @@ const CSS = `
 .ztop::-webkit-scrollbar{display:none}
 .ztop>.zc:first-child{margin-left:auto}   /* few ships: the row sits against the right edge; a full row starts at the gear and the rest slides in from the right */
 .ztop .zsq{touch-action:pan-x}
-.zbot{position:absolute;left:6px;right:6px;bottom:calc(3px + env(safe-area-inset-bottom,0px));padding:3px;display:flex;flex-direction:row;gap:6px;align-items:flex-end;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;pointer-events:none}
+.zbot{position:absolute;left:72px;right:6px;bottom:calc(3px + env(safe-area-inset-bottom,0px));padding:3px;display:flex;flex-direction:row;gap:6px;align-items:flex-end;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;pointer-events:none}
 .zbot::-webkit-scrollbar{display:none}
 .zbot>.zsq,.zbot>div{flex:0 0 auto}
 .zbot>.zsq:first-child{margin-left:auto}   /* few chips: the row sits against the right edge; more than fit: it starts at the left and scrolls (a slide on a chip scrolls it) */
@@ -68,7 +68,7 @@ const CSS = `
 .zsb{position:relative;height:13px;background:#1c2438;border-radius:3px;overflow:hidden}
 .zsb i{position:absolute;left:0;top:0;bottom:0;width:0}
 .zsb span{position:relative;display:block;font-size:11px;line-height:13px;text-align:center;color:#fff;text-shadow:0 0 2px #000,0 0 2px #000}
-.zbars{position:absolute;left:6px;bottom:calc(var(--c) + 12px + env(safe-area-inset-bottom,0px));height:calc((100% - 62px) / 2);display:flex;gap:3px;pointer-events:none}
+.zbars{position:absolute;left:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));height:calc((100% - 62px) / 2);display:flex;gap:3px;pointer-events:none}
 .zvb{position:relative;width:18px;background:rgba(28,36,56,.9);border-radius:4px;overflow:hidden}
 .zvb i{position:absolute;left:0;right:0;bottom:0;height:0}
 .zvb b{position:absolute;left:0;right:0;top:2px;font-size:11px;text-align:center;color:#fff;text-shadow:0 0 2px #000}
@@ -739,10 +739,12 @@ function buildMenu() {
   const d = view && menuFor && menuItems(menuFor);
   if (!d) { R.menu.hidden = true; menuFor = null; return false; }
   const rows = [el('div', 'zh', d.title)];
+  if (!d.ship && menuFor === view.me.id) rows.push(el('div', 'zl', 'Targeting: ' + (view.me.target_id ? nameOf(view.me.target_id) : 'nobody')));
   if (d.ship) {                                          // class, weapons and mods in short form, and the range toggle
     const s = d.ship, cl = String(s.class || '?').toLowerCase();
     rows.push(el('div', 'zl', (CLS[cl] || cl.slice(0, 3)) + '  |  weapons: ' + grouped((s.weapons || []).map(w => FAB[w.fam] || abbr(w.fam)))));
     rows.push(el('div', 'zl', 'mods: ' + grouped((s.mods || []).filter(x => x.k !== 'weapon').map(x => abbr(x.n)))));
+    rows.push(el('div', 'zl', 'Targeting: ' + (s.tid ? nameOf(s.tid) : 'nobody')));        // who this ship is shooting at (the map shows it too)
     const on = rangeOn.has(s.id), rb = el('button', on ? '' : 'alt', 'Range: ' + (on ? 'ON' : 'OFF'));
     rb.onclick = ev => { ev.stopPropagation(); if (rangeOn.has(s.id)) rangeOn.delete(s.id); else rangeOn.add(s.id); buildMenu(); drawMap(); };
     rows.push(rb);
@@ -789,9 +791,12 @@ function renderModChips() {
   R.bot.querySelectorAll('.zsq[data-fam="missile"] .zd').forEach(d => { d.textContent = ammoLabel(view.me.ammo); });      // the ammo number follows the fight
   const sig = groups.map(g => g.id + ':' + g.list.map(m => modOn(m) ? 1 : 0).join('')).join(',');
   if (sig === modSig) { if (comboFor) fillCombo(); return; }
-  modSig = sig; R.bot.replaceChildren();
+  modSig = sig;
+  const first = R.bot.children.length === 0, keep = R.bot.scrollLeft;     // a rebuild (a chip switched) must not throw the scrolled row back to the start
+  R.bot.replaceChildren();
   if (!mods.length) { const n = el('div', '', 'No weapons or rigs fitted.'); n.style.cssText = 'font-size:12px;color:#aab4cc;padding:8px;pointer-events:none'; R.bot.appendChild(n); return; }
   groups.forEach(g => R.bot.appendChild(makeGroupChip(g)));
+  R.bot.scrollLeft = first ? R.bot.scrollWidth : keep;          // right justified: a row too long to fit starts at its RIGHT end; later it stays where the pilot scrolled it
   if (comboFor) fillCombo();
 }
 /* a tap on a chip: one module switches; a combined chip switches ALL of its modules (all on -> all off, otherwise all on) */
@@ -1037,6 +1042,13 @@ function drawMap() {
   const pos = new Map();
   view.ships.forEach(s => pos.set(s.id, ship(s, P(s), REL[rel(s)], false)));
   pos.set(m.id, ship(m, mp, REL.ally, true));
+  // WHO IS TARGETING WHOM: a red pulsing ring around the TARGET of the selected ship (or around MY target when nothing is selected), and a thin dashed red line from the selected ship to it
+  const selS = sel && view.ships.find(s => s.id === sel), from = selS ? selS.id : m.id, to = selS ? selS.tid : m.target_id;
+  if (to && pos.get(to)) {
+    const q = pos.get(to), f = pos.get(from), pulse = 0.5 + 0.5 * Math.sin(Date.now() / 175);
+    if (selS && f && from !== to) { c.save(); c.strokeStyle = 'rgba(255,59,48,.55)'; c.lineWidth = 1.5; c.setLineDash([5, 5]); c.beginPath(); c.moveTo(f.x, f.y); c.lineTo(q.x, q.y); c.stroke(); c.restore(); }
+    c.save(); c.strokeStyle = 'rgba(255,59,48,' + (0.4 + 0.6 * pulse).toFixed(2) + ')'; c.lineWidth = 2.5; c.beginPath(); c.arc(q.x, q.y, 17 + 3 * pulse, 0, 7); c.stroke(); c.restore();
+  }
   // floating numbers: red damage and blue regeneration, rising and fading
   const now = Date.now(); pops = pops.filter(p => now - p.born < 1500);
   c.font = 'bold 14px system-ui,sans-serif'; c.textAlign = 'center';
