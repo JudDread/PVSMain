@@ -44,8 +44,8 @@ function sortGoods(list) {
 (() => {
   const st = document.createElement('style');
   st.textContent = [
-    '#mbody .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; }',
-    '#mbody .mrow, #mbody .crow { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 48px !important; line-height: 1.2 !important; align-items: center !important; }',
+    '#mbody .row { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; border-top: 0 !important; border-bottom: 1px solid #2f3a58 !important; }',
+    '#mbody .mrow, #mbody .crow { padding-top: 3px !important; padding-bottom: 3px !important; min-height: 0 !important; line-height: 1.2 !important; align-items: center !important; border-top: 0 !important; border-bottom: 1px solid #2f3a58 !important; }',
     '#mbody .sub { line-height: 1.15 !important; font-size: 11px !important; }',
     '#mbody .sech { padding-top: 4px !important; padding-bottom: 4px !important; min-height: 0 !important; line-height: 1.2 !important; }',
     '#mbody .sech button { padding: 2px 10px !important; min-height: 0 !important; }',
@@ -57,7 +57,7 @@ function sortGoods(list) {
     '#mbody .sech button.ub:disabled { opacity: .45; }',
     '#mbody .sech select { background: #192033 !important; color: #e3e9f7 !important; border: 1px solid #333d57 !important; border-radius: 6px !important; font: inherit; font-size: 13px !important; padding: 2px 6px !important; margin: 0 !important; width: auto !important; max-width: 48% !important; min-height: 0 !important; }',
     '.crow, .shead { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr) minmax(0,.9fr); column-gap: 8px; padding: 3px 8px; align-items: center; }',
-    '.crow { border-top: 1px solid #1c2438; cursor: pointer; font-size: 13px; }',
+    '.crow { cursor: pointer; font-size: 13px; }',
     '.crow.sel { background: #2a3350; outline: 2px solid #e8b64a; outline-offset: -2px; }',
     '.shead { font-size: 11px; color: #8d98b2; border-bottom: 1px solid #222b40; }',
     '.mpop { background: rgba(120,160,210,0.10); border: 1px solid rgba(120,160,210,0.35); border-radius: 8px; padding: 6px 8px; margin: 4px 0 6px; }',
@@ -76,7 +76,7 @@ function sortGoods(list) {
     '.mcfb > div { margin-bottom: 8px; }',
     '.mcfr { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }',
     '.mcfr button { margin: 0; padding: 8px 18px; min-width: 100px; }',
-    '#mbody .sech { background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; }'
+    '#mbody .sech { background: rgba(120,160,210,0.16) !important; border-top: 2px solid rgba(120,160,210,0.55) !important; border-bottom: 1px solid rgba(120,160,210,0.25) !important; font-weight: 600 !important; letter-spacing: 0.02em; color: #e3e9f7 !important; }'
   ].join('\n');
   document.head.appendChild(st);
 })();
@@ -547,7 +547,7 @@ function drawFreight(box, d, loc, items) {
     const r = el('div', 'row' + (sel ? ' sel' : ''));
     r.append(
       cell('', 'To ' + x.dest_name + (x.mine ? ' (yours)' : ''), whole(x.units_open * he) + ' CU open, window ' + fmt(x.window_days * 86400 / scale)),
-      cell('num get', abbr(x.pay_per_unit / he) + ' / CU', 'bonus up to ' + abbr(x.bonus_max_per_cu / he)));
+      cell('num', abbr(x.pay_per_unit / he) + ' / CU', 'bonus up to ' + abbr(x.bonus_max_per_cu / he)));
     r.onclick = () => { frSel = sel ? null : x.contract_id; drawMarket(); };
     box.appendChild(r);
     if (sel) box.appendChild(frPop(d, loc, x, scale));
@@ -609,8 +609,8 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
         const best = P !== 'ALL'
           ? cell('num', abbr(g.best_price), abbr(g.pl_stock) + (g.pl_base > 0 ? ' (' + pctOf(g.pl_stock, g.pl_base) + ')' : ''))
           : (g.best_name ? cell('num', g.best_name, abbr(g.best_price)) : cell('num muted', '-'));
-        r.append(cell('', g.name), best, cell('num ' + (key === 'consumed' ? 'get' : 'pay'), abbr(g.price)), stockCell);
-      } else r.append(cell('', g.name), cell('num pay', money(g.buy_price)), cell('num get', money(g.sell_price)), stockCell);
+        r.append(cell('', g.name), best, cell('num', abbr(g.price)), stockCell);
+      } else r.append(cell('', g.name), cell('num', money(g.buy_price)), cell('num', money(g.sell_price)), stockCell);
       wireRow(r, 'goods:' + loc + ':' + g.good_id, { open: () => openDD(loc, 'goods', g.good_id), close: closeDD, isOpen: () => isDD(loc, 'goods', g.good_id), tap: () => toggleSel(loc, 'goods', g.good_id) });
       box.appendChild(r);
       if (sel) box.appendChild(placePop(d, 'goods', g));
