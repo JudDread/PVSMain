@@ -1042,11 +1042,11 @@ function drawMap() {
   const pos = new Map();
   view.ships.forEach(s => pos.set(s.id, ship(s, P(s), REL[rel(s)], false)));
   pos.set(m.id, ship(m, mp, REL.ally, true));
-  // WHO IS TARGETING WHOM: a red pulsing ring around the TARGET of the selected ship (or around MY target when nothing is selected), and a thin dashed red line from the selected ship to it
+  // WHO IS TARGETING WHOM: a red pulsing ring around the TARGET of the selected ship (or around MY target when nothing is selected), and a thin dashed red line to it from that ship (from MY ship when nothing is selected)
   const selS = sel && view.ships.find(s => s.id === sel), from = selS ? selS.id : m.id, to = selS ? selS.tid : m.target_id;
   if (to && pos.get(to)) {
     const q = pos.get(to), f = pos.get(from), pulse = 0.5 + 0.5 * Math.sin(Date.now() / 175);
-    if (selS && f && from !== to) { c.save(); c.strokeStyle = 'rgba(255,59,48,.55)'; c.lineWidth = 1.5; c.setLineDash([5, 5]); c.beginPath(); c.moveTo(f.x, f.y); c.lineTo(q.x, q.y); c.stroke(); c.restore(); }
+    if (f && from !== to) { c.save(); c.strokeStyle = 'rgba(255,59,48,.55)'; c.lineWidth = 1.5; c.setLineDash([5, 5]); c.beginPath(); c.moveTo(f.x, f.y); c.lineTo(q.x, q.y); c.stroke(); c.restore(); }
     c.save(); c.strokeStyle = 'rgba(255,59,48,' + (0.4 + 0.6 * pulse).toFixed(2) + ')'; c.lineWidth = 2.5; c.beginPath(); c.arc(q.x, q.y, 17 + 3 * pulse, 0, 7); c.stroke(); c.restore();
   }
   // floating numbers: red damage and blue regeneration, rising and fading
