@@ -14,7 +14,7 @@ import { gate, placeServices } from './services.ts';          // 077: what a pla
 import { skillsView, skillBuy } from './skills.ts';
 import { missionsView, missionStep, missionAccept, missionClaim, missionsSeen } from './missions.ts';
 import { profileView } from './profile.ts';
-import { rigsView, rigFit, rigUnfit, rigUnfitAll, facilitiesView, shipyardView, rigTrade, hullBuy, hullSell } from './rigs.ts';
+import { rigsView, rigFit, rigUnfit, rigUnfitAll, rigApply, facilitiesView, shipyardView, rigTrade, hullBuy, hullSell } from './rigs.ts';
 import { courseOptions, courseChange } from './course.ts';
 import { kickBots } from './bot.ts';
 // combat.ts is loaded only when a combat action runs (a dynamic import), so a problem inside it can never stop the whole game from starting.
@@ -29,10 +29,10 @@ async function combatCall(fn, ...args) {
 // Actions that count as the pilot DOING something: they set characters.last_action_at (the 'Last active' time on a profile).
 const ACTIVE_ACTIONS = new Set(['queue_travel', 'course_change', 'trade_at', 'load', 'unload', 'unload_all', 'freight_post', 'freight_cancel',
   'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'insurance_choose', 'skill_buy', 'mission_accept', 'mission_claim',
-  'rig_fit', 'rig_unfit', 'rig_unfit_all', 'rig_buy', 'rig_sell', 'hull_buy', 'hull_sell',
+  'rig_fit', 'rig_unfit', 'rig_unfit_all', 'rig_apply', 'rig_buy', 'rig_sell', 'hull_buy', 'hull_sell',
   'combat_enter', 'combat_order', 'combat_target', 'combat_stance', 'combat_module', 'combat_batch']);
 // Actions refused while the flown ship is inside a combat zone (it must fly out of the zone first).
-const BLOCKED_IN_COMBAT = new Set(['queue_travel', 'load', 'unload', 'unload_all', 'ship_leave', 'ship_board', 'rig_fit', 'rig_unfit', 'rig_unfit_all']);
+const BLOCKED_IN_COMBAT = new Set(['queue_travel', 'load', 'unload', 'unload_all', 'ship_leave', 'ship_board', 'rig_fit', 'rig_unfit', 'rig_unfit_all', 'rig_apply']);
 const STARTER_LOCATION = 'luna'; // a row id in the locations table
 
 
@@ -316,7 +316,7 @@ Deno.serve(async (req) => {
       try { inFight = await (await import('./combat.ts')).inCombat(db, user); } catch (e) { console.error('combat check skipped', e); }
       if (inFight) return json({ error: 'in_combat', message: 'Your ship is in a combat zone. Fly out of the zone first.' }, 409);
     }
-    const refused = await gate(db, user, body.action, body);        // 077: actions that put things down need the service at this place
+    const refused = await gate(db, user, body.action === 'rig_apply' ? 'rig_fit' : body.action, body);        // 077: actions that put things down need the service at this place (094: rig_apply is gated like rig_fit: both fit and remove rigs)
     if (refused) return refused;
     switch (body.action) {
       case 'me': kickBots(db); return await me(db, user); // bots take a turn in the background (bot.ts)
@@ -358,6 +358,7 @@ Deno.serve(async (req) => {
       case 'rig_fit': return await rigFit(db, user, body);
       case 'rig_unfit': return await rigUnfit(db, user, body);
       case 'rig_unfit_all': return await rigUnfitAll(db, user, body);
+      case 'rig_apply': return await rigApply(db, user, body);   // 094: all the planned rig changes in one call
       case 'facilities': return await facilitiesView(db, user, body);
       case 'shipyard': return await shipyardView(db, user, body);
       case 'rig_buy': return await rigTrade(db, user, body, 'buy');
