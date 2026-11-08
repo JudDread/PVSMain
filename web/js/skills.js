@@ -3,11 +3,32 @@
 // short explanation with a Spend button. Display + requests only: the server (skills.ts, SQL skill_buy) does the maths and the buying.
 // Skills that cannot be bought yet are shown dimmed with a short note. This file makes its own div (id scr-skills), so index.html
 // needs no change. Loaded by profile.js.
+// 2026-11-07 phone layout: Available / Earned / Spent on one line, group bars like the other screens, compact skill rows with thin Grade segments,
+// the opened skill shows the flavor text, what the next Grade gives and ONE line: its cost and the Spend button (opening the skill is the confirmation step).
 import { S, addScreen, openScreen, el, call, whole } from 'core';
 
 const box = el('div', '');
 box.id = 'scr-skills'; box.hidden = true;
 document.getElementById('scr-profile').parentNode.appendChild(box);
+const css = document.createElement('style');
+css.textContent = [
+  '#scr-skills h2{font-size:18px;font-weight:500;color:#fff;margin:4px 4px 8px;display:flex;justify-content:space-between;align-items:center}',
+  '#scr-skills .skg{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 12px;padding:8px}',
+  '#scr-skills .skk{font-size:11px;color:#8d98b2;font-weight:400}',
+  '#scr-skills .skv{font-size:13px;color:#fff;font-weight:500}',
+  '#scr-skills .skbar{display:flex;width:100%;align-items:center;gap:8px;margin:10px 0 0;padding:0 8px;min-height:34px;border-radius:0;text-align:left;background:rgba(120,160,210,.16);border:0;border-top:2px solid rgba(120,160,210,.55);border-bottom:1px solid rgba(120,160,210,.25);color:#fff;font-weight:500;font-size:13px}',
+  '#scr-skills .skbar .gi{font-size:11px;font-weight:400;color:#8d98b2}',
+  '#scr-skills .sk{padding:6px 8px;border-bottom:1px solid #2f3a58;color:#fff;font-weight:500;font-size:13px;cursor:pointer}',
+  '#scr-skills .sk.sel{background:#2a3350;outline:2px solid #e8b64a;outline-offset:-2px}',
+  '#scr-skills .sk.dim{opacity:.5;cursor:default}',
+  '#scr-skills .skt{display:flex;justify-content:space-between;align-items:baseline;gap:8px}',
+  '#scr-skills .sks{font-size:11px;font-weight:400;color:#8d98b2}',
+  '#scr-skills .skw{font-size:11px;font-weight:400;color:#fff}',
+  '#scr-skills .skp{margin:0 0 6px;padding:8px;background:rgba(120,160,210,.10);border:1px solid rgba(120,160,210,.35);border-radius:8px;color:#fff;font-size:11px;font-weight:400}',
+  '#scr-skills .skf{font-style:italic;color:#b9c3dc;margin-bottom:6px}',
+  '#scr-skills .skp button{height:34px;min-height:0;margin:0;padding:0 12px;font-size:13px}',
+].join('');
+document.head.appendChild(css);
 
 // One short grey line beside each group title (display text only).
 const GROUP_INFO = { flight: 'Endurance and trip time', tactical: 'Weapons and maneuvering', eng: 'Ship hardware', market: 'Trading' };
@@ -71,36 +92,23 @@ function bonusText(s, grade) {        // the bonus at a Grade, e.g. "+6% total e
 }
 const cals = n => n + ' Calibration' + (n === 1 ? '' : 's');
 
-function bars(grade, max) {           // big bars, one per Grade, filling the width of the box
+function bars(grade, max) {           // thin bars, one per Grade, filling the width of the row
   const row = el('div', '');
-  row.style.cssText = 'display:flex;gap:3px;margin:8px 0 6px;';
+  row.style.cssText = 'display:flex;gap:3px;margin:5px 0 4px;';
   for (let i = 1; i <= max; i++) {
     const p = el('div', '');
-    p.style.cssText = 'flex:1;height:14px;border-radius:3px;background:' + (i <= grade ? '#e8b64a' : '#0c1220') + ';border:1px solid ' + (i <= grade ? '#e8b64a' : '#2c3652') + ';';
+    p.style.cssText = 'flex:1;height:6px;border-radius:2px;background:' + (i <= grade ? '#e8b64a' : '#0c1220') + ';border:1px solid ' + (i <= grade ? '#e8b64a' : '#2c3652') + ';';
     row.appendChild(p);
   }
   return row;
 }
-function spaced() {                   // a row with something on the left and something on the right
-  const r = el('div', '');
-  r.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:8px;';
-  return r;
-}
 
-// The unfolded part of a skill box: the flavor text, then what the next Grade gives, the question, and the Spend button. All centered.
+// The unfolded part under a skill row: the flavor text, what the next Grade gives, then ONE line: the cost and the Spend button.
 function panel(s) {
-  const p = el('div', '');
-  p.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #3a4666;text-align:center;';
-  p.onclick = e => e.stopPropagation();           // taps inside the panel must not fold the box
+  const p = el('div', 'skp');
+  p.onclick = e => e.stopPropagation();
   const fl = FLAVOR[s.name];
-  if (fl) {
-    const f = el('div', '', fl);
-    f.style.cssText = 'font-style:italic;color:#b9c3dc;margin-bottom:10px;';
-    p.appendChild(f);
-    const line = el('div', '');
-    line.style.cssText = 'border-top:1px solid #2c3652;margin:0 0 10px;';
-    p.appendChild(line);
-  }
+  if (fl) p.appendChild(el('div', 'skf', fl));
   if (s.next_cost == null) { p.appendChild(el('div', '', s.name + ' is at its top Grade.')); return p; }
   const next = s.grade + 1, cal = D.cal || {}, have = Number(cal.available || 0);
   const pp = sparts(s);
@@ -112,92 +120,80 @@ function panel(s) {
   const gives = s.grade === 0
     ? 'Grade 1 of ' + s.name + ' gives you ' + per + '.'
     : 'Grade ' + next + ' of ' + s.name + ' gives you another ' + per + (pp ? ', bringing your total to ' + val(pp, next) + (pp.tot || '') + '.' : '.');
-  p.appendChild(el('div', '', gives));
-  const q = el('div', '', 'Are you sure you want to spend ' + cals(s.next_cost) + ' on this ' + s.name + ' upgrade?');
-  q.style.marginTop = '12px';
-  p.appendChild(q);
-  const btn = el('button', '', 'Spend');
-  btn.style.cssText = 'display:block;margin:10px auto 0;';
+  const g = el('div', '', gives); g.style.marginBottom = '8px'; p.appendChild(g);
+  const row = el('div', 'skt'); row.style.alignItems = 'center';
+  row.appendChild(el('span', 'sks', 'Cost ' + cals(s.next_cost)));
+  const btn = el('button', '', 'Spend ' + s.next_cost + ' Cal');
   btn.disabled = busy;
   btn.onclick = () => buy(s);
-  p.appendChild(btn);
+  row.appendChild(btn);
+  p.appendChild(row);
   return p;
 }
 
 function skillBox(s) {
-  const c = el('div', '');
-  c.style.cssText = 'background:#1b243a;border:1px solid #3a4666;border-radius:6px;padding:8px;margin:6px 0;';
-  const top = spaced();
-  top.appendChild(el('strong', '', s.name));
+  const w = el('div', '');
+  const c = el('div', 'sk' + (openSkill === s.id && s.active ? ' sel' : ''));
+  const top = el('div', 'skt');
+  top.appendChild(el('span', '', s.name));
   const sp = sparts(s);
-  const ef = el('span', 'muted', (sp ? val(sp, 1) + ' ' + sp.rest : s.effect) + ' per Grade');
-  ef.style.textAlign = 'right';
-  top.appendChild(ef);
-  c.appendChild(top);
-
+  const per = (sp ? val(sp, 1) + ' ' + sp.rest : s.effect) + ' per Grade';
   if (!s.active) {                                  // cannot be bought yet: dimmed, not tappable
-    c.style.opacity = '.6';
-    c.appendChild(el('div', 'muted', s.locked_note || 'Not available yet'));
-    return c;
+    c.classList.add('dim');
+    c.appendChild(top);
+    c.appendChild(el('div', 'sks', s.locked_note || 'Not available yet'));
+    w.appendChild(c);
+    return w;
   }
+  top.appendChild(el('span', 'sks', s.next_cost == null ? 'Max Grade' : 'Grade ' + s.grade + ' / ' + D.max_grade));
+  c.appendChild(top);
   c.appendChild(bars(s.grade, D.max_grade));
-  const info = spaced();
+  const info = el('div', 'skt');
   const bt = bonusText(s, s.grade);
-  info.appendChild(el('span', bt ? '' : 'muted', bt || 'No bonus yet'));
-  info.appendChild(el('span', 'muted', s.next_cost == null ? 'Max Grade' : 'Grade ' + s.grade + ' / ' + D.max_grade));
+  info.appendChild(el('span', bt ? 'skw' : 'sks', bt || 'No bonus yet'));
+  info.appendChild(el('span', 'sks', per));
   c.appendChild(info);
-
-  {                                                 // the box itself is the button (also at the top Grade, to read the flavor text)
-    c.style.cursor = 'pointer';
-    c.setAttribute('role', 'button'); c.tabIndex = 0;
-    c.onclick = () => { openSkill = openSkill === s.id ? null : s.id; draw(); };
-    if (openSkill === s.id) c.appendChild(panel(s));
-  }
-  return c;
+  c.setAttribute('role', 'button'); c.tabIndex = 0;   // the row itself is the button (also at the top Grade, to read the flavor text)
+  c.onclick = () => { openSkill = openSkill === s.id ? null : s.id; draw(); };
+  w.appendChild(c);
+  if (openSkill === s.id) w.appendChild(panel(s));
+  return w;
 }
 
 function draw() {
   box.replaceChildren();
-  const head = spaced();
-  head.style.alignItems = 'center';
-  const left = el('div', 'pad');
-  const cal = D && D.cal ? D.cal : null;
-  left.appendChild(el('strong', '', 'Calibrations (Cal): ' + (cal ? whole(cal.available) : '...')));
-  if (cal) {
-    const sub = el('span', 'muted', 'Earned ' + whole(cal.earned) + ', spent ' + whole(cal.spent));
-    sub.style.marginLeft = '12px';
-    left.appendChild(sub);
-  }
-  head.appendChild(left);
+  const h = el('h2', '', 'Skills');
   const x = el('button', 'alt', 'X');               // back to Profile: square, top right
-  x.style.cssText = 'width:40px;height:40px;padding:0;margin:0;flex:none;';
+  x.style.cssText = 'width:34px;height:34px;padding:0;margin:0;flex:none;min-height:0;';
   x.title = 'Back to Profile'; x.setAttribute('aria-label', 'Back to Profile');
   x.onclick = () => openScreen('profile');
-  head.appendChild(x);
-  box.appendChild(head);
+  h.appendChild(x);
+  box.appendChild(h);
+  const cal = D && D.cal ? D.cal : null;
+  const g = el('div', 'skg');
+  [['Available', cal ? whole(cal.available) : '...'], ['Earned', cal ? whole(cal.earned) : ''], ['Spent', cal ? whole(cal.spent) : '']].forEach(([k, v]) => {
+    const d = el('div', ''); d.append(el('div', 'skk', k), el('div', 'skv', v)); g.appendChild(d);
+  });
+  box.appendChild(g);
 
   if (note) box.appendChild(el('div', 'pad ' + noteCls, note));
   if (!D) { if (!note) box.appendChild(el('div', 'muted pad', 'Loading...')); return; }
 
   const groups = [];                                // keep the server's order
   for (const s of D.skills) {
-    let g = groups.find(x => x.id === s.group_id);
-    if (!g) { g = { id: s.group_id, name: s.group_name, skills: [] }; groups.push(g); }
-    g.skills.push(s);
+    let gr = groups.find(y => y.id === s.group_id);
+    if (!gr) { gr = { id: s.group_id, name: s.group_name, skills: [] }; groups.push(gr); }
+    gr.skills.push(s);
   }
-  for (const g of groups) {
+  for (const gr of groups) {
     const sec = el('section', '');
-    const isOpen = openGroups.has(g.id);
-    const h = el('button', 'alt');                  // the whole title row is a button: tap to fold / unfold
-    h.style.cssText = 'display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;width:100%;text-align:left;margin:0;';
-    const t = el('strong', '', g.name); t.style.color = '#e8b64a';
-    h.appendChild(t);
-    h.appendChild(el('span', 'muted', GROUP_INFO[g.id] || ''));
-    const caret = el('span', '', isOpen ? '-' : '+'); caret.style.marginLeft = 'auto';
-    h.appendChild(caret);
-    h.onclick = () => { if (isOpen) openGroups.delete(g.id); else openGroups.add(g.id); draw(); };
-    sec.appendChild(h);
-    if (isOpen) g.skills.forEach(s => sec.appendChild(skillBox(s)));
+    const isOpen = openGroups.has(gr.id);
+    const hb = el('button', 'skbar');               // the whole bar is a button: tap to fold / unfold
+    hb.type = 'button';
+    hb.append(el('span', '', (isOpen ? '\u25BE ' : '\u25B8 ') + gr.name), el('span', 'gi', GROUP_INFO[gr.id] || ''));
+    hb.onclick = () => { if (isOpen) openGroups.delete(gr.id); else openGroups.add(gr.id); draw(); };
+    sec.appendChild(hb);
+    if (isOpen) gr.skills.forEach(s => sec.appendChild(skillBox(s)));
     box.appendChild(sec);
   }
 }
