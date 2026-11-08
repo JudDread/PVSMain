@@ -1,4 +1,5 @@
-// missions.js - the Missions screen (bottom tab). Makes its own div and its own styles: index.html has no missions markup.
+// missions.js - the JOBS screen (bottom tab; the files and server still say 'missions'). Makes its own div and its own styles: index.html has no missions markup.
+// 2026-11-07 phone layout: chain bars like the section bars of the other screens, chains with a reward waiting or a job available sorted to the top, rewards abbreviated.
 // One CARD per mission chain (a chain is a group of missions: Pilot Training, Earth Space Command, ...). Only open chains are sent.
 // Server actions: 'missions' (list), 'mission_step' {quest, step}, 'mission_accept' {quest}, 'mission_claim' {quest}, 'missions_seen'.
 // Display only: the server decides everything (what is available, timers, rewards).
@@ -6,32 +7,35 @@
 // or the name of a server action that succeeded (tutorial_2: 'queue_travel' = a trip was launched);
 // a trade also finishes 'buy', 'sell', 'buy:<place id>' and 'sell:<place id>' (tutorial_3).
 // TAB DOT: shows while a reward waits (me.missions_ready) or a mission has not been looked at yet (me.missions_new).
-import { S, $, el, call, say, money, whole, nowMs, addScreen, screenWatchers, actionWatchers } from 'core';
+import { S, $, el, call, say, short, whole, nowMs, addScreen, screenWatchers, actionWatchers } from 'core';
 
 const st = document.createElement('style');
 st.textContent = [
-  '#scr-missions .mch{display:flex;width:100%;justify-content:space-between;align-items:center;gap:8px;text-align:left;margin:0 0 6px;padding:10px 12px}',
-  '#scr-missions .mch .ct{font-weight:700;font-size:16px;color:#e8b64a}',
-  '#scr-missions .mch .cs{font-size:12px;font-weight:600;color:#8d98b2;text-align:right}',
+  '#scr-missions h2{font-size:18px;font-weight:500;color:#fff;margin:4px 4px 8px}',
+  '#scr-missions .mch{display:flex;width:100%;justify-content:space-between;align-items:center;gap:8px;text-align:left;margin:8px 0 0;padding:0 8px;min-height:36px;border-radius:0;background:rgba(120,160,210,.16);border:0;border-top:2px solid rgba(120,160,210,.55);border-bottom:1px solid rgba(120,160,210,.25);color:#fff;font-weight:500;font-size:13px}',
+  '#scr-missions .mch .ct{font-weight:500;font-size:13px;color:#fff}',
+  '#scr-missions .mch .cs{font-size:11px;font-weight:500;color:#8d98b2;text-align:right}',
   '#scr-missions .mch .cs.hot{color:#6be08f}',
-  '#scr-missions .mcb{margin:0 0 14px}',
-  '#scr-missions .mcd{margin:0 2px 8px;color:#8d98b2;font-size:13px}',
-  '#scr-missions .mq{background:#131a2a;border:1px solid #222b40;border-radius:8px;padding:10px;margin-bottom:10px}',
+  '#scr-missions .mcb{margin:0 0 8px}',
+  '#scr-missions .mcd{margin:6px 2px 0;color:#8d98b2;font-size:11px}',
+  '#scr-missions .mq{background:#131a2a;border:1px solid #2a3350;border-radius:8px;padding:8px;margin:8px 0 0}',
   '#scr-missions .mq.ready{border-color:#6be08f}',
   '#scr-missions .mq.failed{opacity:.65}',
-  '#scr-missions .mqh{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}',
-  '#scr-missions .mqt{font-weight:700;font-size:16px;color:#e8b64a}',
-  '#scr-missions .mqs{font-size:12px;font-weight:600;white-space:nowrap;color:#8d98b2}',
+  '#scr-missions .mqh{display:flex;justify-content:space-between;align-items:baseline;gap:8px}',
+  '#scr-missions .mqt{font-weight:500;font-size:13px;color:#fff}',
+  '#scr-missions .mqs{font-size:11px;font-weight:500;white-space:nowrap;color:#8d98b2}',
   '#scr-missions .mq.ready .mqs{color:#6be08f}',
-  '#scr-missions .mqd{margin:4px 0 6px;color:#c6cfe4;font-size:14px}',
-  '#scr-missions .mst{display:flex;gap:8px;padding:5px 0;border-top:1px solid #1c2438;font-size:14px}',
-  '#scr-missions .mst .ck{flex:none;width:18px;text-align:center;color:#8d98b2}',
+  '#scr-missions .mqd{margin:3px 0 4px;color:#8d98b2;font-size:11px}',
+  '#scr-missions .mst{display:flex;gap:8px;padding:4px 0;border-top:1px solid #2f3a58;font-size:12px;font-weight:500;color:#fff}',
+  '#scr-missions .mst .ck{flex:none;width:16px;text-align:center;color:#8d98b2}',
   '#scr-missions .mst.done .ck{color:#6be08f}',
-  '#scr-missions .mst.done .tx{color:#8d98b2}',
-  '#scr-missions .mqr{margin-top:6px;font-size:14px;color:#6be08f}',
-  '#scr-missions .mdue{margin-top:4px;font-size:13px;color:#e8b64a}',
-  '#scr-missions .mq button{margin:8px 0 0}',
-  '#scr-missions .mqfold{width:100%;margin:0 0 8px;text-align:left}',
+  '#scr-missions .mst.done .tx{color:#8d98b2;font-weight:400}',
+  '#scr-missions .mdue{margin-top:4px;font-size:11px;color:#e8b64a}',
+  '#scr-missions .mhist{margin-top:4px;font-size:11px;color:#8d98b2}',
+  '#scr-missions .mft{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:6px;padding-top:6px;border-top:1px solid #2f3a58}',
+  '#scr-missions .mqr{font-size:12px;font-weight:500;color:#6be08f}',
+  '#scr-missions .mq button{margin:0;height:34px;min-height:0;padding:0 12px;font-size:13px;flex:none}',
+  '#scr-missions .mfold{height:30px;display:flex;align-items:center;padding:0 8px;margin-top:8px;border-bottom:1px solid #2f3a58;font-size:12px;color:#c7d0e6;cursor:pointer}',
 ].join('');
 document.head.appendChild(st);
 
@@ -50,7 +54,7 @@ export const missionWatchers = [];               // functions run after every lo
 
 const rewardText = r => {
   r = r || {}; const p = [];
-  if (Number(r.credits)) p.push('Cr ' + money(r.credits));
+  if (Number(r.credits)) p.push('Cr ' + short(r.credits, true));
   if (Number(r.xp)) p.push(whole(r.xp) + ' XP');
   if (Number(r.cal)) p.push(whole(r.cal) + ' Cal');
   return p.length ? p.join('  \u00B7  ') : 'No reward';
@@ -106,14 +110,14 @@ async function act(action, q, btn, okText) {
     if (/needs a weapon|no[ _]weapon/i.test(e.message || '')) {   /* no weapon fitted: explain in a message box with an OK button (the red bar if the box cannot open) */
       try {
         let co; try { co = await import('coach'); } catch (x) { co = await import('./coach.js'); }   /* the import-map name first, then the file next to this one */
-        co.modal({ kicker: 'Mission', title: 'Weapon needed', paras: [
-          'This mission is a combat mission, and your ship has no weapon fitted.',
-          'Fit one in a weapon slot on the Rigging screen, then come back and accept the mission.'
+        co.modal({ kicker: 'Job', title: 'Weapon needed', paras: [
+          'This job is a combat job, and your ship has no weapon fitted.',
+          'Fit one in a weapon slot on the Rigging screen, then come back and accept the job.'
         ], buttons: [{ label: 'OK', onClick: co.closeModal }] });
         return;
       } catch (e2) { /* fall through to the red bar */ }
     }
-    say(e.message === 'not_ready' ? 'That mission is not finished yet.' : e.message === 'not_offered' ? 'That mission is not waiting for you any more.' : 'Error: ' + e.message, 'err');
+    say(e.message === 'not_ready' ? 'That job is not finished yet.' : e.message === 'not_offered' ? 'That job is not waiting for you any more.' : 'Error: ' + e.message, 'err');
   } finally { busy = false; await load(); }
 }
 
@@ -131,24 +135,27 @@ function card(q) {
     r.append(el('span', 'ck', done ? '\u2713' : '\u25CB'), el('span', 'tx', s.label));
     c.appendChild(r);
   });
-  c.appendChild(el('div', 'mqr', (q.status === 'claimed' ? 'Reward paid: ' : 'Reward: ') + rewardText(q.reward)));
   if (q.status === 'active' && q.due_at) { const d = el('div', 'mdue', leftText(q)); d.dataset.due = q.due_at; c.appendChild(d); }
-  if (q.status === 'offered' && q.time_limit_minutes && !q.wave) c.appendChild(el('div', 'mdue', 'Timed mission: you have ' + words(Number(q.time_limit_minutes)) + ' from the moment you accept.'));
-  if (q.wave) {                                                          /* 090: the wave clock of a wave mission */
+  if (q.status === 'offered' && q.time_limit_minutes && !q.wave) c.appendChild(el('div', 'mdue', 'Timed: you have ' + words(Number(q.time_limit_minutes)) + ' from the moment you accept.'));
+  if (q.wave) {                                                          /* 090: the wave clock of a wave job */
     let wl = null;
     if (q.status === 'offered') wl = q.wave.open ? ['Available for ', q.wave.ends_at] : ['Not available. Next wave in ', q.wave.next_at];
     else if (q.status === 'failed' || q.status === 'claimed') wl = ['Not available. Next wave in ', q.wave.next_at];
     if (wl) { const w = el('div', 'mdue'); w.dataset.until = new Date(wl[1]).getTime(); w.dataset.pre = wl[0]; w.textContent = wl[0] + clock(w.dataset.until - nowMs()); c.appendChild(w); }
   }
-  if (q.repeats && (Number(q.claims) > 0 || Number(q.fails) > 0)) {      /* 090: the history of a repeatable mission */
+  if (q.repeats && (Number(q.claims) > 0 || Number(q.fails) > 0)) {      /* 090: the history of a repeatable job */
     const p = [];
     if (Number(q.claims) > 0) p.push('Completed ' + q.claims + (Number(q.claims) === 1 ? ' time' : ' times'));
     if (Number(q.fails) > 0) p.push('Failed ' + q.fails + (Number(q.fails) === 1 ? ' time' : ' times'));
-    c.appendChild(el('div', 'mqr', p.join(' \u00b7 ')));
+    c.appendChild(el('div', 'mhist', p.join(' \u00b7 ')));
   }
   if (q.status === 'failed' && !q.wave) c.appendChild(el('div', 'mdue', 'The time ran out.'));
-  if (q.status === 'ready') { const b = el('button', '', 'Claim reward'); b.onclick = () => act('mission_claim', q, b, 'Reward claimed: ' + rewardText(q.reward)); c.appendChild(b); }
-  if (q.status === 'offered') { const b = el('button', '', 'Accept mission'); b.onclick = () => act('mission_accept', q, b, 'Mission accepted: ' + q.title); if (q.wave && !q.wave.open) b.disabled = true; c.appendChild(b); }
+  // footer: the reward (green) on the left, the button on the right
+  const f = el('div', 'mft');
+  f.appendChild(el('span', 'mqr', rewardText(q.reward)));
+  if (q.status === 'ready') { const b = el('button', '', 'Claim reward'); b.onclick = () => act('mission_claim', q, b, 'Reward claimed: ' + rewardText(q.reward)); f.appendChild(b); }
+  if (q.status === 'offered') { const b = el('button', '', 'Accept job'); b.onclick = () => act('mission_accept', q, b, 'Job accepted: ' + q.title); if (q.wave && !q.wave.open) b.disabled = true; f.appendChild(b); }
+  c.appendChild(f);
   return c;
 }
 
@@ -159,20 +166,20 @@ function chainCard(ch) {
   const done = mine.filter(q => q.status === 'claimed');
   const n = s => open.filter(q => q.status === s).length;
   const live = open.filter(q => q.status !== 'failed').length;
-  const sum = n('ready') ? n('ready') + ' ready to claim' : n('offered') ? n('offered') + ' available' : n('active') ? 'In progress' : 'No missions available';
+  const sum = n('ready') ? n('ready') + ' ready to claim' : n('offered') ? n('offered') + ' available' : n('active') ? 'In progress' : 'No jobs available';
   const isOpen = openMap[ch.id] !== undefined ? openMap[ch.id] : live > 0;
   const wrap = el('div');
-  const hd = el('button', 'alt mch');
+  const hd = el('button', 'mch');
   hd.append(el('span', 'ct', (isOpen ? '\u25BE ' : '\u25B8 ') + ch.title), el('span', 'cs' + (n('ready') || n('offered') ? ' hot' : ''), sum));
   hd.onclick = () => { openMap[ch.id] = !isOpen; paint(); };
   wrap.appendChild(hd);
   if (!isOpen) return wrap;
   const body = el('div', 'mcb');
   if (ch.description) body.appendChild(el('div', 'mcd', ch.description));
-  if (!open.length) body.appendChild(el('div', 'muted pad', 'No missions available at this time.'));
+  if (!open.length) body.appendChild(el('div', 'muted pad', 'No jobs available at this time.'));
   open.forEach(q => body.appendChild(card(q)));
   if (done.length) {
-    const f = el('button', 'alt mqfold', (doneMap[ch.id] ? '- ' : '+ ') + 'Completed (' + done.length + ')');
+    const f = el('div', 'mfold', (doneMap[ch.id] ? '- ' : '+ ') + 'Completed (' + done.length + ')');
     f.onclick = () => { doneMap[ch.id] = !doneMap[ch.id]; paint(); };
     body.appendChild(f);
     if (doneMap[ch.id]) done.forEach(q => body.appendChild(card(q)));
@@ -181,13 +188,19 @@ function chainCard(ch) {
   return wrap;
 }
 
+// chains with a reward waiting come first, then chains with a job available, then chains in progress, then the rest (the server's order is kept inside each group)
+function chainRank(ch) {
+  const m = list().filter(q => q.chain === ch.id);
+  return m.some(q => q.status === 'ready') ? 0 : m.some(q => q.status === 'offered') ? 1 : m.some(q => q.status === 'active') ? 2 : 3;
+}
+
 function paint() {
   div.replaceChildren();
-  div.appendChild(el('h2', '', 'Missions'));
-  if (failed) { div.appendChild(el('div', 'err pad', 'Could not load the missions: ' + failed)); return; }
+  div.appendChild(el('h2', '', 'Jobs'));
+  if (failed) { div.appendChild(el('div', 'err pad', 'Could not load the jobs: ' + failed)); return; }
   if (!data) { div.appendChild(el('div', 'muted pad', 'Loading...')); return; }
-  const chains = data.chains || [];
-  if (!chains.length) div.appendChild(el('div', 'muted pad', 'No missions yet.'));
+  const chains = (data.chains || []).map((ch, i) => ({ ch, i, r: chainRank(ch) })).sort((a, b) => a.r - b.r || a.i - b.i).map(x => x.ch);
+  if (!chains.length) div.appendChild(el('div', 'muted pad', 'No jobs yet.'));
   chains.forEach(ch => div.appendChild(chainCard(ch)));
 }
 
@@ -230,7 +243,7 @@ actionWatchers.push(noteStep);
 export function resetMissions() { data = null; failed = ''; loading = false; busy = false; for (const k in openMap) delete openMap[k]; for (const k in doneMap) delete doneMap[k]; div.replaceChildren(); }
 
 let liveKey = null;                                   /* 2026-11-02: when the server reports a change (a new offer, a ready mission, a timer) the screen reloads by itself */
-addScreen('missions', 'Missions', div, {
+addScreen('missions', 'Jobs', div, {
   onShow() { paint(); load(); },
   update() {
     if (!S.last || !S.last.character) return;
