@@ -5,6 +5,7 @@
 // The place list shows only places that have a facility. Every section starts closed; the open / closed state is remembered (this device).
 // 2026-11-07 phone layout (same look as Market and Assets): white names, grey second lines, separator lines, prices abbreviated (1.2K),
 // one-line pop-ups. ONE green section 'Assets' holds everything of yours that this place buys (parked hulls and stored rigs); then the buy lists.
+// Buy pop-ups: the action line first (Each, number, Total, Buy; no All), the stats under it. Weapon and rig lists have a Power column next to Price.
 // Selling a hull moves its rigs and cargo to your storage there by itself (SQL hull_sell_all, migration 095).
 // Each facility has a big header box, the same size as the place box; its picture is web/img/facilities/<kind>.webp (3:1; none = plain box).
 // Creates its own screen block (#scr-facilities) and the "Fit it now?" pop-up (#fprompt), so index.html needs only the import-map line.
@@ -47,11 +48,15 @@ $('scr-market').after(scr);
     '#fbody .frow { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; color: #fff; font-weight: 500; font-size: 13px; line-height: 1.2; border-bottom: 1px solid #2f3a58; cursor: pointer; }',
     '#fbody .frow.sel { background: #2a3350; outline: 2px solid #e8b64a; outline-offset: -2px; }',
     '#fbody .fl { min-width: 0; flex: 1; }',
-    '#fbody .fpr { flex: none; white-space: nowrap; }',
+    '#fbody .fpr { flex: none; white-space: nowrap; min-width: 48px; text-align: right; }',
+    '#fbody .fpw { flex: none; width: 36px; text-align: right; font-weight: 400; color: #c7d0e6; }',
+    '#fbody .fhdr { display: flex; justify-content: flex-end; gap: 8px; padding: 3px 8px; border-bottom: 1px solid #222b40; font-size: 11px; font-weight: 400; color: #8d98b2; }',
+    '#fbody .fhdr .fpw { color: #8d98b2; }',
     '#fbody .fpr.pay { color: #e8b64a; }',
     '#fbody .fpr.get { color: #6be08f; }',
     '.fpop { box-sizing: border-box; background: rgba(120,160,210,0.10); border: 1px solid rgba(120,160,210,0.35); border-radius: 8px; padding: 6px 8px; margin: 4px 0 6px; color: #fff; font-size: 13px; }',
-    '.fprow { display: flex; align-items: center; gap: 5px; }',
+    '.fprow { display: flex; align-items: center; gap: 6px; }',
+    '.fpt { min-width: 56px; flex: none; }',
     '.fpe { flex: 1; min-width: 0; }',
     '.fpl { font-size: 11px; color: #8d98b2; line-height: 1.1; white-space: nowrap; font-weight: 400; }',
     '.fpv { font-size: 15px; font-weight: 500; line-height: 1.2; white-space: nowrap; }',
@@ -59,7 +64,7 @@ $('scr-market').after(scr);
     '.fpv.get { color: #6be08f; }',
     '.fpop input.fin { width: 64px; height: 36px; flex: none; margin: 0; padding: 0 8px; text-align: right; font-size: 15px; box-sizing: border-box; }',
     '.fpop button { flex: none; height: 34px; min-height: 0; margin: 0; padding: 0 10px; font-size: 13px; }',
-    '.fgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 8px; margin: 8px 0; }',
+    '.fgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 8px; margin: 8px 0 2px; padding-top: 8px; border-top: 1px solid #2f3a58; }',
     '.fgrid .k { font-size: 11px; color: #8d98b2; font-weight: 400; }',
     '.fgrid .v { font-size: 13px; font-weight: 500; }',
     '.fpmsg { font-size: 11px; color: #8d98b2; font-weight: 400; }',
@@ -156,22 +161,24 @@ const mkBtn = (txt, alt) => { const b = el('button', alt ? 'alt' : '', txt); b.t
 const pop = (() => {
   const root = el('div', 'fpop'), grid = el('div', 'fgrid'), fx = el('div', 'sub'), row = el('div', 'fprow'), msg = el('div', 'fpmsg');
   const e = el('div', 'fpe'), lab = el('div', 'fpl'), val = el('div', 'fpv'); e.append(lab, val);
+  const tt = el('div', 'fpt'), tval = el('div', 'fpv pay'); tt.append(el('div', 'fpl', 'Total'), tval);
   const inp = document.createElement('input');
   inp.type = 'number'; inp.inputMode = 'numeric'; inp.step = '1'; inp.min = '0'; inp.max = '100'; inp.className = 'fin'; inp.setAttribute('aria-label', 'Quantity'); inp.value = 1;
   const bAll = mkBtn('All', true), b1 = mkBtn('', false);
-  row.append(e, inp, bAll, b1); root.append(grid, fx, row, msg);
+  row.append(e, inp, tt, bAll, b1); root.append(row, msg, grid, fx);   // action line first, the stats under it
   const selectAll = () => { try { inp.select(); } catch (x) {} };
   inp.addEventListener('focus', () => setTimeout(selectAll, 0));   // touching the box selects the whole number
   inp.addEventListener('click', selectAll);
   inp.addEventListener('input', () => { fEdited = true; refreshPop(); });
   inp.addEventListener('blur', () => setTimeout(() => { if (fRedraw && !isTyping()) { fRedraw = false; drawFac(); } }, 350));
-  bAll.onclick = () => { inp.value = popMax(); fEdited = true; refreshPop(); };
+  bAll.onclick = () => { inp.value = popMax(); fEdited = true; refreshPop(); };   // only shown when selling
   b1.onclick = () => doTrade();
-  return { root, grid, fx, lab, val, msg, inp, bAll, b1 };
+  return { root, grid, fx, lab, val, tt, tval, msg, inp, bAll, b1 };
 })();
 
 function placePop(it) {
   const buy = fsel.kind === 'buy';
+  pop.tt.hidden = !buy; pop.bAll.hidden = buy;   // buying: Each, number, Total, Buy (no All). selling: You get, number, All, Sell
   if (buy) {
     if (it.kind === 'weapon') { fillGrid(pop.grid, WEAPON_STATS, it); pop.fx.textContent = ''; }
     else { fillGrid(pop.grid, [['Power', x => whole(x.power_use)]], it); pop.fx.textContent = it.effect_text ? it.effect_text + (it.works_now ? '' : ' (inactive)') : ''; }
@@ -190,7 +197,7 @@ function refreshPop() {
   pop.val.className = 'fpv ' + (buy ? 'pay' : 'get');
   if (buy) {
     const total = bad ? 0 : q * num(it.price), poor = !bad && total > credits();
-    pop.lab.textContent = 'Total'; pop.val.textContent = abbr(total);
+    pop.lab.textContent = 'Each'; pop.val.textContent = abbr(it.price); pop.tval.textContent = abbr(total);
     if (poor) line('err', 'You have ' + abbr(credits()) + ' credits.');
     pop.b1.textContent = 'Buy'; pop.b1.disabled = bad || none || poor || fbusy;
   } else {
@@ -203,26 +210,28 @@ function refreshPop() {
 
 /* ---------- the box under a selected hull row (buy or sell; no quantity) ---------- */
 const hpop = (() => {
-  const root = el('div', 'fpop'), top = el('div', 'fprow'), pic = document.createElement('img'), tx = el('div', 'fpe sub'), grid = el('div', 'fgrid');
-  const row = el('div', 'fprow'), e = el('div', 'fpe'), lab = el('div', 'fpl'), val = el('div', 'fpv'), note = el('div', 'fpmsg'), msg = el('div', 'fpmsg');
+  const root = el('div', 'fpop'), row = el('div', 'fprow'), e = el('div', 'fpe'), lab = el('div', 'fpl'), val = el('div', 'fpv'); e.append(lab, val);
+  const sh = el('div', 'fpt'), sval = el('div', 'fpv'); sh.append(el('div', 'fpl', 'Ships'), sval);
+  const b1 = mkBtn('', false); row.append(e, sh, b1);
+  const msg = el('div', 'fpmsg'), note = el('div', 'fpmsg');
+  const top = el('div', 'fprow'), pic = document.createElement('img'), tx = el('div', 'fpe sub'), grid = el('div', 'fgrid');
   pic.className = 'fhullpic'; pic.alt = ''; pic.onerror = () => { pic.hidden = true; }; pic.onload = () => { pic.hidden = false; };
-  top.style.alignItems = 'flex-start'; top.append(pic, tx);
-  const b1 = mkBtn('', false);
-  e.append(lab, val); row.append(e, b1);
-  root.append(top, grid, row, note, msg);
+  top.style.alignItems = 'flex-start'; top.style.marginTop = '8px'; top.append(pic, tx);
+  root.append(row, msg, note, top, grid);   // action line first, then the picture and the stats
   b1.onclick = () => doHull();
-  return { root, top, pic, tx, grid, lab, val, note, msg, b1 };
+  return { root, top, pic, tx, grid, lab, val, sh, sval, note, msg, b1 };
 })();
 function placeHullPop(x) {
   const buy = fsel.kind === 'hbuy';
   hpop.msg.replaceChildren();
   const line = (cls, t) => hpop.msg.appendChild(el('div', cls, t));
-  hpop.top.hidden = !buy; hpop.grid.hidden = !buy;
+  hpop.top.hidden = !buy; hpop.grid.hidden = !buy; hpop.sh.hidden = !buy;
   if (buy) {
     hpop.pic.src = hullPicUrl(x.hull_id);
     hpop.tx.textContent = [x.class ? x.class + ' hull' : '', x.flavor || ''].filter(Boolean).join('. ');
-    fillGrid(hpop.grid, [...HULL_STATS, ['Ships', () => whole(yard.ships_owned) + ' / ' + whole(yard.max_ships)]], x);
+    fillGrid(hpop.grid, HULL_STATS, x);
     hpop.lab.textContent = 'Price'; hpop.val.textContent = abbr(x.cost); hpop.val.className = 'fpv pay';
+    hpop.sval.textContent = whole(yard.ships_owned) + ' / ' + whole(yard.max_ships);
     hpop.note.textContent = '';
     if (x.level_ok === false) line('err', 'You need level ' + x.min_level + '.');
     else if (num(x.cost) > credits()) line('err', 'You have ' + abbr(credits()) + ' credits.');
@@ -273,18 +282,25 @@ function facHeader(parent, key, title, picture, drawBody) {
 function toggle(kind, id) { fsel = isSel(kind, id) ? null : { loc: floc, kind, id }; fEdited = false; drawFac(); }
 
 // One row: name over a grey line, the price on the right (amber = you pay, green = you get); the selected row gets its pop-up under it.
-function frow(parent, kind, x, name, sub, price, cls) {
+function frow(parent, kind, x, name, sub, price, cls, power) {
   const sel = isSel(kind, keyOf(x)), r = el('div', 'frow' + (sel ? ' sel' : '')), l = el('div', 'fl');
   l.appendChild(el('div', '', name));
   if (sub) l.appendChild(el('div', 'sub', sub));
-  r.append(l, el('span', 'fpr ' + cls, price));
+  r.appendChild(l);
+  if (power != null) r.appendChild(el('span', 'fpw', power));
+  r.appendChild(el('span', 'fpr ' + cls, price));
   r.onclick = () => toggle(kind, keyOf(x));
   parent.appendChild(r);
   if (sel) parent.appendChild(kind === 'hbuy' || kind === 'hsell' ? placeHullPop(x) : placePop(x));
 }
 const have = x => (num(x.in_storage) > 0 ? ', you have ' + whole(x.in_storage) + ' here' : '');
-const rigRows = (box, items) => items.forEach(x => frow(box, 'buy', x, x.name,
-  (x.kind === 'weapon' ? 'dmg ' + whole(x.damage) + ', power ' + whole(x.power_use) + ', best ' + fmtK(num(x.optimal_range_km)) + ' km' : (x.effect_text || '') + (x.works_now ? '' : ' (inactive)')) + have(x), abbr(x.price), 'pay'));
+// weapon and rig lists: a small Power / Price header, then one row each with the Power column next to the price
+function rigRows(box, items) {
+  const h = el('div', 'fhdr'); h.append(el('span', 'fpw', 'Power'), el('span', 'fpr', 'Price')); box.appendChild(h);
+  items.forEach(x => frow(box, 'buy', x, x.name,
+    (x.kind === 'weapon' ? 'dmg ' + whole(x.damage) + ', best ' + fmtK(num(x.optimal_range_km)) + ' km' : (x.effect_text || '') + (x.works_now ? '' : ' (inactive)')) + have(x),
+    abbr(x.price), 'pay', whole(x.power_use)));
+}
 
 function drawShipyard(body) {
   if (fsel && (fsel.loc !== floc || !curItem())) { fsel = null; fEdited = false; }
