@@ -13,7 +13,7 @@
 //   rig_buy         body.location, body.rig, body.qty    buy; the rigs go to storage AT that place (you need not be there)
 //   rig_sell        body.location, body.rig, body.qty    sell from storage at that place
 //   hull_buy        body.location, body.hull        buy a hull; it is PARKED (docked) at that place, you need not be there (migration 055)
-//   hull_sell       body.location, body.ship        sell a PARKED hull docked at that place (no rigs, empty hold, not the flown ship)
+//   hull_sell       body.location, body.ship        sell a PARKED hull docked at that place (not the flown ship). Since 095 its rigs and cargo go to storage there first (SQL hull_sell_all)
 // ======================================================================
 import { json, getCharacter, resolveFor, UUID_RE, LOC_RE } from './common.ts';
 
@@ -158,5 +158,5 @@ export async function hullSell(db, user, body) {
   if (!LOC_RE.test(loc) || !UUID_RE.test(ship)) return json({ error: 'bad_request' }, 400);
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
-  return await ask(db, 'hull_sell', { p_character: ch.id, p_location: loc, p_ship: ship });
+  return await ask(db, 'hull_sell_all', { p_character: ch.id, p_location: loc, p_ship: ship });   // 095: clears the hull into storage, then hull_sell
 }
