@@ -152,8 +152,8 @@ body.fly{padding:6px 6px 0}
 #enitem{cursor:pointer;padding:2px 0}
 .money{flex:none;width:64px;text-align:center;box-sizing:border-box;background:#0f2a1a;border:1px solid #2f7a4a;color:#6be08f;border-radius:8px;padding:6px 2px;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 /* event line under the bars (tap: the list) */
-.evline{display:flex;gap:8px;align-items:center;margin:4px 0 0;padding:6px 8px;background:#0f1523;border:1px solid #222b40;border-radius:6px;cursor:pointer;font-size:14px}
-.evlast{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#c6cfe4}
+.evline{flex:1 1 0;min-width:0;display:flex;gap:6px;align-items:center;margin:0;padding:0 8px;height:48px;box-sizing:border-box;background:#0f1523;border:1px solid #222b40;border-radius:8px;cursor:pointer;font-size:12px;line-height:1.25}
+.evlast{flex:1;min-width:0;overflow:hidden;color:#c6cfe4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .evcaret{color:#8d98b2;flex:none}
 .evlist{margin:4px 0 0;padding:6px 8px 6px 24px;background:#0f1523;border:1px solid #222b40;border-radius:6px;font-size:14px;max-height:240px;overflow-y:auto}
 /* game speed button: top right corner of the map (developer only) */
@@ -192,14 +192,15 @@ body.fly{padding:6px 6px 0}
   <div id="topbar" hidden>
     <div class="tbrow">
       <button id="vs" class="vs" title="Home" aria-label="Home">VS</button>
-      <div class="bars">
-        <div class="bitem" id="xpitem"><div class="blab" id="xpnum"></div><div class="brow"><span id="lvl" class="lvl">1</span><div class="bar xp"><div id="xpfill" class="fill"></div></div></div></div>
-        <div class="bitem" id="enitem" title="Tap: time until full"><div class="blab" id="ennum"></div><div class="brow"><div class="bar en"><div id="enfill" class="fill"></div></div></div></div>
-        <div id="money" class="money" title="Credits (tap for the exact amount)"></div>
-      </div>
+      <div id="evline" class="evline" title="Tap: all events"><span id="evlast" class="evlast">No events yet</span><span id="evcaret" class="evcaret">+</span></div>
+      <div id="money" class="money" title="Credits (tap for the exact amount)"></div>
       <button id="pic" class="pic" title="Profile" aria-label="Profile">?</button>
     </div>
-    <div id="evline" class="evline" title="Tap: all events"><span id="evlast" class="evlast">No events yet</span><span id="evcaret" class="evcaret">+</span></div>
+    <!-- 2026-11-07: the XP and Endurance bars are no longer shown (hidden here, so main.js can still fill them without an error). Level and XP are on the Profile. -->
+    <div class="bars" hidden>
+      <div class="bitem" id="xpitem"><div class="blab" id="xpnum"></div><div class="brow"><span id="lvl" class="lvl">1</span><div class="bar xp"><div id="xpfill" class="fill"></div></div></div></div>
+      <div class="bitem" id="enitem" title="Tap: time until full"><div class="blab" id="ennum"></div><div class="brow"><div class="bar en"><div id="enfill" class="fill"></div></div></div></div>
+    </div>
     <ul id="evs" class="evlist" hidden></ul>
   </div>
   <div id="nochar" hidden>
