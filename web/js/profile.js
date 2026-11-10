@@ -2,7 +2,7 @@
 // Shows YOUR profile, or another pilot's: openProfile(name) (chat will use it later). The server decides what others may see.
 // Own profile = public part + a Pilot block (credits, Cal, Skills) + the full Activity log. Numbers come from the server action 'profile'.
 // 2026-11-07 phone layout: small portrait with the key lines beside it, section bars, two-across tiles (grey label over white value), money abbreviated.
-import { S, $, addScreen, openScreen, el, short, whole, hullName, locName, call, nowMs } from 'core';
+import { S, $, addScreen, openScreen, el, short, whole, hullName, locName, call, nowMs, enduranceView } from 'core';
 import { resetSkills } from './skills.js';   // the Skills screen makes its own div and registers itself
 
 const box = $('scr-profile');
@@ -23,6 +23,8 @@ st.textContent = [
   '#scr-profile .sech button{height:30px;min-height:0;margin:0;padding:0 12px;font-size:13px}',
   '#scr-profile .pfgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;padding:8px}',
   '#scr-profile .pfgrid.g3{grid-template-columns:1fr 1fr 1fr}',
+  '#scr-profile .pfenrow{display:flex;justify-content:space-between;align-items:flex-end;gap:8px;padding:0 8px 4px}',
+  '#scr-profile .pfenfull{color:#8d98b2;font-weight:400;font-size:12px}',
   '#scr-profile .pflist{max-height:260px;overflow-y:auto}',
   '#scr-profile .pfitem{padding:6px 8px;border-bottom:1px solid #2f3a58;font-size:12px;color:#fff}',
   '#scr-profile .pfsmall{font-size:11px}',
@@ -125,6 +127,16 @@ function draw() {
     g.appendChild(tile('Credits', abbr(me.credits)));
     box.appendChild(g);
     if (p) box.appendChild(xpBar(p));
+    // Endurance (the top bars are gone): the amount, the bar, and the time until it is full
+    const ev = enduranceView();
+    if (ev) {
+      const row = el('div', 'pfenrow');
+      row.append(tile('Endurance', abbr(Math.round(ev.v)) + ' / ' + abbr(Math.round(ev.mx))), el('div', 'pv pfenfull', ev.full));
+      box.appendChild(row);
+      const eb = el('div', 'bar en'), ef = el('div', 'fill');
+      ef.style.width = (ev.mx > 0 ? Math.max(0, Math.min(100, 100 * ev.v / ev.mx)) : 0) + '%';
+      eb.style.margin = '0 8px 8px'; eb.appendChild(ef); box.appendChild(eb);
+    }
   }
 
   // career numbers, two across
