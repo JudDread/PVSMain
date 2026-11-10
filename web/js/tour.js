@@ -24,6 +24,9 @@ const lunaPicked = () => { const n = document.querySelector('#mloc .lpname'); re
 
 const producedLuna = () => { const x = document.querySelector('#mbody .sech select'); return !!x && x.value === 'luna'; };   /* the place selector in the Produced Here heading shows Luna */
 
+/* a rig whose name matches is in the Fitted list of the Rigging screen (draft: not saved until Apply) */
+const rigFitted = re => { const m = [...document.querySelectorAll('#scr-rigging .msec')].find(x => /^\s*Fitted/.test((x.querySelector('.sech') || {}).textContent || '')); return !!m && [...m.querySelectorAll('.row')].some(r => re.test(r.textContent)); };
+
 /* Collapse every Market section except Freight and make sure Freight is open, so the Freight section is on the screen without scrolling.
    Tapping a heading is safe to repeat (it sets open/shut from what it saw when it was drawn). Returns true once the Freight heading exists. */
 function showOnlyFreight() {
@@ -41,7 +44,7 @@ const TOURS = [
   {
     quest: 'tutorial_1',
     welcome: name => ({
-      kicker: 'NEW MISSION STARTED: WELCOME ABOARD',
+      kicker: 'NEW JOB STARTED: WELCOME ABOARD',
       title: 'Luna Sovereignty - Pilot Registry',
       paras: [
         'Welcome to Luna, ' + name + '. Your papers are stamped and your slot in the registry is open.',
@@ -52,26 +55,27 @@ const TOURS = [
       start: 'Start the tour', skip: "Skip - I'll find my own way",
     }),
     beats: [
-      { target: '.bars > .bitem:first-child', next: true, text: 'Your LEVEL and XP. You earn XP by flying, fighting, and completing missions. Every level-up gives you Calibrations (Cal) to spend on skills.' },
-      { target: '#enitem', next: true, text: 'Your ENDURANCE. The G-Drive\'s high acceleration is hard on the body: burning above your thrust threshold (3 g at the start) drains this bar, and it refills when you move at 3 g or dock. Tap the bar for a countdown.' },
+      { target: '#evline', next: true, text: 'Your EVENTS. The latest thing that happened to you shows here: arrivals, trades, jobs. Tap it to read the whole list.' },
       { target: '#money', next: true, text: 'Your CREDITS. Everything in the system is bought and sold with them.' },
       { target: '#pic', until: 'profile', text: 'Tap your portrait circle to open your pilot profile.' },
-      { target: '#scr-profile', screen: 'profile', next: true, text: 'Your pilot file: level, Cals, credits, net worth, career, ship and reputation. Most of it is public, other pilots can read it. Tap Next when you are done looking.' },
-      { target: '#vs', until: 'home', text: 'Tap the Vacuum State button to open the Home page: help, the Discord link and Log Out can be found here.' },
+      { target: '#scr-profile', screen: 'profile', next: true, text: 'Your LEVEL and XP. You earn XP by flying, fighting, and completing jobs. Every level-up gives you Calibrations (Cal) to spend on skills. They are in the Pilot part, with your credits.' },
+      { target: '#scr-profile', screen: 'profile', next: true, text: 'Your ENDURANCE. The G-Drive\'s high acceleration is hard on the body: burning above your thrust threshold (3 g at the start) drains this bar, and it refills when you move at 3 g or dock. The time until it is full is shown next to it.' },
+      { target: '#scr-profile', screen: 'profile', next: true, text: 'The rest of your pilot file: net worth, career, ship and reputation. Most of it is public, other pilots can read it. Tap Next when you are done looking.' },
+      { target: '#vs', until: 'home', text: 'Tap the Vacuum State button to open the Home page: your account, the Library, the Discord link and Log out are here.' },
     ],
     finals: [
-      { target: '#scr-home', screen: 'home', next: true, label: 'OK', hole: [], text: 'This is the Home page: help, the Discord link and Log Out can be found here. Tap OK when you are ready.' },
-      { target: '#nav button[data-screen="missions"]', text: 'Mission complete! Open the Missions tab and claim your reward.' },
+      { target: '#scr-home', screen: 'home', next: true, label: 'OK', hole: [], text: 'This is the Home page. The Library explains every part of the game in plain words, so come back to it whenever you have a question. Discord is for help and feedback. Tap OK when you are ready.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Job complete! Open the Jobs tab and claim your reward.' },
     ],
   },
   {
     quest: 'tutorial_2',
     welcome: name => ({
-      kicker: 'NEW MISSION STARTED: FIRST FLIGHT',
+      kicker: 'NEW JOB STARTED: FIRST FLIGHT',
       title: 'Luna Flight Control',
       paras: [
         'Flight Control clears you for departure, ' + name + '. Your courier carries no fuel at all: the G-Drive bends gravity in front of the hull and the ship falls into it.',
-        'There are no brakes in space. A ship keeps its momentum, so every trip is an acceleration to the halfway point, a flip, and an equal deceleration to stop. More thrust gets you there sooner, but anything above your base threshold (3 g), drains your Endurance. The default trip will use 50% of your bar, wait for it to refill, then drain it again.',
+        'There are no brakes in space. A ship keeps its momentum, so every trip is an acceleration to the halfway point, a flip, and an equal deceleration to stop. More thrust gets you there sooner, but anything above your free thrust (3 g) drains your Endurance. Your Endurance is applied to every trip automatically: the ship burns as hard as it allows, then coasts at 3 g until the bar refills, then burns again. So anything that increases your Endurance shortens your trips.',
         'The planets will not hold still while you travel. Distances are constantly changing: the same trip can be short today and long next week.',
         'Your first run is to EARTH ORBIT. Earth Space Command keeps its fleet there, and they notice who arrives. Get there, and they will have work for you.',
       ],
@@ -79,22 +83,22 @@ const TOURS = [
     }),
     beats: [
       { target: '#nav button[data-screen="travel"]', fromMissions: true, until: 'travel', text: 'Time to fly. Tap the Fly tab.' },
-      { target: '#map', screen: 'travel', next: true, text: 'The live map of the solar systemm. The planets orbit the Sun in real time (at 60x normal). Your ship is on the map, and so is every location that you can fly to.' },
+      { target: '#map', screen: 'travel', next: true, text: 'The live map of the solar system. The planets orbit the Sun in real time (at 60x normal). Your ship is on the map, and so is every location that you can fly to.' },
       { target: '.zb', screen: 'travel', next: true, text: 'ZOOM. Inner shows the inner planets, System shows everything, Ship centres on your own ship, very close. You can also pan and zoom the map by touch.' },
-      { target: '.thr', screen: 'travel', next: true, text: 'THRUST, in g is shown in the bar on the right side of the map. Drag the slider: more g is a faster trip, but above your threshold (3 g at the start) it drains Endurance.' },
+      { target: '#depshead', screen: 'travel', next: true, text: 'ENDURANCE AND TRIPS. There is nothing to set: your Endurance is applied to every trip automatically, and the trip time on each line already counts it. More Endurance means shorter trips. Above 3 g a trip pulses (it burns, coasts to refill, then burns again), so the list shows the average.' },
       { target: '#depshead', screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'DESTINATIONS. Tap here to open the list of places you can fly to.' },
-      { target: { sel: '#deps .row', text: 'Earth Orbit' }, screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'Your first trip is to EARTH ORBIT. Tap it. Every line shows how long the trip takes at your current thrust.' },
-      { target: ['#deps .lbtn', '#go'], screen: 'travel', hole: ['#depshead', '#deps', '#go', '.thr'], until: 'queue_travel', text: 'Press LAUNCH. The ship accelerates to the halfway point, flips, and brakes to arrive. Launch gets you under way; the trip time is shown in real minutes.' },
+      { target: { sel: '#deps .row', text: 'Earth Orbit' }, screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'Your first trip is to EARTH ORBIT. Tap it. Every line shows how long the trip takes.' },
+      { target: ['#deps .lbtn', '#go'], screen: 'travel', hole: ['#depshead', '#deps', '#go'], until: 'queue_travel', text: 'Press LAUNCH. Picking a place is only a proposal: nothing happens until you press Launch. The ship accelerates to the halfway point, flips, and brakes to arrive. The trip time is shown in real minutes.' },
     ],
     finals: [
       { target: '#map', screen: 'travel', next: true, label: 'OK', hole: [], text: 'LAUNCHED! The ship accelerates to the halfway point, flips, and brakes to arrive. The trip time is shown in real minutes. Tap OK to continue.' },
-      { target: '#nav button[data-screen="missions"]', text: 'You are under way! Open the Missions tab and claim your reward.' },
+      { target: '#nav button[data-screen="missions"]', text: 'You are under way! Open the Jobs tab and claim your reward.' },
     ],
   },
   {
     quest: 'tutorial_3',
     welcome: name => ({
-      kicker: 'NEW MISSION STARTED: FIRST TRADE',
+      kicker: 'NEW JOB STARTED: FIRST TRADE',
       title: 'Luna Exchange',
       paras: [
         'Credits do not create themselves, ' + name + '. The Exchange runs on one rule: carry goods from where they are cheap to where they are wanted.',
@@ -107,25 +111,25 @@ const TOURS = [
       { target: '#nav button[data-screen="market"]', fromMissions: true, until: 'market', text: 'Tap the Market tab.' },
       { skipIf: 'buy:earth', target: '#mloc', screen: 'market', next: true, text: 'LOCATION. This is the market of the location you have selected. It opens on your ship\'s own location (tagged with the ship icon). "All locations" lists every location. You can trade at any location from here.' },
       { skipIf: 'buy:earth', target: '#mbody', screen: 'market', next: true, text: 'THE SECTIONS. The market screen is divided into sections. "Cargo" is your ship\'s hold. "Stored Here" is what you keep at this location. "Produced Here" lists goods this location makes: cheaper when goods are plentiful, so buy from it when the percentage under the stock is high. "Consumed Here" lists goods that the location will use up: it pays well when the percentage under stock is low, so check it before you sell. Tap a section heading to fold it.' },
-      { skipIf: 'buy:earth', target: '#mbody .mhead', screen: 'market', next: true, text: 'THE COLUMNS. "Buy for" is what you will pay, "Sell at" is what they pay you, and "Stock" is how many are on the shelf, the % shows how much of the full supply amount that is. A location will produce up to 150% of full supply, and that would be a great time to buy. Touch the top of any column to re-order the rows. Touch it again to flip the order.' },
+      { skipIf: 'buy:earth', target: '#mbody .mhead', screen: 'market', next: true, text: 'THE COLUMNS. In Produced here and Consumed here, PRICE is what you pay or get, BEST is the other place with the best price, and STOCK is how many are on the shelf, with the % of the full supply. A location will produce up to 150% of full supply, and that would be a great time to buy. Touch the top of any column to re-order the rows. Touch it again to flip the order.' },
       { skipIf: 'buy:earth', target: [{ sel: '#mloc .lprow', text: 'Earth' }, '#mloc .locsel'], screen: 'market', hole: ['#mloc', '#mloc .lprow'], check: earthPicked, text: 'Now change the Location Selector to EARTH ORBIT: tap the box, then choose Earth Orbit.' },
       { skipIf: 'buy:earth', target: ['#mbody .hint', '#mloc'], screen: 'market', next: true, text: 'REMOTE FEE. You can trade at any location, even one your ship is not docked at, but it costs an extra fee (10% at the start; the Proxy Broker skill lowers it). The prices on screen already include it. Once your ship is docked at Earth Orbit there is no fee.' },
       { skipIf: 'buy:earth', target: '#mbody .sech select', screen: 'market', hole: ['#mbody'], next: true, check: producedLuna, text: 'CHECK WHERE IT SELLS. You will sell at LUNA, but not every place buys every good. In the "Produced Here" heading there is a small selector on the right (it says All). Tap it and choose LUNA. The list then shows only goods Luna trades, and the Best column shows Luna\'s price with its stock and %. A LOW % at Luna means it is running short, so it pays well. Tap Next when you have chosen Luna.' },
-      { skipIf: 'buy:earth', target: '#mbody', screen: 'market', hole: ['#mbody'], check: rowSelected, text: 'Time to BUY. Choose ONE good from this list and tap its row to select it. Because you filtered by Luna, every good here can be sold there. Pick one with a high % under Stock here (cheap to buy) and a low % in the Best column (Luna wants it). Any of them will do for this mission, and the best time to buy is once your ship has docked at Earth Orbit.' },
-      { screen: 'market', hole: ['#mbody'], dock: 'top', until: 'buy:earth', text: 'Buy just 1 for now: the box starts at the MAXIMUM you can afford, so change it to 1 and read the "in total" line. The price rises with every unit, so small lots are cheaper. When docked, "To: Hold" puts the good in your ship\'s hold, "Storage" keeps it at this location. After you have changed the quantity to 1 and set the selector to "Hold", press BUY.' },
-      { target: '#mbody .row', screen: 'market', next: true, text: 'Bought! Next, fly back to LUNA and SELL what you bought. Not every place buys every good. You checked Luna with the selector, and you can also press and HOLD a row for half a second to open its destinations list and make sure Luna is on it. Goods bought from afar wait in storage, you would need to dock there, and Load them into your hold. Sell from Cargo: tap the row, then Sell. ' },
+      { skipIf: 'buy:earth', target: '#mbody', screen: 'market', hole: ['#mbody'], check: rowSelected, text: 'Time to BUY. Choose ONE good from this list and tap its row to select it. Because you filtered by Luna, every good here can be sold there. Pick one with a high % under Stock (cheap to buy) and a low % under Best (Luna wants it). Any of them will do for this job, and the best time to buy is once your ship has docked at Earth Orbit.' },
+      { screen: 'market', hole: ['#mbody'], dock: 'top', until: 'buy:earth', text: 'Look at the number box: the recommended number is a good one. If it shows 0, the supply here is too low for a good profit, so pick a different good. The ~ price is an estimate; the confirmation box shows the exact price. When docked, "To: Hold" puts the good in your ship\'s hold, "To: Storage" keeps it at this location. Set it to Hold, press BUY, then Confirm.' },
+      { target: '#mbody .crow', screen: 'market', next: true, text: 'Bought! Next, fly back to LUNA and SELL what you bought. Not every place buys every good. You checked Luna with the selector, and you can also press and HOLD a row for half a second to open its destinations list and make sure Luna is on it. Goods bought from afar wait in storage, you would need to dock there, and Load them into your hold. Sell from Cargo: tap the row, check the number, press Sell, then Confirm.' },
       { needs: 'sell:luna', target: [{ sel: '#mloc .lprow', text: 'Luna' }, '#mloc .locsel'], screen: 'market', hole: ['#mloc', '#mloc .lprow'], check: lunaPicked, text: 'Sold! Now the FREIGHT job: it was posted at LUNA. Set the Location Selector to LUNA: tap the box, then choose Luna.' },
-      { needs: 'sell:luna', target: [{ sel: '#mbody .msec', text: 'Freight (' }, '#mbody'], screen: 'market', hole: ['#mbody'], until: 'freight_take', enter: showOnlyFreight, text: 'FREIGHT. Contracts that start at this place show here. This one was posted for you: 5 CU to EARTH ORBIT, 500 credits for each CU. Tap it, choose 5 units and press Accept (your ship must be docked at Luna). Deliver early for a bonus. If you give up the load, or it is late, it goes back on the board here and you can try again. If you do not see Freight yet, wait a few seconds.' },
+      { needs: 'sell:luna', target: [{ sel: '#mbody .msec', text: 'Freight (' }, '#mbody'], screen: 'market', hole: ['#mbody'], until: 'freight_take', enter: showOnlyFreight, text: 'FREIGHT. Contracts that start at this place show here. This one was posted for you: 5 CU to EARTH ORBIT, 500 credits for each CU. Tap it, type 5 in the number box (or press All) and press Accept (your ship must be docked at Luna). Deliver early for a bonus. If you give up the load, or it is late, it goes back on the board here and you can try again. If you do not see Freight yet, wait a few seconds.' },
       { needs: 'freight_take', target: '#nav button[data-screen="travel"]', next: true, label: 'OK', hole: [], text: 'Loaded! Now fly to EARTH ORBIT, the same way as on your first flight. When your ship docks there, the freight is delivered by itself and you are paid. Tap OK, then open the Fly tab.' },
     ],
     finals: [
-      { target: '#nav button[data-screen="missions"]', text: 'Freight delivered! Mission complete! Open the Missions tab and claim your reward.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Freight delivered! Job complete! Open the Jobs tab and claim your reward.' },
     ],
   },
   {
     quest: 'tutorial_4',
     welcome: name => ({
-      kicker: 'NEW MISSION STARTED: REFIT',
+      kicker: 'NEW JOB STARTED: REFIT',
       title: 'Luna Registry, Yard Office',
       paras: [
         'A hull is only a hull, ' + name + '. The rigs you install decide what she can do: haul, fight or scout. Pick them for the job at hand.',
@@ -137,15 +141,17 @@ const TOURS = [
       { fromMissions: true, next: true, label: 'OK', until: 'arrive:luna', text: 'The Registry yard is at LUNA. Fly your Courier home. Take your time: trade, haul freight, whatever you like. I will pick this up when you dock.' },
       { needs: 'arrive:luna', fromMissions: true, target: '#nav button[data-screen="assets"]', until: 'assets', text: 'Welcome back. Open ASSETS: every ship, cargo hold and rig you own, listed by port.' },
       { needs: 'arrive:luna', target: '.ascope .scard', screen: 'assets', until: 'rigging', text: 'This is your Courier. Touch her to go below decks.' },
-      { needs: 'arrive:luna', target: { sel: '#scr-rigging .msec', text: 'Fitted (' }, screen: 'rigging', next: true, text: 'BELOW DECKS. FITTED shows what is installed, and the empty slots too. The power bar is your reactor budget. Every rig takes a slot and power, so choose for the job.' },
+      { needs: 'arrive:luna', target: { sel: '#scr-rigging .msec', text: 'Fitted (' }, screen: 'rigging', next: true, text: 'BELOW DECKS. FITTED shows what is installed, and the empty slots too. The power bar is your reactor budget. Every rig takes a slot and power, so choose for the job. Nothing you do here is saved until you press APPLY at the bottom.' },
       { needs: 'arrive:luna', target: { sel: '#scr-rigging .sech button', text: 'Shipyard' }, screen: 'rigging', until: 'facilities', text: 'No rigs installed, and your ledger is hard vacuum. The yard can help. Touch SHIPYARD.' },
-      { needs: 'arrive:luna', screen: 'facilities', next: true, dock: 'top', text: 'The Luna shipyard. These sections list the hulls and rigs you can buy or sell, with prices. A new rig is beyond your reach for now, so the Registry has left you a starter kit in storage here: a railgun and armor plating. They are yours. Fit them before you sell them, or the refit cannot be finished.' },
+      { needs: 'arrive:luna', screen: 'facilities', next: true, dock: 'top', text: 'The Luna shipyard, in the Port. Hulls, Weapons and rigs are listed to buy, with prices; Assets, the green section, is everything of yours the yard will buy. A new rig is beyond your reach for now, so the Registry has left you a starter kit in storage here: a railgun and armor plating. They are yours. Fit them before you sell them, or the refit cannot be finished.' },
       { needs: 'arrive:luna', target: { sel: 'button.alt', text: 'Back to rigging' }, screen: 'facilities', check: () => S.current === 'rigging', text: 'Now back to your Courier. Touch Back to rigging.' },
-      { needs: 'arrive:luna', target: { sel: '#scr-rigging .rside button', text: 'Fit' }, screen: 'rigging', until: 'rig_fit', text: 'Under "Rigs and weapons here" your kit is waiting in storage. Touch Fit.' },
+      { needs: 'arrive:luna', target: { sel: '#scr-rigging .row', text: 'Rail' }, screen: 'rigging', check: () => rigFitted(/rail/i), text: 'Your starter kit is waiting in storage under "Rigs and weapons here". First the WEAPON: touch Fit on the railgun. A weapon goes in a weapon slot.' },
+      { needs: 'arrive:luna', target: { sel: '#scr-rigging .row', text: 'Arm' }, screen: 'rigging', check: () => rigFitted(/arm(o|ou)r/i), text: 'Now the ARMOR: touch Fit on the armor plating.' },
+      { needs: 'arrive:luna', target: { sel: '#scr-rigging .rbtns button', text: 'Apply' }, screen: 'rigging', until: 'rig_fit', text: 'Both are in place, but nothing is saved yet. Touch APPLY at the bottom to make the change.' },
     ],
     finals: [
-      { screen: 'rigging', next: true, label: 'OK', hole: [], text: 'Installed. Fit the other one too, if you like. Rigs come off again, free and instant, while docked, so refit her for whatever job comes next.' },
-      { target: '#nav button[data-screen="missions"]', text: 'Refit complete. Open the Missions tab and claim your reward.' },
+      { screen: 'rigging', next: true, label: 'OK', hole: [], text: 'Installed. Rigs come off the same way: Take off, then Apply. Do it while docked, so refit her for whatever job comes next.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Refit complete. Open the Jobs tab and claim your reward.' },
     ],
   },
   {
@@ -163,17 +169,17 @@ const TOURS = [
     beats: [
       { fromMissions: true, target: '#pic', until: 'skills', check: () => S.current === 'profile', text: 'Open your PROFILE: touch your portrait.' },
       { screen: 'profile', target: { sel: '#scr-profile button', text: 'Skills' }, until: 'skills', text: 'This is your pilot profile. Touch the SKILLS button.' },
-      { screen: 'skills', dock: 'top', until: 'skill_buy', text: 'SKILLS. Each skill makes you better at something. Look through them and spend your Cal on one of them.' },
+      { screen: 'skills', dock: 'top', until: 'skill_buy', text: 'SKILLS. Each skill makes you better at something. Open a group, touch a skill to read it, and press Spend to use your Cal on it.' },
     ],
     finals: [
-      { target: '#nav button[data-screen="missions"]', text: 'Cal spent. Skills are how a pilot grows. Open the Missions tab and claim your reward.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Cal spent. Skills are how a pilot grows. Open the Jobs tab and claim your reward.' },
     ],
   },
   {
     quest: 'esc_3',
     plain: true,                                           /* a notice shown when the mission is accepted, not a tutorial */
     welcome: name => ({
-      kicker: 'NEW MISSION STARTED: LIVE FIRE',
+      kicker: 'NEW JOB STARTED: LIVE FIRE',
       title: 'ESC Combat Range',
       paras: [
         'ESC RANGE CONTROL, ' + name + '. The Combat Range is now on your chart, a short hop from the Training Range. This one is live fire.',
@@ -185,7 +191,7 @@ const TOURS = [
     }),
     beats: [],
     finals: [
-      { target: '#nav button[data-screen="missions"]', text: 'Range reached. Open the Missions tab and claim your reward.' },
+      { target: '#nav button[data-screen="missions"]', text: 'Range reached. Open the Jobs tab and claim your reward.' },
     ],
   },
 ];
@@ -206,7 +212,7 @@ async function answer(T, on) {
   catch (e) { say('Error: ' + e.message, 'err'); }
   finally { busy = false; }
 }
-function skipTour() { LS.set(offKey(), '1'); stop(); say('Tour switched off. Your missions are still under Missions.', 'ok'); }
+function skipTour() { LS.set(offKey(), '1'); stop(); say('Tour switched off. Your jobs are still under Jobs.', 'ok'); }
 
 function run(T, q) {
   const steps = q.steps || [];
