@@ -20,13 +20,17 @@ If something still isn't clear, or you think a page is wrong, tell us on Discord
     id: 'pilot', title: 'Your pilot', blurb: 'Level, XP, Cal, Endurance, credits',
     body: `**Who you are.** You are a Homo Sapiens Astroalis, a pilot bred for the dark of space and the strain of the G-Drive. The strain is real: your body pays for hard thrust, which is why Endurance exists. Other people call your kind Black-Eyes. Out here you are simply the people who can fly.
 
-## The bars at the top
+## The top row
 
-These are always on screen:
+The top row is always on screen: the **VS** button (Home), a box that shows your latest event (tap it to read the whole list), your **credits**, and your portrait circle (your profile). Everything in the system is bought and sold with credits. Your Level, XP and Endurance are on your profile.
 
-- **Level and XP.** You earn XP by flying, fighting and finishing jobs. When you reach a new level, you get Calibrations (Cal) to spend on skills.
-- **Endurance.** Thrust above your free thrust drains it, and thrust at or below it, or being docked, refills it. The Flying page explains how it works.
-- **Credits.** Everything in the system is bought and sold with them.
+## Level and XP
+
+You earn XP by flying, fighting and finishing jobs. When you reach a new level, you get Calibrations (Cal) to spend on skills.
+
+## Endurance
+
+The G-Drive's hard thrust is hard on the body. Thrust above your free thrust (3 g to start) drains your Endurance bar, and thrust at or below it, or being docked, refills it. The bar is in the Pilot part of your profile, with the time until it is full, and in a fight the END chip shows it. The Flying page explains how it works.
 
 ## Calibrations
 
@@ -36,7 +40,7 @@ Cal are your skill points. You get 3 at every level-up, and jobs can pay them to
 
 Tap your portrait circle at the top right to open your pilot file. At the top is your portrait with your Level, your Net worth (everything you own, added up), how long you have been a pilot and when you were last active. Then come these parts:
 
-- **Pilot:** your XP, Calibrations and credits, and the **Skills** button. Only you see this part.
+- **Pilot:** your XP, Calibrations, credits and Endurance, and the **Skills** button. Only you see this part.
 - **Career:** the distance you have flown, your trips, your trades and your freight deliveries.
 - **Ship:** your hull, where it is, your hold size and your top thrust.
 - **Reputation:** how the factions see you. It is not active yet.
@@ -62,7 +66,7 @@ Thrust is measured in **g**. One g is the pull you feel standing on Earth. There
 
 ## Endurance and pulsing
 
-Up to your **free thrust** (3 g for a new pilot) the G-Drive costs you nothing. Above it, flying drains your **Endurance** bar. So above the free thrust your flight **pulses**: the ship burns until about half the bar is gone, drops to the free thrust until the bar is full again, then burns again, for the whole trip. The trip list shows the **average** thrust that works out to. Docked, the bar refills faster still. Tap the bar for a countdown.
+Up to your **free thrust** (3 g for a new pilot) the G-Drive costs you nothing. Above it, flying drains your **Endurance** bar. So above the free thrust your flight **pulses**: the ship burns until about half the bar is gone, drops to the free thrust until the bar is full again, then burns again, for the whole trip. The trip list shows the **average** thrust that works out to. Docked, the bar refills faster still. Your Endurance bar, with the time until it is full, is in the Pilot part of your profile.
 
 ## Time and distance
 
