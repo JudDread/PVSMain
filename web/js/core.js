@@ -154,6 +154,8 @@ function enduranceInfo() {
   return { v: Math.max(0, Math.min(mx, Number(p.endurance) + rate * hours)), mx, burning: false, rate };
 }
 export function enduranceNow() { const i = enduranceInfo(); return i ? i.v : null; }
+// 2026-11-07: the top bars are gone, so the Profile shows Endurance: { v, mx, burning, full } where full is the text of the old bar tap: 'Full', 'Burning', 'Full mm:ss' or 'Full --:--'.
+export function enduranceView() { const i = enduranceInfo(); return i ? { v: i.v, mx: i.mx, burning: i.burning, full: untilFull(i) } : null; }
 const clock = sec => { sec = Math.max(0, Math.round(sec)); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60, p = n => String(n).padStart(2, '0'); return (h ? h + ':' + p(m) : p(m)) + ':' + p(s); };
 // Text for the endurance bar after a tap: time until full in REAL time (game hours x 3600 / speed).
 function untilFull(i) {
