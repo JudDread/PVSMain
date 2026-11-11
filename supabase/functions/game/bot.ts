@@ -13,9 +13,9 @@
 // ONE TURN, for each bot whose ship is docked (at most max_per_tick bots per turn):
 //   1. Open trip and the ship is at its sell place -> SELL the cargo (trade_market), close the trip
 //      in bot_trips (revenue, profit, finished_t).
-//   2. Leftover cargo (a failed trip) -> sell it here.
-//   3. Empty hold -> ask SQL bot_candidates for the best trade to every other place, pick the one
-//      with the most profit per game day of flight, BUY (trade_market), write the bot_trips row,
+//   2. Leftover cargo (a failed trip) -> sell it here. 2026-11-10 (093 idea, no migration): if it
+//      CANNOT be sold here, RESCUE: fly the cargo to a place that consumes it (see rescueCargo).
+//   3. Empty hold -> ask SQL bot_balance for the trade, BUY (trade_market), write the bot_trips rows,
 //      launch the flight (a scheduled_actions row + the ship's plan, the same as queue_travel).
 // Arrival (docking) is done by the existing resolver (pg_cron, every minute).
 // 2026-11-02 (092) BALANCING: step 3 no longer asks for the best profit. SQL bot_balance(place, floor, gap) takes the producer good HERE with the highest
@@ -65,7 +65,7 @@ async function botTurn(db, cfg, t0) {
   const nowT = gameDaysAt(t0);
   const maxN = Math.max(1, Math.floor(Number(cfg.max_per_tick) || 10));
   const g = Number(cfg.g) || 3;
-  const sum = { at: new Date(t0).toISOString(), game_days: nowT, ready: 0, ran: 0, bought: 0, sold: 0, dumped: 0, idle: 0, failed_trips: 0, errors: [] };
+  const sum = { at: new Date(t0).toISOString(), game_days: nowT, ready: 0, ran: 0, bought: 0, sold: 0, dumped: 0, rescued: 0, idle: 0, failed_trips: 0, errors: [] };
   const note = (e) => { if (sum.errors.length < 8) sum.errors.push(String((e && e.message) || e)); };
 
   // Dock any ship whose trip is due (the cron does this every minute; doing it here keeps bots timely).
@@ -132,7 +132,7 @@ async function trade(db, botId, loc, kind, good, qty) {
 }
 
 async function cargoOf(db, shipId) {
-  const { data, error } = await db.from('ship_cargo').select('good_id,quantity').eq('ship_id', shipId);
+  const { data, error } = await db.from('ship_cargo').select('good_id,quantity,avg_cost').eq('ship_id', shipId);
   if (error) throw error;
   return data ?? [];
 }
@@ -170,11 +170,17 @@ async function runBot(db, bot, ship, trips, locById, memo, nowT, g, sum, cfg, ma
   // 2. leftover cargo (a failed trip): sell it here so the hold is empty
   let left = await cargoOf(db, ship.id);
   for (const c of left) {
-    const r = await trade(db, bot.id, here.id, 'sell', c.good_id, c.quantity);
-    if (r && r.ok) sum.dumped++;
+    try {
+      const r = await trade(db, bot.id, here.id, 'sell', c.good_id, c.quantity);
+      if (r && r.ok) sum.dumped++;
+    } catch (e) { note0(sum, 'dump ' + c.good_id + ': ' + ((e && e.message) || e)); }   // one bad good must not freeze the bot
   }
   if (left.length) left = await cargoOf(db, ship.id);
-  if (left.length) { sum.idle++; return; } // cannot sell it here: try again next turn
+  if (left.length) {
+    // 2b. cannot sell it here: do not wait, MOVE (fly the cargo to a place that buys it)
+    await rescueCargo(db, bot, ship, here, left, locById, memo, nowT, g, sum, marketIds);
+    return;
+  }
 
   // 3. BALANCE (092): the producer good here with the highest percent in stock goes to the place with the lowest percent
   const floor = Number(cfg.balance_floor ?? 0.5), gap = Number(cfg.balance_gap ?? 0.1);
@@ -222,6 +228,53 @@ async function runBot(db, bot, ship, trips, locById, memo, nowT, g, sum, cfg, ma
     ids.push(row.id);
   }
   await launch(db, bot, ship, here, dest, tp, nowT, g, ids);
+}
+
+// RESCUE (2026-11-10): the bot sits at a place with goods it cannot sell there. It flies to the OTHER place that
+// consumes the most of those goods (ties: the shortest flight), with one bot_trips row per good that place
+// consumes (cost = what the bot paid, or 0 when unknown; note.rescue = true), so the normal step 1 sells them on arrival.
+// A good that no reachable place consumes still rides along. When no place fits at all, the bot hops to a random market place.
+async function rescueCargo(db, bot, ship, here, left, locById, memo, nowT, g, sum, marketIds) {
+  const { data: mk, error: me } = await db.from('markets').select('location_id,good_id').eq('role', 'consumer').in('good_id', left.map((c) => c.good_id));
+  if (me) throw me;
+  const takes = {};   // place id -> set of leftover goods that place consumes
+  for (const m of mk ?? []) {
+    if (m.location_id === here.id || !locById[m.location_id]) continue;
+    if (!takes[m.location_id]) takes[m.location_id] = new Set();
+    takes[m.location_id].add(m.good_id);
+  }
+  let best = null;
+  for (const id of Object.keys(takes)) {
+    const tp = tripFor(memo, here, locById[id], nowT, g);
+    if (!tp || !tp.ok || !(tp.days > 0)) continue;
+    const n = takes[id].size;
+    if (!best || n > best.n || (n === best.n && tp.days < best.tp.days)) best = { id, n, tp };
+  }
+  if (!best) {
+    // no place buys these goods (or no flight): hop to a random market place with the cargo and try again there
+    const others = (marketIds ?? []).filter((id) => id !== here.id);
+    if (!others.length) { sum.idle++; return; }
+    const w = locById[others[Math.floor(Math.random() * others.length)]];
+    const wt = w ? tripFor(memo, here, w, nowT, g) : null;
+    if (!wt || !wt.ok || !(wt.days > 0)) { sum.idle++; return; }
+    await launch(db, bot, ship, here, w, wt, nowT, g, []);
+    sum.rescued++;
+    return;
+  }
+  const dest = locById[best.id], r = best.tp.r, ids = [];
+  for (const c of left) {
+    if (!takes[best.id].has(c.good_id)) continue;
+    const cost = c.avg_cost != null ? Math.round(Number(c.avg_cost) * Number(c.quantity) * 100) / 100 : 0;
+    const { data: row, error: te } = await db.from('bot_trips').insert({
+      character_id: bot.id, ship_id: ship.id, good_id: c.good_id, buy_location: here.id, sell_location: dest.id,
+      quantity: c.quantity, cost, started_t: nowT, arrive_t: r.arriveT, status: 'flying',
+      note: { rescue: true, g },
+    }).select('id').single();
+    if (te) throw te;
+    ids.push(row.id);
+  }
+  await launch(db, bot, ship, here, dest, best.tp, nowT, g, ids);
+  sum.rescued++;
 }
 
 // Start the flight: a scheduled action (the existing resolver docks the ship) and the ship's plan. tripIds = the bot_trips rows to mark failed if the launch fails.
