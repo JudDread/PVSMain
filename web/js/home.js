@@ -5,6 +5,7 @@
 // with a small button on the right; Log out is a small button at the bottom (#out keeps its click handler from main.js).
 // The ship line (#ship) stays in the page, hidden (core.js still fills it); the ship is shown in Profile.
 import { S, $, addScreen, openScreen, el } from 'core';
+import './ranks.js';                                    /* the Ranks screen (leaderboards) */
 import './library.js';                                  /* the Library screen (its text is in library_pages.js) */
 
 const DISCORD = 'https://discord.gg/4G8rWeF7AV';
@@ -71,9 +72,14 @@ help.appendChild(item('Discord', 'Questions, bugs, ideas, account trouble', 'Joi
 help.appendChild(item('Terms and privacy', '', 'Open', () => window.open(new URL('terms.html', location.href).href, '_blank', 'noopener')));   /* web/terms.html, next to index.html */
 help.appendChild(item('Membership', 'Not available yet', 'Soon', () => {}, true));                       /* payments are a later step */
 
+/* ranks: one row that opens the leaderboards (ranks.js) */
+const board = el('section', '');
+board.appendChild(bar('Ranks'));
+board.appendChild(item('Leaderboards', 'Level, damage, jobs, sales, net worth, distance', 'Open', () => openScreen('ranks')));
+
 /* the blocks go under the tiles and above Log out */
 const out = $('out');
-[welcome, help].forEach(b => { if (out) home.insertBefore(b, out); else home.appendChild(b); });
+[welcome, board, help].forEach(b => { if (out) home.insertBefore(b, out); else home.appendChild(b); });
 
 function draw() {
   const ch = S.last && S.last.character;
