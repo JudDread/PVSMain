@@ -14,6 +14,7 @@ import { gate, placeServices } from './services.ts';          // 077: what a pla
 import { skillsView, skillBuy } from './skills.ts';
 import { missionsView, missionStep, missionAccept, missionClaim, missionsSeen } from './missions.ts';
 import { profileView } from './profile.ts';
+import { ranksView } from './ranks.ts';                // 2026-11-11: leaderboards (migrations 097 + 098)
 import { rigsView, rigFit, rigUnfit, rigUnfitAll, rigApply, facilitiesView, shipyardView, rigTrade, hullBuy, hullSell } from './rigs.ts';
 import { courseOptions, courseChange } from './course.ts';
 import { kickBots } from './bot.ts';
@@ -354,6 +355,7 @@ Deno.serve(async (req) => {
       case 'mission_claim': return await missionClaim(db, user, body);
       case 'missions_seen': return await missionsSeen(db, user);
       case 'profile': return await profileView(db, user, body);
+      case 'ranks': return await ranksView(db, user);   // read only; no gate rule needed
       case 'rigs': return await rigsView(db, user, body);
       case 'rig_fit': return await rigFit(db, user, body);
       case 'rig_unfit': return await rigUnfit(db, user, body);
