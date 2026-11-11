@@ -5,6 +5,7 @@
 // this file only checks who is asking and passes the request on.
 // ======================================================================
 import { json, getCharacter } from './common.ts';
+import { EMERGENCY_ID, emergencyAccept, emergencyTick, emergencyInfo } from './emergency.ts';   // 2026-11-11: the daily Emergency Delivery job (migrations 099 + 100)
 
 // 059: a mission can show or hide places (quests.effects, SQL quest_effects_apply). The accept / claim has already succeeded, so try twice.
 async function applyEffects(db, characterId, quest, event) {
@@ -44,6 +45,7 @@ export async function missionsView(db, user) {
   // 090 + 086: a new wave moves its place and hides it at the end of the window; a repeatable mission whose wait is over is offered again (best effort)
   try { await db.rpc('quest_wave_tick'); } catch (e) { /* ignore */ }
   try { await db.rpc('quest_repeat', { p_character: ch.id }); } catch (e) { /* ignore */ }
+  await emergencyTick(db, ch.id);                  // 099: record the outcome of an emergency run, offer the daily job again after the reset (best effort)
   const { data, error } = await db.rpc('quest_list', { p_character: ch.id });
   if (error) throw error;
   // 075: a step 'damage:<zone>:<amount>' shows how much of the amount is done
@@ -79,6 +81,8 @@ export async function missionsView(db, user) {
     }
     for (const q of data.quests ?? []) if (rinfo.has(q.id)) { q.repeats = true; q.wave = rinfo.get(q.id); }
   } catch (e) { console.error('wave info failed', e); }
+  // 099: the emergency job: destination, outcome (for the pop-ups), counters and the next call
+  try { await emergencyInfo(db, ch.id, data.quests ?? []); } catch (e) { console.error('emergency info failed', e); }
   return json({ ok: true, chains: data.chains, quests: data.quests, ready: data.ready, new: data.new });
 }
 
@@ -112,6 +116,7 @@ async function waveOf(db, quest) {                                // the wave cl
 export async function missionAccept(db, user, body) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
+  if (String(body.quest ?? '') === EMERGENCY_ID) return await emergencyAccept(db, ch);   // 099: picks the place and the timer, puts the package in the hold
   if (NEEDS_WEAPON.includes(String(body.quest ?? '')) && !(await hasWeaponFitted(db, ch.id))) {
     return json({ error: 'This mission needs a weapon. Fit one in a weapon slot on the Rigging screen, then come back.' }, 409);   // the page's red bar shows the 'error' text, so the sentence goes there
   }
