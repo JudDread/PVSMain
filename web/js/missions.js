@@ -135,6 +135,10 @@ function card(q) {
     r.append(el('span', 'ck', done ? '\u2713' : '\u25CB'), el('span', 'tx', s.label));
     c.appendChild(r);
   });
+  if (q.emergency && q.status === 'active' && q.emergency.dest_name) {   /* 099: Emergency Delivery: where to and what it pays */
+    c.appendChild(el('div', 'mdue', 'Deliver to ' + q.emergency.dest_name + '. Freight pay Cr ' + short(q.emergency.pay_total, true) + ' + bonus for a fast run.'));
+  }
+  if (q.id === 'emergency_delivery' && q.status === 'offered') c.appendChild(el('div', 'mqd', 'You get your destination and timer when you accept. You must be docked, with 20 CU of free hold.'));
   if (q.status === 'active' && q.due_at) { const d = el('div', 'mdue', leftText(q)); d.dataset.due = q.due_at; c.appendChild(d); }
   if (q.status === 'offered' && q.time_limit_minutes && !q.wave) c.appendChild(el('div', 'mdue', 'Timed: you have ' + words(Number(q.time_limit_minutes)) + ' from the moment you accept.'));
   if (q.wave) {                                                          /* 090: the wave clock of a wave job */
@@ -149,7 +153,11 @@ function card(q) {
     if (Number(q.fails) > 0) p.push('Failed ' + q.fails + (Number(q.fails) === 1 ? ' time' : ' times'));
     c.appendChild(el('div', 'mhist', p.join(' \u00b7 ')));
   }
-  if (q.status === 'failed' && !q.wave) c.appendChild(el('div', 'mdue', 'The time ran out.'));
+  if (q.status === 'failed' && !q.wave) c.appendChild(el('div', 'mdue', q.emergency && q.emergency.result === 'failed_lost' ? 'The shipment was lost.' : 'The time ran out.'));
+  if (q.daily && (q.status === 'failed' || q.status === 'claimed')) {      /* 099: the next emergency call (the daily reset) */
+    const w = el('div', 'mdue'); w.dataset.until = new Date(q.daily.next_at).getTime(); w.dataset.pre = 'Next emergency call in ';
+    w.textContent = w.dataset.pre + clock(w.dataset.until - nowMs()); c.appendChild(w);
+  }
   // footer: the reward (green) on the left, the button on the right
   const f = el('div', 'mft');
   f.appendChild(el('span', 'mqr', rewardText(q.reward)));
@@ -207,6 +215,7 @@ function paint() {
 setInterval(() => {                                   /* waiting for the tutorial freight delivery (the server records it): look again every 20 s */
   if (document.hidden || !S.last || !S.last.character) return;
   if (list().some(q => q.status === 'active' && (q.steps || []).some(s => s.id === 'freight_take' && s.done) && (q.steps || []).some(s => s.id === 'freight_deliver' && !s.done))) load();
+  else if (list().some(q => q.id === 'emergency_delivery' && q.status === 'active')) load();   /* 099: an emergency run is on: look again every 20 s (delivery, loss or a timeout) */
 }, 20000);
 
 setInterval(() => {                                   /* countdowns of timed missions (none exist yet) */
@@ -239,6 +248,34 @@ async function noteStep(name, extra) {
 }
 screenWatchers.push(noteStep);
 actionWatchers.push(noteStep);
+
+/* 099: the Emergency Delivery pop-ups (success / failure), once per run. The server keeps the outcome and its time (q.emergency.result, .ended_at). */
+const EMG_KEY = 'pvs_emg_seen';
+async function emergencyPopup() {
+  const q = list().find(x => x.id === 'emergency_delivery'), e = q && q.emergency;
+  if (!e || !e.result || !e.ended_at) return;
+  let seen = null; try { seen = localStorage.getItem(EMG_KEY); } catch (x) { /* no storage */ }
+  if (seen === String(e.ended_at)) return;
+  const place = e.dest_name || 'its destination';
+  let title, paras;
+  if (e.result === 'success') {
+    title = 'DELIVERY COMPLETE';
+    paras = ['The supplies reached ' + place + ' with time to spare. The crew is already unsealing the crates, and the Registry has logged your run.',
+             'Freight pay has been credited. Your ' + whole((q.reward || {}).xp || 0) + ' XP is waiting on the Jobs screen.'];
+  } else if (e.result === 'failed_lost') {
+    title = 'DELIVERY FAILED';
+    paras = ['The shipment never reached ' + place + '. It was lost, and the Registry has written it off.', 'A new emergency call will come after the next daily reset.'];
+  } else {
+    title = 'DELIVERY FAILED';
+    paras = ['The clock ran out before the supplies reached ' + place + '. The shipment has been written off and removed from your hold.', 'The Registry will post a new emergency call after the next daily reset.'];
+  }
+  try {
+    let co; try { co = await import('coach'); } catch (x) { co = await import('./coach.js'); }
+    co.modal({ kicker: 'Emergency Delivery', title, paras, buttons: [{ label: 'OK', onClick: co.closeModal }] });
+    try { localStorage.setItem(EMG_KEY, String(e.ended_at)); } catch (x) { /* no storage */ }
+  } catch (x) { /* the pop-up could not open: it is tried again after the next load */ }
+}
+missionWatchers.push(emergencyPopup);
 
 export function resetMissions() { data = null; failed = ''; loading = false; busy = false; for (const k in openMap) delete openMap[k]; for (const k in doneMap) delete doneMap[k]; div.replaceChildren(); }
 
