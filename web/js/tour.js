@@ -19,6 +19,7 @@ import { levelImages, markLevelSeen } from './levelup.js';
 // tap = moves on when the player taps the highlighted thing; screen = only shown while that screen is open (a Next beat for a screen the player has left moves on).
 // target = a css selector, {sel, text} or a list of those (see coach.js).
 const earthPicked = () => { const n = document.querySelector('#mloc .lpname'); return !!n && n.textContent.includes('Earth'); };   /* the Market place box shows Earth */
+const earthProposed = () => { const g = document.getElementById('go'); return !!g && !g.disabled && !!g.querySelector('small') && [...document.querySelectorAll('#deps .row.sel')].some(r => /Earth/.test(r.textContent)); };   /* the player touched Earth on the map: its line is selected and the Launch button shows the trip time */
 
 const lunaPicked = () => { const n = document.querySelector('#mloc .lpname'); return !!n && n.textContent.includes('Luna'); };   /* the Market place box shows Luna */
 
@@ -84,11 +85,10 @@ const TOURS = [
     beats: [
       { target: '#nav button[data-screen="travel"]', fromMissions: true, until: 'travel', text: 'Time to fly. Tap the Fly tab.' },
       { target: '#map', screen: 'travel', next: true, text: 'The live map of the solar system. The planets orbit the Sun in real time (at 60x normal). Your ship is on the map, and so is every location that you can fly to.' },
-      { target: '.zb', screen: 'travel', next: true, text: 'ZOOM. Inner shows the inner planets, System shows everything, Ship centres on your own ship, very close. You can also pan and zoom the map by touch.' },
-      { target: '#depshead', screen: 'travel', next: true, text: 'ENDURANCE AND TRIPS. There is nothing to set: your Endurance is applied to every trip automatically, and the trip time on each line already counts it. More Endurance means shorter trips. Above 3 g a trip pulses (it burns, coasts to refill, then burns again), so the list shows the average.' },
-      { target: '#depshead', screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'DESTINATIONS. Tap here to open the list of places you can fly to.' },
-      { target: { sel: '#deps .row', text: 'Earth Orbit' }, screen: 'travel', tap: true, hole: ['#depshead', '#deps'], text: 'Your first trip is to EARTH ORBIT. Tap it. Every line shows how long the trip takes.' },
-      { target: ['#deps .lbtn', '#go'], screen: 'travel', hole: ['#depshead', '#deps', '#go'], until: 'queue_travel', text: 'Press LAUNCH. Picking a place is only a proposal: nothing happens until you press Launch. The ship accelerates to the halfway point, flips, and brakes to arrive. The trip time is shown in real minutes.' },
+      { target: { sel: '.zb button', text: 'Ship' }, screen: 'travel', tap: true, text: 'ZOOM. Inner shows the inner planets, System shows everything, and Ship centres on your own ship. Touch SHIP now. You can also pan and zoom the map by touch.' },
+      { target: '#depshead', screen: 'travel', next: true, text: 'DESTINATIONS. This button opens the full list of places you can fly to, with the trip time of each. This time we will pick from the map.' },
+      { target: '#map', screen: 'travel', hole: ['#map'], check: earthProposed, text: 'Now touch EARTH on the map. A line shows the course, and the trip time appears on the Launch button.' },
+      { target: '#go', screen: 'travel', hole: ['#map', '#go'], until: 'queue_travel', text: 'Press LAUNCH. Picking a place is only a proposal: nothing happens until you press Launch. The ship accelerates to the halfway point, flips, and brakes to arrive. The trip time is shown in real minutes.' },
     ],
     finals: [
       { target: '#map', screen: 'travel', next: true, label: 'OK', hole: [], text: 'LAUNCHED! The ship accelerates to the halfway point, flips, and brakes to arrive. The trip time is shown in real minutes. Tap OK to continue.' },
