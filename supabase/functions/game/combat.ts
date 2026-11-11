@@ -499,6 +499,18 @@ async function advanceZone(db, ctx, nowMs) {
     const { error: de2 } = await db.rpc('quest_add_damage', { p_character: cid, p_zone: zone.location_id, p_amount: Math.round(amt) });
     if (de2) console.error('quest_add_damage failed', de2);
   }
+  // LEADERBOARD (097): ALL damage a pilot's ship dealt in this stretch (to drones or to pilots) goes into the pilot's running total (`pilot_stats.damage_dealt`).
+  // Same rule as above: only after the save, and a failed call only logs.
+  const dealtAll = new Map();
+  for (const d of dmg.values()) {
+    const sid = shipOfPilot.get(d.actor_id), cid = sid ? owner.get(sid) : null;
+    if (cid) dealtAll.set(cid, (dealtAll.get(cid) || 0) + d.amount);
+  }
+  for (const [cid, amt] of dealtAll) {
+    if (!(amt > 0)) continue;
+    const { error: pe } = await db.rpc('pilot_stat_add', { p_character: cid, p_damage: Math.round(amt) });
+    if (pe) console.error('pilot_stat_add failed', pe);
+  }
   // MISSIONS: a player ship that destroyed a drone whose type has a kill_quest finishes that mission's step 'kill:<drone type>'.
   // (The server does this itself: the page cannot be trusted to say what died. A mission that is not accepted yet simply ignores it.)
   const kills = res.events.filter((e) => e.kind === 'kill' && e.actor_id && e.target_id);
