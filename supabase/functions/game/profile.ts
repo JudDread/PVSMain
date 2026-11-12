@@ -6,6 +6,7 @@
 // ======================================================================
 import { json, getCharacter, getShip, getMaxG } from './common.ts';
 import { gameDaysAt } from './physics_bundle.ts';
+import { repValues } from './reputation.ts';   // 2026-11-11: faction standings (migration 101)
 
 export async function profileView(db, user, body) {
   const me = await getCharacter(db, user);
@@ -32,5 +33,12 @@ export async function profileView(db, user, body) {
   if (self) {
     try { const ship = await getShip(db, target.id); if (ship) maxG = await getMaxG(db, ship); } catch (e) { console.error(e); }
   }
-  return json({ ...data, self, level: pilot.level, max_g: maxG });
+  // 101: faction standings. Own profile = every faction; other pilots only get the market line (standings are private for now).
+  let reputations = data.reputations || [];
+  try {
+    const vals = await repValues(db, target.id);
+    reputations = reputations.map((r) => (r.id === 'market' ? r : { ...r, value: vals[r.id] ?? 0 }));
+  } catch (e) { console.error('rep values failed', e); }
+  if (!self) reputations = reputations.filter((r) => r.id === 'market');
+  return json({ ...data, reputations, self, level: pilot.level, max_g: maxG });
 }
