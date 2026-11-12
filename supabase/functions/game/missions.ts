@@ -5,6 +5,7 @@
 // this file only checks who is asking and passes the request on.
 // ======================================================================
 import { json, getCharacter } from './common.ts';
+import { repSettle, repInfo } from './reputation.ts';                                    // 2026-11-11: standing rewards of missions (migration 101)
 import { EMERGENCY_ID, emergencyAccept, emergencyTick, emergencyInfo } from './emergency.ts';   // 2026-11-11: the daily Emergency Delivery job (migrations 099 + 100)
 
 // 059: a mission can show or hide places (quests.effects, SQL quest_effects_apply). The accept / claim has already succeeded, so try twice.
@@ -45,6 +46,7 @@ export async function missionsView(db, user) {
   // 090 + 086: a new wave moves its place and hides it at the end of the window; a repeatable mission whose wait is over is offered again (best effort)
   try { await db.rpc('quest_wave_tick'); } catch (e) { /* ignore */ }
   try { await db.rpc('quest_repeat', { p_character: ch.id }); } catch (e) { /* ignore */ }
+  await repSettle(db, ch.id);                      // 101: standing for finished / failed missions (best effort)
   await emergencyTick(db, ch.id);                  // 099: record the outcome of an emergency run, offer the daily job again after the reset (best effort)
   const { data, error } = await db.rpc('quest_list', { p_character: ch.id });
   if (error) throw error;
@@ -83,6 +85,7 @@ export async function missionsView(db, user) {
   } catch (e) { console.error('wave info failed', e); }
   // 099: the emergency job: destination, outcome (for the pop-ups), counters and the next call
   try { await emergencyInfo(db, ch.id, data.quests ?? []); } catch (e) { console.error('emergency info failed', e); }
+  try { await repInfo(db, data.quests ?? []); } catch (e) { console.error('rep info failed', e); }   // 101: which jobs change which standing
   return json({ ok: true, chains: data.chains, quests: data.quests, ready: data.ready, new: data.new });
 }
 
@@ -151,7 +154,8 @@ export async function missionClaim(db, user, body) {
   if (error) throw error;
   if (!data.ok) return json({ error: data.error }, 409);
   await applyEffects(db, ch.id, String(body.quest ?? ''), 'claim');
-  return json(data);
+  const rep = await repSettle(db, ch.id);          // 101: the standing this claim changed, e.g. [{name:'Earth', applied:1}]
+  return json({ ...data, rep });
 }
 
 // The player has looked at the Missions screen: the "new mission" dot goes out.
