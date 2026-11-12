@@ -14,6 +14,7 @@ import { gate, placeServices } from './services.ts';          // 077: what a pla
 import { skillsView, skillBuy } from './skills.ts';
 import { missionsView, missionStep, missionAccept, missionClaim, missionsSeen } from './missions.ts';
 import { profileView } from './profile.ts';
+import { mars1Decide } from './marscore.ts';          // 2026-11-12: the choice after Mars Core 1 (102)
 import { ranksView } from './ranks.ts';                // 2026-11-11: leaderboards (migrations 097 + 098)
 import { rigsView, rigFit, rigUnfit, rigUnfitAll, rigApply, facilitiesView, shipyardView, rigTrade, hullBuy, hullSell } from './rigs.ts';
 import { courseOptions, courseChange } from './course.ts';
@@ -353,6 +354,7 @@ Deno.serve(async (req) => {
       case 'mission_step': return await missionStep(db, user, body);
       case 'mission_accept': return await missionAccept(db, user, body);
       case 'mission_claim': return await missionClaim(db, user, body);
+      case 'mission_choice': return await mars1Decide(db, user, body);   // 102
       case 'missions_seen': return await missionsSeen(db, user);
       case 'profile': return await profileView(db, user, body);
       case 'ranks': return await ranksView(db, user);   // read only; no gate rule needed
