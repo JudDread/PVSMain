@@ -6,6 +6,7 @@
 // ======================================================================
 import { json, getCharacter } from './common.ts';
 import { repSettle, repInfo } from './reputation.ts';                                    // 2026-11-11: standing rewards of missions (migration 101)
+import { MARS1_ID, mars1Accept, mars1Check, mars1Info } from './marscore.ts';              // 2026-11-12: Mars Core 1 'Quiet Passage' (migrations 102 + 103)
 import { EMERGENCY_ID, emergencyAccept, emergencyTick, emergencyInfo } from './emergency.ts';   // 2026-11-11: the daily Emergency Delivery job (migrations 099 + 100)
 
 // 059: a mission can show or hide places (quests.effects, SQL quest_effects_apply). The accept / claim has already succeeded, so try twice.
@@ -47,7 +48,8 @@ export async function missionsView(db, user) {
   try { await db.rpc('quest_wave_tick'); } catch (e) { /* ignore */ }
   try { await db.rpc('quest_repeat', { p_character: ch.id }); } catch (e) { /* ignore */ }
   await repSettle(db, ch.id);                      // 101: standing for finished / failed missions (best effort)
-  await emergencyTick(db, ch.id);                  // 099: record the outcome of an emergency run, offer the daily job again after the reset (best effort)
+  await emergencyTick(db, ch.id);
+  await mars1Check(db, ch.id);                     // 102: record the delivery / loss of Mars Core 1 (best effort)                  // 099: record the outcome of an emergency run, offer the daily job again after the reset (best effort)
   const { data, error } = await db.rpc('quest_list', { p_character: ch.id });
   if (error) throw error;
   // 075: a step 'damage:<zone>:<amount>' shows how much of the amount is done
@@ -85,7 +87,8 @@ export async function missionsView(db, user) {
   } catch (e) { console.error('wave info failed', e); }
   // 099: the emergency job: destination, outcome (for the pop-ups), counters and the next call
   try { await emergencyInfo(db, ch.id, data.quests ?? []); } catch (e) { console.error('emergency info failed', e); }
-  try { await repInfo(db, data.quests ?? []); } catch (e) { console.error('rep info failed', e); }   // 101: which jobs change which standing
+  try { await repInfo(db, data.quests ?? []); } catch (e) { console.error('rep info failed', e); }
+  try { await mars1Info(db, ch.id, data.quests ?? []); } catch (e) { console.error('mars1 info failed', e); }   // 102: pop-up state of Mars Core 1   // 101: which jobs change which standing
   return json({ ok: true, chains: data.chains, quests: data.quests, ready: data.ready, new: data.new });
 }
 
@@ -119,6 +122,7 @@ async function waveOf(db, quest) {                                // the wave cl
 export async function missionAccept(db, user, body) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
+  if (String(body.quest ?? '') === MARS1_ID) return await mars1Accept(db, ch);               // 102: only docked at Mars, 10 CU of hold
   if (String(body.quest ?? '') === EMERGENCY_ID) return await emergencyAccept(db, ch);   // 099: picks the place and the timer, puts the package in the hold
   if (NEEDS_WEAPON.includes(String(body.quest ?? '')) && !(await hasWeaponFitted(db, ch.id))) {
     return json({ error: 'This mission needs a weapon. Fit one in a weapon slot on the Rigging screen, then come back.' }, 409);   // the page's red bar shows the 'error' text, so the sentence goes there
