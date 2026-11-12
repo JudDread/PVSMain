@@ -160,9 +160,15 @@ function draw() {
     box.appendChild(sg);
   }
 
-  // reputations (none active yet)
+  // reputations: standing with each faction (green above 0, red below; own profile only, the server sends others just the market line)
   box.appendChild(bar('Reputation'));
-  (data.reputations || []).forEach(r => box.appendChild(split(r.name, r.active ? whole(r.value) : 'Not active yet')));
+  (data.reputations || []).forEach(r => {
+    if (!r.active) { box.appendChild(split(r.name, 'Not active yet')); return; }
+    const v = Number(r.value) || 0;
+    const row = split(r.name, (v > 0 ? '+' : '') + whole(v));
+    row.lastChild.style.color = v > 0 ? '#6be08f' : v < 0 ? '#ff8a8a' : '#8d98b2';
+    box.appendChild(row);
+  });
 
   // events (public) and, for me only, the full activity log
   box.appendChild(fold('Events', (data.events || []).map(e => eventItem(e, false)), 'Nothing yet.'));
