@@ -106,6 +106,7 @@ async function act(action, q, btn, okText) {
   try {
     const res = await call(action, { quest: q.id });
     if (okText) say(typeof okText === 'function' ? okText(res) : okText, 'ok');
+    if (action === 'mission_accept' && q.id === 'mars_1') marsStartPopup();   /* 102 */
     if (S.refresh) await S.refresh();   /* credits, XP and the tab dot */
   } catch (e) {
     if (/needs a weapon|no[ _]weapon/i.test(e.message || '')) {   /* no weapon fitted: explain in a message box with an OK button (the red bar if the box cannot open) */
@@ -137,6 +138,7 @@ function card(q) {
     c.appendChild(r);
   });
   if (q.rep_reward && q.rep_reward.some(x => Number(x.fail) < 0)) c.appendChild(el('div', 'mqd', 'Standing: ' + q.rep_reward.map(x => x.name + ' +' + x.claim + ' on success, ' + x.fail + ' on failure (at most +/-' + x.cap + ' from this job)').join('; ') + '.'));   /* 101 */
+  if (q.id === 'mars_1' && q.status === 'offered') c.appendChild(el('div', 'mqd', 'Accept it docked at Mars, with 10 CU of free hold. The passengers and their gear travel as one package to Earth Orbit. No timer, and no freight pay.'));   /* 102 */
   if (q.emergency && q.status === 'active' && q.emergency.dest_name) {   /* 099: Emergency Delivery: where to and what it pays */
     c.appendChild(el('div', 'mdue', 'Deliver to ' + q.emergency.dest_name + '. Freight pay Cr ' + short(q.emergency.pay_total, true) + ' + bonus for a fast run.'));
   }
@@ -163,6 +165,7 @@ function card(q) {
   // footer: the reward (green) on the left, the button on the right
   const f = el('div', 'mft');
   f.appendChild(el('span', 'mqr', rewardText(q.reward, q)));
+  if (q.story && q.story.pending) { const db2 = el('button', '', 'Decide'); db2.onclick = () => marsAsk(true); f.appendChild(db2); }   /* 102: the choice is still open */
   if (q.status === 'ready') { const b = el('button', '', 'Claim reward'); b.onclick = () => act('mission_claim', q, b, res => 'Reward claimed: ' + rewardText(q.reward) + ((res && res.rep && res.rep.length) ? '  \u00B7  ' + res.rep.map(x => x.name + ' ' + (x.applied > 0 ? '+' : '') + x.applied).join(', ') : '')); f.appendChild(b); }
   if (q.status === 'offered') { const b = el('button', '', 'Accept job'); b.onclick = () => act('mission_accept', q, b, 'Job accepted: ' + q.title); if (q.wave && !q.wave.open) b.disabled = true; f.appendChild(b); }
   c.appendChild(f);
@@ -217,7 +220,7 @@ function paint() {
 setInterval(() => {                                   /* waiting for the tutorial freight delivery (the server records it): look again every 20 s */
   if (document.hidden || !S.last || !S.last.character) return;
   if (list().some(q => q.status === 'active' && (q.steps || []).some(s => s.id === 'freight_take' && s.done) && (q.steps || []).some(s => s.id === 'freight_deliver' && !s.done))) load();
-  else if (list().some(q => q.id === 'emergency_delivery' && q.status === 'active')) load();   /* 099: an emergency run is on: look again every 20 s (delivery, loss or a timeout) */
+  else if (list().some(q => (q.id === 'emergency_delivery' || q.id === 'mars_1') && q.status === 'active')) load();   /* 099: an emergency run is on: look again every 20 s (delivery, loss or a timeout) */
 }, 20000);
 
 setInterval(() => {                                   /* countdowns of timed missions (none exist yet) */
@@ -278,6 +281,63 @@ async function emergencyPopup() {
   } catch (x) { /* the pop-up could not open: it is tried again after the next load */ }
 }
 missionWatchers.push(emergencyPopup);
+
+/* 102: MARS CORE 1 'Quiet Passage': the story pop-ups (start, arrival with the choice, outcome, lost). The server says what to show (q.story). */
+async function coachMod() { try { return await import('coach'); } catch (x) { return await import('./coach.js'); } }
+async function marsStartPopup() {
+  try {
+    const co = await coachMod();
+    co.modal({ kicker: 'Mars Core', title: 'PASSENGERS ABOARD', paras: [
+      'Five passengers come aboard in silence, followed by four sealed crates that two of them will not let out of reach. The woman gives you a nod and says only: "Earth Orbit. Straight there."'
+    ], buttons: [{ label: 'OK', onClick: co.closeModal }] });
+  } catch (x) { /* no box: the job card shows the same job */ }
+}
+let marsOpenAt = 0;
+async function marsAsk(force) {
+  if (!force && marsOpenAt && Date.now() - marsOpenAt < 600000) return;     /* already shown: the Decide button on the card opens it again */
+  marsOpenAt = Date.now();
+  let co; try { co = await coachMod(); } catch (x) { marsOpenAt = 0; return; }
+  let chosen = false;
+  const choose = async (choice) => {
+    if (chosen) return; chosen = true;
+    let res;
+    try { res = await call('mission_choice', { quest: 'mars_1', choice }); }
+    catch (e) { marsOpenAt = 0; co.closeModal(); say('Error: ' + e.message, 'err'); load(); return; }
+    marsOpenAt = 0;
+    const rep = (res.rep || []).map(x => x.name + ' standing ' + (x.applied > 0 ? '+' : '') + x.applied).join('  \u00B7  ');
+    const paras = choice === 'report'
+      ? ['You walk to the nearest Space Command desk and describe five passengers who walked in step. The officer thanks you and writes it all down very slowly. Whatever was in those crates, it is not yours to wonder about any more.']
+      : ['You say nothing. When the patrol finally turns your way, the concourse has already swallowed them, and the half million waiting for you is the only proof they ever existed.'];
+    if (rep) paras.push(rep);
+    co.closeModal();
+    co.modal({ kicker: 'Mars Core', title: choice === 'report' ? 'REPORTED' : 'KEPT QUIET', paras, buttons: [{ label: 'OK', onClick: co.closeModal }] });
+    if (S.refresh) S.refresh();
+    load();
+  };
+  co.modal({ kicker: 'Mars Core', title: 'EARTH ORBIT', paras: [
+    'The five of them step off your ship in a tight little knot and try to melt into the crowd at the station. They do not quite manage it. They walk in step, and none of them looks at the departures board.',
+    'The woman is the last to leave. "You didn\'t ask," she says. "You didn\'t tell me," you answer. She almost smiles. "Then we understand each other," she says, and the crowd closes around her.',
+    'Two Space Command officers are working the concourse by the lifts. Half a million credits are waiting for you on the Jobs screen. So is a decision. Will you report what you saw to the authorities?'
+  ], buttons: [{ label: 'Report them', onClick: () => choose('report') }, { label: 'Keep quiet', onClick: () => choose('quiet') }] });
+}
+const MARS_KEY = 'pvs_mars1_seen';
+async function marsWatch() {
+  const q = list().find(x => x.id === 'mars_1'), s = q && q.story;
+  if (!s) return;
+  if (s.pending) { marsAsk(false); return; }
+  if (s.result === 'failed_lost' && s.ended_at) {
+    let seen = null; try { seen = localStorage.getItem(MARS_KEY); } catch (x) { /* no storage */ }
+    if (seen === String(s.ended_at)) return;
+    try {
+      const co = await coachMod();
+      co.modal({ kicker: 'Mars Core', title: 'DELIVERY FAILED', paras: [
+        'The passengers and their gear are gone. Whatever they were carrying, and whoever was waiting for them on Earth, they will not be coming now. Word will reach Mars.'
+      ], buttons: [{ label: 'OK', onClick: co.closeModal }] });
+      try { localStorage.setItem(MARS_KEY, String(s.ended_at)); } catch (x) { /* no storage */ }
+    } catch (x) { /* tried again after the next load */ }
+  }
+}
+missionWatchers.push(marsWatch);
 
 export function resetMissions() { data = null; failed = ''; loading = false; busy = false; for (const k in openMap) delete openMap[k]; for (const k in doneMap) delete doneMap[k]; div.replaceChildren(); }
 
