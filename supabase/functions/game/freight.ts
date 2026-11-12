@@ -5,6 +5,8 @@
 // ======================================================================
 import { CLOCK, gameDaysAt } from './physics_bundle.ts';
 import { json, getCharacter, getLocation, resolveFor, getShip, estimateTrip, LOC_RE, UUID_RE } from './common.ts';
+import { mars1Check } from './marscore.ts';          // 2026-11-12: records the delivery / loss of Mars Core 1 (102)
+import { emergencyCheck } from './emergency.ts';   // 2026-11-11: records the outcome of the daily Emergency Delivery (099)
 
 // ---------- freight contracts (migrations 020/021; 058 private tutorial job) ----------
 // A contract with `private_to` set is the tutorial job of ONE pilot (058): other pilots never see it and cannot accept it.
@@ -44,6 +46,8 @@ export async function freightResolve(db, characterId, strict = true) {
     console.error('freight resolve failed', error);
   }
   await tutorialFreightCheck(db, characterId);
+  await emergencyCheck(db, characterId);          // 099: delivered / failed / timed out (best effort)
+  await mars1Check(db, characterId);              // 102: Mars Core 1 delivered / lost (best effort)
 }
 
 // Records the tutorial freight steps (SQL tutorial_freight_check, 058). Best effort: never stops a freight action.
