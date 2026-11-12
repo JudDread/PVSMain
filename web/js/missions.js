@@ -52,11 +52,12 @@ export const missionList = list;                 // for tour.js
 export const loadMissions = () => load();         // for levelup.js
 export const missionWatchers = [];               // functions run after every load of the list (tour.js adds one)
 
-const rewardText = r => {
+const rewardText = (r, q) => {      /* q (optional): also lists the standing the job gives, e.g. 'Earth +1' */
   r = r || {}; const p = [];
   if (Number(r.credits)) p.push('Cr ' + short(r.credits, true));
   if (Number(r.xp)) p.push(whole(r.xp) + ' XP');
   if (Number(r.cal)) p.push(whole(r.cal) + ' Cal');
+  if (q) (q.rep_reward || []).forEach(x => { if (Number(x.claim) > 0) p.push(x.name + ' +' + whole(x.claim)); });
   return p.length ? p.join('  \u00B7  ') : 'No reward';
 };
 const span = ms => {                              // 3725000 -> '1h 2m'
@@ -103,8 +104,8 @@ async function act(action, q, btn, okText) {
   if (busy) return;
   busy = true; btn.disabled = true;
   try {
-    await call(action, { quest: q.id });
-    if (okText) say(okText, 'ok');
+    const res = await call(action, { quest: q.id });
+    if (okText) say(typeof okText === 'function' ? okText(res) : okText, 'ok');
     if (S.refresh) await S.refresh();   /* credits, XP and the tab dot */
   } catch (e) {
     if (/needs a weapon|no[ _]weapon/i.test(e.message || '')) {   /* no weapon fitted: explain in a message box with an OK button (the red bar if the box cannot open) */
@@ -135,6 +136,7 @@ function card(q) {
     r.append(el('span', 'ck', done ? '\u2713' : '\u25CB'), el('span', 'tx', s.label));
     c.appendChild(r);
   });
+  if (q.rep_reward && q.rep_reward.some(x => Number(x.fail) < 0)) c.appendChild(el('div', 'mqd', 'Standing: ' + q.rep_reward.map(x => x.name + ' +' + x.claim + ' on success, ' + x.fail + ' on failure (at most +/-' + x.cap + ' from this job)').join('; ') + '.'));   /* 101 */
   if (q.emergency && q.status === 'active' && q.emergency.dest_name) {   /* 099: Emergency Delivery: where to and what it pays */
     c.appendChild(el('div', 'mdue', 'Deliver to ' + q.emergency.dest_name + '. Freight pay Cr ' + short(q.emergency.pay_total, true) + ' + bonus for a fast run.'));
   }
@@ -160,8 +162,8 @@ function card(q) {
   }
   // footer: the reward (green) on the left, the button on the right
   const f = el('div', 'mft');
-  f.appendChild(el('span', 'mqr', rewardText(q.reward)));
-  if (q.status === 'ready') { const b = el('button', '', 'Claim reward'); b.onclick = () => act('mission_claim', q, b, 'Reward claimed: ' + rewardText(q.reward)); f.appendChild(b); }
+  f.appendChild(el('span', 'mqr', rewardText(q.reward, q)));
+  if (q.status === 'ready') { const b = el('button', '', 'Claim reward'); b.onclick = () => act('mission_claim', q, b, res => 'Reward claimed: ' + rewardText(q.reward) + ((res && res.rep && res.rep.length) ? '  \u00B7  ' + res.rep.map(x => x.name + ' ' + (x.applied > 0 ? '+' : '') + x.applied).join(', ') : '')); f.appendChild(b); }
   if (q.status === 'offered') { const b = el('button', '', 'Accept job'); b.onclick = () => act('mission_accept', q, b, 'Job accepted: ' + q.title); if (q.wave && !q.wave.open) b.disabled = true; f.appendChild(b); }
   c.appendChild(f);
   return c;
