@@ -19,6 +19,7 @@ let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0
 let outInfo = null, lastDrone = null, lastInstanced = false, lastSuccess = null, endWant = null, endAt = 0, endBusy = false, endSt = null, heatSt = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
 let comboFor = null, rtt = null;               // comboFor = the module id whose menu is open; rtt = how long the last answer took (ms)
+let intent = null, orderPic = false, maxGSeen = 0;   // intent = my last movement order, shown AT ONCE on my own ship until the server's pictures take over; maxGSeen = the hardest thrust measured so far
 const optMod = new Map();                      // module index -> { on, t }: what the pilot just asked for, shown AT ONCE until the server says the same
 const chips = new Map();                       // ship id -> { w, b, dist, bars, ship }
 const prevV = new Map(), acc = new Map(), head = new Map(), pst = new Map();   // per ship: last speed, estimated acceleration, last heading, drawing state
@@ -147,22 +148,34 @@ function grouped(list) {                                // ['RAIL','RAIL','LAS']
 const ammoLabel = a => a < 0.05 ? '0' : String(Math.round(a));      // just the number: the word did not fit in the chip
 const ORDER_NAME = { attack_max: 'Attack: long range', attack_opt: 'Attack: best range', follow: 'Follow', stop: 'Stop', drift: 'Drift', flee: 'Flee', heading: 'Thrust on a heading' };
 
-/* where a ship is drawn NOW: its last picture moved along speed and acceleration, plus the part of the last correction still fading out */
+/* where a ship is drawn NOW: its last picture moved along speed and acceleration, plus the part of the last correction still fading out.
+   p.lim (only after a movement order of mine) = how many game seconds the push lasts (a Stop ends at speed 0) */
+function kin(p, g) {
+  const t1 = p.lim == null ? g : Math.min(g, p.lim), t2 = g - t1;
+  const vx = p.vx + p.ax * t1, vy = p.vy + p.ay * t1;
+  return { x: p.x + p.vx * t1 + 0.5 * p.ax * t1 * t1 + vx * t2, y: p.y + p.vy * t1 + 0.5 * p.ay * t1 * t1 + vy * t2, vx, vy };
+}
 function posOf(id) {
   const p = pst.get(id); if (!p || !view) return null;
-  const ts = Math.min(12, (Date.now() - p.t) / 1000), g = ts * (view.scale || 60), k = Math.exp(-ts / 0.7);
-  return { x: p.x + p.vx * g + 0.5 * p.ax * g * g + p.ox * k, y: p.y + p.vy * g + 0.5 * p.ay * g * g + p.oy * k };
+  const ts = Math.min(12, (Date.now() - p.t) / 1000), g = ts * (view.scale || 60), k = Math.exp(-ts / 0.7), q = kin(p, g);
+  return { x: q.x + p.ox * k, y: q.y + p.oy * k };
 }
 /* the speed drawn NOW: the last speed plus the estimated acceleration, plus the part of the last correction still fading out */
 function velOf(id) {
   const p = pst.get(id); if (!p || !view) return null;
-  const ts = Math.min(12, (Date.now() - p.t) / 1000), g = ts * (view.scale || 60), k = Math.exp(-ts / 0.7);
-  return { x: p.vx + p.ax * g + p.ovx * k, y: p.vy + p.ay * g + p.ovy * k };
+  const ts = Math.min(12, (Date.now() - p.t) / 1000), g = ts * (view.scale || 60), k = Math.exp(-ts / 0.7), q = kin(p, g);
+  return { x: q.vx + p.ovx * k, y: q.vy + p.ovy * k };
+}
+/* the acceleration drawn NOW (null once a Stop has finished braking) */
+function accOf(id) {
+  const a = acc.get(id), p = pst.get(id);
+  if (a && p && p.lim != null && view && (Date.now() - p.t) / 1000 * (view.scale || 60) > p.lim) return null;
+  return a || null;
 }
 const P = s => posOf(s.id) || { x: s.x, y: s.y };
 function headOf(s) {
   const p = pst.get(s.id); if (!p || !view) return head.get(s.id) || 0;
-  const g = Math.min(12, (Date.now() - p.t) / 1000) * (view.scale || 60), vx = p.vx + p.ax * g, vy = p.vy + p.ay * g;
+  const q = kin(p, Math.min(12, (Date.now() - p.t) / 1000) * (view.scale || 60)), vx = q.vx, vy = q.vy;
   if (Math.hypot(vx, vy) > 0.2) { const h = Math.atan2(vy, vx); head.set(s.id, h); return h; }
   return head.get(s.id) || 0;
 }
@@ -330,13 +343,18 @@ async function sendSteps(part) {
       catch (e) { if (e && e.message === 'unknown_action') batchOk = false; else throw e; }
     }
     if (!batchOk) { for (const s of steps) { const { op, ...rest } = s; v = await call(OLD_ACTION[op], rest); } }
-    rtt = Math.round(performance.now() - t0); apply(v); resetPoll();
-    if (v && v.notes && v.notes.length) {                     // some steps were refused: say so, and show what is really switched
+    rtt = Math.round(performance.now() - t0);
+    orderPic = steps.some(x => x.op === 'order');
+    try { apply(v); } finally { orderPic = false; }
+    resetPoll();
+    if (v && v.notes && v.notes.length) {
+      if (intent && steps.some(x => x.op === 'order')) { revertIntent(); setTimeout(poll, 300); }       // an order was refused: back to what the server says                     // some steps were refused: say so, and show what is really switched
       toast(v.notes[0], true); steps.filter(s => s.op === 'module').forEach(s => optMod.delete(s.index)); modSig = ''; if (view) renderModChips();
     }
     part.forEach(q => q.resolve(true));
   } catch (e) {
     toast(errText(e), true); pending = null; if (!R.menu.hidden) buildMenu();
+    if (steps.some(x => x.op === 'order')) revertIntent();
     steps.filter(s => s.op === 'module').forEach(s => optMod.delete(s.index)); modSig = ''; if (view) renderModChips();
     part.forEach(q => q.resolve(false)); setTimeout(poll, 300);   // a refused order: look at the real state again
   } finally { busy = false; }
@@ -351,6 +369,31 @@ function optOrder(body) {
   if (body.hold_km) o.hold_km = body.hold_km;
   me.order = o; frame(true);
 }
+/* MY SHIP AT ONCE: a movement order sets my ship's push right away (flame, speed, path); the server's answer and the next picture take over.
+   Approximate on purpose (the push is the hardest thrust measured so far, 3 g at the start): it only has to cover the few seconds until the next picture. */
+function rebase(id, ax, ay, lim) {
+  const pos = posOf(id), vel = velOf(id); if (!pos || !vel) return;
+  pst.set(id, { x: pos.x, y: pos.y, vx: vel.x, vy: vel.y, ax, ay, t: Date.now(), ox: 0, oy: 0, ovx: 0, ovy: 0, lim: lim == null ? undefined : lim });
+  acc.set(id, { ax, ay });
+}
+function intendMove(body) {
+  if (!view || !pst.has(view.me.id)) return;
+  const m = view.me, mp = P(m), vel = velOf(m.id) || { x: m.vx, y: m.vy }, sp = Math.hypot(vel.x, vel.y), gk = Math.max(maxGSeen, 3) * G_KMS2;
+  let ux = 0, uy = 0, lim;
+  if (body.kind === 'heading') { const r = body.dir_deg * Math.PI / 180; ux = Math.cos(r); uy = Math.sin(r); }
+  else if (body.kind === 'stop') { if (sp > 0.2) { ux = -vel.x / sp; uy = -vel.y / sp; lim = sp / gk; } }
+  else if (body.kind !== 'drift') {                                       // attack / follow = toward the ship, flee = away from it
+    const t = view.ships.find(x => x.id === body.target), tp = t && P(t), dd = tp ? Math.hypot(tp.x - mp.x, tp.y - mp.y) : 0;
+    if (tp && dd > (body.hold_km || 1)) { const sg = body.kind === 'flee' ? -1 : 1; ux = sg * (tp.x - mp.x) / dd; uy = sg * (tp.y - mp.y) / dd; }
+  }
+  intent = { t: Date.now(), prevAcc: acc.get(m.id) || { ax: 0, ay: 0 }, lim, settled: false };
+  rebase(m.id, ux * gk, uy * gk, lim);
+}
+function revertIntent() {                        // the order did not go through: my ship goes back to the last measured push
+  if (!intent) return;
+  const a = intent.prevAcc; intent = null;
+  if (view) rebase(view.me.id, a.ax, a.ay);
+}
 function order(kind, targetId, deg) {
   const body = { kind };
   if (kind === 'heading') body.dir_deg = deg;
@@ -360,7 +403,7 @@ function order(kind, targetId, deg) {
     const h = R.hold.value.trim();
     if (h !== '' && kind !== 'follow') { const n = Number(h); if (!Number.isFinite(n) || n < 1) { toast('The distance must be a number of km, 1 or more.', true); pending = null; if (!R.menu.hidden) buildMenu(); return; } body.hold_km = n; }
   }
-  optOrder(body); closeMenus();
+  optOrder(body); intendMove(body); closeMenus();
   queueStep({ op: 'order', ...body });
 }
 function orderActive(kind, id) {
@@ -407,7 +450,7 @@ function closeZone(v) {
   lastSuccess = null;
   lastDrone = null; lastCheck = 0; tourAbort(); tourChecked = false;
   failShown = false;
-  view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; popNext = 0; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
+  intent = null; maxGSeen = 0; view = null; sel = null; away = false; cam = null; modSig = ''; lastEv = null; pops = []; popNext = 0; zoomMode = 0; bgZone = ''; lastAmmo = null; endWant = null; endBusy = false; endSt = null; heatSt = null;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); optMod.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
   if (was && v && v.left) {
@@ -433,12 +476,20 @@ function trackMotion(v) {
   const all = [v.me, ...v.ships];
   all.forEach(s => {
     const p = prevV.get(s.id);
-    if (p) { const dtG = (recv - p.t) / 1000 * (v.scale || 60); if (dtG > 1) acc.set(s.id, { ax: (s.vx - p.vx) / dtG, ay: (s.vy - p.vy) / dtG }); }
+    let hold = false;                                          // my ship keeps the push of my last order until a picture measured AFTER the order's answer arrives
+    if (s.id === v.me.id && intent) {
+      if (orderPic) { intent.settled = true; hold = true; }
+      else if (intent.settled || recv - intent.t > 15000) intent = null;
+      else hold = true;
+    }
+    if (p && !hold) { const dtG = (recv - p.t) / 1000 * (v.scale || 60); if (dtG > 1) acc.set(s.id, { ax: (s.vx - p.vx) / dtG, ay: (s.vy - p.vy) / dtG }); }
+    if (s.id === v.me.id && p && !hold) { const a0 = acc.get(s.id); if (a0) maxGSeen = Math.max(maxGSeen, Math.hypot(a0.ax, a0.ay) / G_KMS2); }
     prevV.set(s.id, { vx: s.vx, vy: s.vy, t: recv });
     const old = pst.has(s.id) ? posOf(s.id) : null;            // where it was drawn a moment ago: the new picture is blended in from there
     const oldVel = pst.has(s.id) ? velOf(s.id) : null;         // ... and how fast
     const a = acc.get(s.id) || { ax: 0, ay: 0 };
-    pst.set(s.id, { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: a.ax, ay: a.ay, t: recv, ox: old ? old.x - s.x : 0, oy: old ? old.y - s.y : 0, ovx: oldVel ? oldVel.x - s.vx : 0, ovy: oldVel ? oldVel.y - s.vy : 0 });
+    const lim = hold && intent && intent.lim != null ? Math.max(0, intent.lim - (recv - intent.t) / 1000 * (v.scale || 60)) : undefined;   // a Stop in progress: braking time left
+    pst.set(s.id, { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ax: a.ax, ay: a.ay, t: recv, ox: old ? old.x - s.x : 0, oy: old ? old.y - s.y : 0, ovx: oldVel ? oldVel.x - s.vx : 0, ovy: oldVel ? oldVel.y - s.vy : 0, lim });
   });
   const ids = new Set(all.map(s => s.id));
   for (const k of [...pst.keys()]) if (!ids.has(k)) { pst.delete(k); prevV.delete(k); acc.delete(k); head.delete(k); }
@@ -612,7 +663,7 @@ export async function zoneCheck() {                       // fly.js asks now and
   finally { busy = false; infoChanged(); }
 }
 export function resetZone() {
-  failShown = false; lastSuccess = null;
+  failShown = false; lastSuccess = null; intent = null; maxGSeen = 0;
   view = null; sel = null; away = false; lastCheck = 0; cam = null; modSig = ''; lastEv = null; lastMe = null; pops = []; popNext = 0; zoomMode = 0;
   prevV.clear(); acc.clear(); head.clear(); pst.clear(); rangeOn.clear(); optMod.clear(); stopTimers(); chips.clear();
   if (root) { root.hidden = true; R.top.replaceChildren(); R.bot.replaceChildren(); closeMenus(); setZoomChip(); }
@@ -649,7 +700,7 @@ function heatInfo() {
     list.push({ name: mod.name, heat: mod.heat, note: isW ? (firing ? 'firing now' : 'only while firing') : 'while on', active: firing });
     if (firing) gen += mod.heat;
   });
-  const a = acc.get(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0, eng = (m.eng_k || 0) * Math.max(0, g - (m.eng_thr || 3));
+  const a = accOf(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0, eng = (m.eng_k || 0) * Math.max(0, g - (m.eng_thr || 3));
   gen += eng;
   return { list, gen, eng, g, cool: m.heat_cool || 0, net: gen - (m.heat_cool || 0) };
 }
@@ -963,7 +1014,7 @@ function frame(full) {
   paintBars(full);
   if (full) {
     chips.forEach(c => { c.dist.textContent = kshort(dist(mp, P(c.ship))); c.b.classList.toggle('sel', c.ship.id === sel); });
-    const ord = m.order || { kind: 'stop' }, tgt = m.target_id && view.ships.find(s => s.id === m.target_id), fol = ord.follow_id && view.ships.find(s => s.id === ord.follow_id), a = acc.get(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0;
+    const ord = m.order || { kind: 'stop' }, tgt = m.target_id && view.ships.find(s => s.id === m.target_id), fol = ord.follow_id && view.ships.find(s => s.id === ord.follow_id), a = accOf(m.id), g = a ? Math.hypot(a.ax, a.ay) / G_KMS2 : 0;
     R.stat.textContent = (ORDER_NAME[ord.kind] || ord.kind) + (ord.kind === 'heading' && ord.dir_deg != null ? ' ' + Math.round(ord.dir_deg) + '°' : '') +
       (ord.kind === 'follow' ? (fol ? ': ' + fol.name : '') : (tgt && ['attack_max', 'attack_opt'].includes(ord.kind) ? ': ' + tgt.name : '')) + (ord.hold_km ? ' at ' + km(ord.hold_km) : '') +
       '  |  speed ' + (vv => Math.hypot(vv.x, vv.y))(velOf(m.id) || { x: m.vx, y: m.vy }).toFixed(1) + ' km/s  |  thrust ' + g.toFixed(1) + ' g';
@@ -1026,7 +1077,7 @@ function drawMap() {
   view.ships.forEach(s => { if (rangeOn.has(s.id)) { const p = P(s); drawRanges(c, toScr(p.x, p.y), s.weapons, k, true); } });     // other ships: dashed rings
   const tid = sel || m.target_id;
   const ship = (s, p, col, isMe) => {
-    const q = toScr(p.x, p.y), a = acc.get(s.id), am = a ? Math.hypot(a.ax, a.ay) : 0, g = am / G_KMS2;
+    const q = toScr(p.x, p.y), a = accOf(s.id), am = a ? Math.hypot(a.ax, a.ay) : 0, g = am / G_KMS2;
     if (a && g > 0.05) {                                          // thrust: a red line pointing AWAY from the push
       const len = Math.min(34, 10 + 22 * g), ux = -a.ax / am, uy = -a.ay / am;
       c.strokeStyle = '#ff3b30'; c.lineWidth = 3; c.lineCap = 'round';
