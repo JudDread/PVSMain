@@ -1,4 +1,6 @@
 // market.js - the Market screen (goods in markets, in storage and in the hold). Display only: the server decides every trade.
+// 2026-11-12: a confirmed order is SHOWN AT ONCE (the lines, the credits, the hold) and joins a queue that sends the orders one after another, so the pilot keeps working;
+//   the server answer corrects the numbers; a refused order stops the queue and puts every waiting order back. 'Sell all' (Stored here header) = one server request.
 // 2026-11-07 phone layout: 3-column Cargo / Stored rows, 4-column Produced / Consumed rows, one-line quantity pop-up (the browser works out the first number and a '~' price; the server quotes only for the confirmation).
 import { S, $, say, call, fmt, curGd, locName, money, whole, r2, el, cell, sgn, tone, LS, addScreen, setShipLine, createPicker, short, SHIP_SVG } from 'core';
 import { applyBackdrop } from 'backdrop';
@@ -18,7 +20,7 @@ const openLocs = {};        // All view: which places are expanded
 const secOpen = {};         // which sections are collapsed: key 'place:section' -> false
 let msel = null;            // selected row { loc, kind: 'cargo' | 'storage' | 'goods', good }
 let dd = null, ddBusy = false;   // open destinations list { loc, kind, good, data }
-let mbusy = false, mEdited = false, mRedraw = false, longFired = false, lastTap = { id: null, t: 0 };
+let mEdited = false, mRedraw = false, longFired = false, lastTap = { id: null, t: 0 };
 const frQty = {};            // freight board: contract id -> what is typed in its units box (survives redraws)
 let haul = [];            // my active freight loads (freight_hauling), shown in the Cargo section when the ship is docked here
 let frSel = null, frBusy = false;   // the selected freight row; an Accept is in progress
@@ -126,7 +128,9 @@ async function loadLoc(loc) {
   if (!S.sb || mLoading[loc]) return;
   mLoading[loc] = true;
   try {
+    const seq0 = oSeq;
     const d = await call('market_at', { location: loc });
+    if (oq.length || oSeq !== seq0) return;   // an order was placed while this was on its way: the picture is out of date (a new one is asked for when the orders are done)
     const c = mc[loc] || (mc[loc] = {}); c.d = d; c.at = Date.now();
     hold = { used: d.hold_used, size: d.hold_size };
     if (S.last && S.last.character) S.last.character.credits = d.credits;
@@ -171,11 +175,12 @@ function loadHaul() {
 async function loadStorageAll() {
   if (stAllBusy || !S.sb) return;
   stAllBusy = true;
-  try { stAll = await call('storage'); hold = { used: stAll.hold_used, size: stAll.hold_size }; drawMarket(); }
+  try { const seq0 = oSeq, a = await call('storage'); if (oq.length || oSeq !== seq0) return; stAll = a; hold = { used: stAll.hold_used, size: stAll.hold_size }; drawMarket(); }
   catch (e) { say('Error: ' + e.message, 'err'); }
   finally { stAllBusy = false; }
 }
 function refreshMarket() {
+  if (oq.length) return;                      // orders are waiting: the screen shows them already; a refresh follows when they are done
   mAt = Date.now();
   loadStorageAll();
   if (mloc === 'ALL') Object.keys(openLocs).filter(k => openLocs[k]).forEach(loadLoc);
@@ -339,8 +344,8 @@ function refreshPop() {
   p.bFull.hidden = k !== 'storage';
   if (buy) {
     const dest = buyDest(d);
-    p.b1.textContent = 'Buy'; p.b2.textContent = 'To: ' + (dest === 'hold' ? 'Hold' : 'Storage'); p.b2.disabled = mbusy || !d.here;
-    let off = bad || mbusy;
+    p.b1.textContent = 'Buy'; p.b2.textContent = 'To: ' + (dest === 'hold' ? 'Hold' : 'Storage'); p.b2.disabled = !d.here;
+    let off = bad;
     if (isNaN(q)) note = 'Enter a whole number.';
     else if (!bad) {
       if (q > Math.floor(it.stock + 1e-9)) { off = true; note = 'Only ' + whole(it.stock) + ' in stock.'; }
@@ -350,9 +355,9 @@ function refreshPop() {
     p.b1.disabled = off;
   } else {
     const sells = it.sell_here != null, cargo = k === 'cargo';
-    p.b1.textContent = 'Sell'; p.b1.disabled = bad || !sells || q > it.quantity || mbusy;
+    p.b1.textContent = 'Sell'; p.b1.disabled = bad || !sells || q > it.quantity;
     p.b2.textContent = cargo ? 'Unload' : 'Load';
-    p.b2.disabled = cargo ? (bad || q > it.quantity || mbusy) : (bad || !d.here || q > it.quantity || q > maxLoad(d, it) || mbusy);
+    p.b2.disabled = cargo ? (bad || q > it.quantity) : (bad || !d.here || q > it.quantity || q > maxLoad(d, it));
     if (isNaN(q)) note = 'Enter a whole number.';
     else if (q > it.quantity) note = 'You only have ' + whole(it.quantity) + '.';
     else if (!sells) note = 'This place does not buy that.';
@@ -405,13 +410,18 @@ function cfBuild() {
   row.append(no, yes); box.append(title, body, row); ov.appendChild(box); ov.hidden = true; document.body.appendChild(ov);
   no.onclick = closeConfirm;
   ov.addEventListener('pointerdown', e => { if (e.target === ov) closeConfirm(); });
-  yes.onclick = () => { if (!cfSnap || mbusy) return; const qq = quotes[cfSnap.key], s = { ...cfSnap, expect: qq && qq.d ? Number(qq.d.total) : null }; closeConfirm(); runTrade(s); };
+  yes.onclick = () => {
+    if (!cfSnap) return;
+    const qq = quotes[cfSnap.key];
+    if (cfSnap.sellall) { if (qq && qq.d && qq.d.ok && (qq.d.lines || []).length) { const plan = qq.d, loc = cfSnap.loc; closeConfirm(); runSellAll(loc, plan); } return; }
+    const s = { ...cfSnap, expect: qq && qq.d ? Number(qq.d.total) : null }; closeConfirm(); runTrade(s);
+  };
   cfEls = { ov, title, body, yes };
   return cfEls;
 }
 function closeConfirm() { cfSnap = null; if (cfEls) cfEls.ov.hidden = true; }
 function openConfirm() {
-  const it = curItem(), d = curData(); if (!it || !d || mbusy || !msel) return;
+  const it = curItem(), d = curData(); if (!it || !d || !msel) return;
   const q = qtyOf(pop.inp); if (!(q >= 1)) return;
   const buy = msel.kind === 'goods', dest = buy ? buyDest(d) : null;
   cfSnap = { loc: msel.loc, kind: msel.kind, good: msel.good, name: it.name, q, buy, dest, avg: it.avg_cost, place: d.location_name, key: qKey(q) };
@@ -422,6 +432,7 @@ function openConfirm() {
 function refreshConfirm() {
   if (!cfSnap || !cfEls || cfEls.ov.hidden) return;
   const s = cfSnap, c = cfEls, qd = quotes[s.key];
+  if (s.sellall) { drawSellAllConfirm(s, c, qd); return; }
   c.title.textContent = s.buy ? 'Confirm purchase' : 'Confirm sale';
   c.body.replaceChildren();
   let ready = false;
@@ -435,7 +446,41 @@ function refreshConfirm() {
   } else if (qd && qd.d && qd.d.ok) c.body.appendChild(el('div', 'err', problemText(qd)));
   else if (qd && qd.err) c.body.appendChild(el('div', 'err', 'Could not get the exact price: ' + marketError(qd.err)));
   else c.body.appendChild(el('div', 'muted', 'Checking the price...'));
-  c.yes.disabled = !ready || mbusy;
+  c.yes.disabled = !ready;
+}
+/* the 'Sell all' confirmation: the server's plan (exact totals), shown before anything is sold */
+function drawSellAllConfirm(s, c, qd) {
+  c.title.textContent = 'Confirm: sell all';
+  c.body.replaceChildren();
+  let ready = false;
+  if (qd && qd.d && qd.d.ok) {
+    const lines = qd.d.lines || [], skip = new Set((qd.d.skipped || []).map(x => x.good_id)).size;
+    if (!lines.length) c.body.appendChild(el('div', 'muted', 'Nothing can be sold here right now: this place does not buy it, or already holds half of its normal supply.'));
+    else {
+      ready = true;
+      c.body.appendChild(el('div', '', 'You will sell ' + lines.length + (lines.length === 1 ? ' batch' : ' batches') + ' at ' + s.place + ' for ' + money(qd.d.total) + ' in total.'));
+      lines.slice(0, 8).forEach(l => c.body.appendChild(el('div', 'muted', whole(l.quantity) + ' x ' + l.name + (l.stack === 'cargo' ? ' (hold)' : '') + ': ' + money(l.total))));
+      if (lines.length > 8) c.body.appendChild(el('div', 'muted', '... and ' + (lines.length - 8) + ' more.'));
+      c.body.appendChild(el('div', 'muted', 'Each good is sold only until this place holds half of its normal supply. The hold goes first, then storage here.' + (skip ? ' ' + skip + (skip === 1 ? ' good is' : ' goods are') + ' left out (not bought here, or already above half).' : '')));
+    }
+  } else if (qd && qd.err) c.body.appendChild(el('div', 'err', 'Could not get the plan: ' + marketError(qd.err)));
+  else c.body.appendChild(el('div', 'muted', 'Checking the prices...'));
+  c.yes.disabled = !ready;
+}
+function openSellAll(loc) {
+  if (cfSnap) return;
+  if (oq.length) { say('Wait until your waiting orders are sent.', 'muted'); return; }   // the plan is worked out from what the server knows: the queue must be empty
+  const key = 'SA|' + loc;
+  cfSnap = { sellall: true, loc, key, place: locName(loc) };
+  delete quotes[key];
+  cfBuild().ov.hidden = false;
+  (async () => {
+    let rec;
+    try { rec = { d: await call('sell_all', { location: loc, dry: true }), at: Date.now() }; }
+    catch (e) { rec = { d: null, err: e, at: Date.now() }; }
+    quotes[key] = rec; refreshConfirm();
+  })();
+  refreshConfirm();
 }
 
 /* ---- drawing ---- */
@@ -621,10 +666,10 @@ function goodsSection(parent, loc, d, key, title, list, showBest) {
 function drawLoc(parent, loc) {
   const c = mc[loc];
   if (!c || !c.d) { parent.appendChild(el('div', 'muted pad', 'Loading...')); return; }
-  const d = c.d, cargo = (d.cargo || []).filter(x => !isRig(x.good_id)), stored = (d.storage || []).filter(x => !isRig(x.good_id)), goods = (d.goods || []).filter(x => !isRig(x.good_id));
+  const d = c.d, cargo = (d.cargo || []).filter(x => !isRig(x.good_id) && Number(x.quantity) > 0), stored = (d.storage || []).filter(x => !isRig(x.good_id) && Number(x.quantity) > 0), goods = (d.goods || []).filter(x => !isRig(x.good_id));
   if (!d.here && d.remote_fee > 0) parent.appendChild(el('div', 'muted hint pad', 'Your ship is not docked here, so trades at this market carry an extra ' + Math.round(d.remote_fee * 100) + '% fee. Prices below include it.'));
   if (d.here) {
-    const ub = el('button', 'ub', 'Unload all'); ub.disabled = mbusy || !cargo.length; ub.onclick = doUnloadAll;
+    const ub = el('button', 'ub', 'Unload all'); ub.disabled = !cargo.length; ub.onclick = () => doUnloadAll(loc);
     const scl = (S.last && S.last.scale) || 60, gd = curGd();
     section(parent, loc, 'cargo', 'Cargo, hold ' + r2(d.hold_used) + ' / ' + r2(d.hold_size), cargo.length + haul.length, ub, box => {
       if (!cargo.length && !haul.length) box.appendChild(el('div', 'muted pad', 'Empty'));
@@ -637,7 +682,8 @@ function drawLoc(parent, loc) {
       });
     }, cargo.length + haul.length > 0);   /* an empty hold starts folded */
   }
-  section(parent, loc, 'storage', 'Stored here', stored.length, null, box => {
+  const sa = el('button', 'ub', 'Sell all'); sa.disabled = !(stored.length || cargo.length); sa.onclick = () => openSellAll(loc);
+  section(parent, loc, 'storage', 'Stored here', stored.length, sa, box => {
     if (!stored.length) box.appendChild(el('div', 'muted pad', 'Nothing of yours is stored here.'));
     if (stored.length) stackHead(box);
     stored.forEach(x => stackRow(box, d, loc, 'storage', x, c.bestSt && c.bestSt[x.good_id]));
@@ -659,7 +705,8 @@ function drawMarket() {
   if (!mloc) return;
   const body = $('mbody'); body.replaceChildren();
   drawLocBox();
-  if (msel && curData() && !curItem()) { msel = null; mEdited = false; }
+  if (oq.length) body.appendChild(el('div', 'muted hint pad', 'Sending ' + oq.length + (oq.length === 1 ? ' order' : ' orders') + '...'));
+  if (msel && curData() && (!curItem() || (msel.kind !== 'goods' && !(Number(curItem().quantity) > 0)))) { msel = null; mEdited = false; }
   if (dd && mc[dd.loc] && mc[dd.loc].d) {
     const d = mc[dd.loc].d, list = dd.kind === 'goods' ? d.goods : dd.kind === 'cargo' ? d.cargo : d.storage;
     if (!(list || []).some(x => x.good_id === dd.good)) dd = null;
@@ -701,36 +748,136 @@ function tradeArgs(s) {
     ? { action: 'trade_at', args: { location: s.loc, kind: 'buy', good: s.good, quantity: s.q, stack: s.dest === 'hold' ? 'cargo' : 'storage', expect_total: s.expect } }   // the server calls the hold 'cargo'; expect_total = the price guard
     : { action: 'trade_at', args: { location: s.loc, kind: 'sell', good: s.good, quantity: s.q, stack: s.kind === 'cargo' ? 'cargo' : 'storage', expect_total: s.expect } };
 }
-async function execute(action, args, okText) {
-  mbusy = true; refreshPop(); drawMarket();
-  try { const r = await call(action, args); say(okText(r), 'ok'); }
-  catch (e) { say(marketError(e), 'err'); }
-  finally { mbusy = false; mEdited = false; popKey = null; mRedraw = false; clearQuotes(); refreshMarket(); }
+/* ---- ORDERS: shown at once, sent one after another ----
+   Every confirmed order changes the page's copy of the numbers AT ONCE (lines, credits, hold, the place's stock) and joins a queue. The queue sends one order at a time,
+   in order. When the server answers, the numbers are corrected (the real total). If the server refuses an order, the queue STOPS: that order and every order still waiting
+   are taken back off the screen, and one message says why (a price that moved, for example). When the queue is empty the screen is asked for fresh numbers. */
+const oq = [];                 // waiting orders; the first one may be on its way
+let oSending = false, oSeq = 0;   // oSeq changes at every order: a picture asked for before it is out of date
+const Q_MAX = 10;
+/* ORDER_MATH_START (tested on its own: the numbers an order changes) */
+function addCredits(x) {
+  Object.values(mc).forEach(c => { if (c.d) c.d.credits = Number(c.d.credits) + x; });
+  if (S.last && S.last.character) S.last.character.credits = Number(S.last.character.credits) + x;
+}
+function bump(loc, st, good, delta, proto, cost) {            // one stack of goods at one place: delta units (can be negative); cost = what a purchase paid in total
+  const c = mc[loc], d = c && c.d; if (!d) return;
+  const list = st === 'cargo' ? (d.cargo || (d.cargo = [])) : (d.storage || (d.storage = []));
+  let row = list.find(x => x.good_id === good);
+  if (!row && delta > 0 && proto) { row = { ...proto, quantity: 0 }; list.push(row); }
+  if (!row) return;
+  const before = Number(row.quantity);
+  row.quantity = Math.max(0, before + delta);
+  if (cost != null && delta > 0) row.avg_cost = (row.avg_cost != null && before > 0) ? (Number(row.avg_cost) * before + cost) / (before + delta) : cost / delta;
+  if (st === 'cargo') {                                       // the hold is the same everywhere: every cached place gets the new number
+    const hu = Number(row.hold_per_unit || (proto && proto.hold_per_unit) || 1), used = Math.max(0, Number(d.hold_used) + (row.quantity - before) * hu);
+    Object.values(mc).forEach(x => { if (x.d) x.d.hold_used = used; });
+    if (hold) hold.used = used;
+  } else if (stAll && stAll.items) {
+    let it = stAll.items.find(x => x.location_id === loc && x.good_id === good);
+    if (!it && delta > 0) { it = { location_id: loc, location_name: locName(loc), is_here: false, good_id: good, name: row.name, unit: row.unit, hold_per_unit: row.hold_per_unit, quantity: 0, avg_cost: row.avg_cost }; stAll.items.push(it); }
+    if (it) it.quantity = Math.max(0, Number(it.quantity) + delta);
+  }
+}
+function stockBump(loc, good, delta) { const c = mc[loc], g = c && c.d && (c.d.goods || []).find(x => x.good_id === good); if (g) g.stock = Math.max(0, Number(g.stock) + delta); }
+function sellLine(loc, st, good, q, total, sign) {            // selling q units: they leave the stack, the place's stock grows, the credits grow (sign -1 = take it back)
+  bump(loc, st, good, -sign * q); stockBump(loc, good, sign * q); addCredits(sign * total);
+}
+function applyOrder(o, sign) {
+  if (o.type === 'trade') {
+    const s = o.s;
+    if (s.buy) {
+      const st = s.dest === 'hold' ? 'cargo' : 'storage', c = mc[s.loc], g = c && c.d && (c.d.goods || []).find(x => x.good_id === s.good);
+      const proto = g ? { good_id: g.good_id, name: g.name, unit: g.unit, hold_per_unit: g.hold_per_unit, avg_cost: null, sell_here: g.sell_price, profit_each: null, profit_total: null } : null;
+      bump(s.loc, st, s.good, sign * s.q, proto, sign > 0 ? o.total : null); stockBump(s.loc, s.good, -sign * s.q); addCredits(-sign * o.total);
+    } else sellLine(s.loc, s.kind === 'cargo' ? 'cargo' : 'storage', s.good, s.q, o.total, sign);
+  } else if (o.type === 'move') {                             // load: storage -> hold; unload: hold -> storage
+    const from = o.dir === 'unload' ? 'cargo' : 'storage', to = o.dir === 'unload' ? 'storage' : 'cargo';
+    bump(o.loc, from, o.good, -sign * o.q); bump(o.loc, to, o.good, sign * o.q, o.proto);
+  } else if (o.type === 'unloadall') {
+    if (!o.moved) { const c = mc[o.loc], d = c && c.d; o.moved = ((d && d.cargo) || []).filter(x => !isRig(x.good_id) && Number(x.quantity) > 0).map(x => ({ good: x.good_id, q: Number(x.quantity), proto: { ...x } })); }
+    o.moved.forEach(m => { bump(o.loc, 'cargo', m.good, -sign * m.q); bump(o.loc, 'storage', m.good, sign * m.q, m.proto); });
+  } else if (o.type === 'sellall') {
+    o.plan.lines.forEach(l => sellLine(o.loc, l.stack, l.good_id, l.quantity, l.total, sign));
+  }
+}
+/* ORDER_MATH_END */
+function enqueue(o) {
+  if (oq.length >= Q_MAX) { say('Too many orders are waiting. Please wait a moment.', 'err'); return false; }
+  oSeq++; oq.push(o);
+  applyOrder(o, 1);
+  clearQuotes(); popKey = null; mEdited = false; mRedraw = false;
+  setShipLine(); drawMarket();
+  pump();
+  return true;
+}
+async function sendOrder(o) {
+  if (o.type === 'trade') return call('trade_at', o.args);
+  if (o.type === 'move') return call(o.dir, { good: o.good, quantity: o.q });
+  if (o.type === 'unloadall') return call('unload_all');
+  return call('sell_all', { location: o.loc, expect_total: o.plan.total });
+}
+function settle(o, r) {                                       // the server's answer: the real total replaces the one the page counted on
+  if (o.type === 'trade') {
+    const diff = Number(r.total) - o.total;
+    if (Number.isFinite(diff) && Math.abs(diff) > 1e-9) addCredits(o.s.buy ? -diff : diff);
+    say(o.ok(r), 'ok');
+  } else if (o.type === 'sellall') {
+    const got = {}; (r.sold || []).forEach(x => { got[x.stack + '|' + x.good_id] = x; });
+    o.plan.lines.forEach(l => {                               // a batch that was not sold goes back on the screen
+      const x = got[l.stack + '|' + l.good_id], left = l.quantity - (x ? Number(x.quantity) : 0);
+      if (left > 0) { bump(o.loc, l.stack, l.good_id, left); stockBump(o.loc, l.good_id, -left); }
+    });
+    const diff = Number(r.total) - o.plan.total;
+    if (Number.isFinite(diff) && Math.abs(diff) > 1e-9) addCredits(diff);
+    const n = (r.sold || []).length;
+    say('Sold ' + n + (n === 1 ? ' batch' : ' batches') + ' for ' + money(r.total) + '.' + (r.stopped ? ' Stopped early: ' + marketError({ message: r.stopped.error, data: r.stopped.data }) : ''), r.stopped ? 'err' : 'ok');
+  } else say(o.ok(r), 'ok');
+  setShipLine();
+}
+function failOrders(e) {                                      // the first order was refused: it and every waiting order are taken back
+  const all = oq.splice(0), waiting = all.length - 1;
+  for (let i = all.length - 1; i >= 0; i--) applyOrder(all[i], -1);
+  oSeq++; setShipLine();
+  say(marketError(e) + (waiting > 0 ? ' ' + waiting + (waiting === 1 ? ' waiting order was' : ' waiting orders were') + ' cancelled.' : ''), 'err');
+}
+async function pump() {
+  if (oSending) return;
+  oSending = true;
+  try {
+    while (oq.length) {
+      const o = oq[0];
+      let r;
+      try { r = await sendOrder(o); }
+      catch (e) { failOrders(e); break; }
+      oq.shift();
+      settle(o, r);
+      drawMarket();
+    }
+  } finally { oSending = false; }
+  mRedraw = false; drawMarket();
+  if (!oq.length) refreshMarket();                            // all sent (or cancelled): look at the real numbers once
 }
 function runTrade(s) {
-  if (mbusy) return;
-  const t = tradeArgs(s);
-  execute(t.action, t.args, r => s.buy
+  const t = tradeArgs(s), total = Number.isFinite(s.expect) ? s.expect : 0;
+  enqueue({ type: 'trade', s, total, args: t.args, ok: r => s.buy
     ? 'Bought ' + s.q + ' ' + s.name + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each) into ' + (s.dest === 'hold' ? 'the hold.' : 'storage at ' + s.place + '.')
-    : 'Sold ' + s.q + ' ' + s.name + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).');
+    : 'Sold ' + s.q + ' ' + s.name + ' for ' + money(r.total) + ' (' + money(r.unit_price) + ' each).' });
 }
-async function doAct(which) {
-  if (mbusy || !msel) return;
+function runSellAll(loc, plan) { enqueue({ type: 'sellall', loc, plan }); }
+function doAct(which) {
+  if (!msel) return;
   const it = curItem(), d = curData(); if (!it || !d) return;
   if (msel.kind === 'goods' && which === 'second') { buyTo = buyTo === 'hold' ? 'storage' : 'hold'; LS.set('pvs_buyto', buyTo); mEdited = false; drawMarket(); return; }
   const q = qtyOf(pop.inp); if (!(q >= 1)) return;
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   if (which === 'main') { openConfirm(); return; }   // Buy or Sell: money moves, so ask first
   const s = { ...msel }, nm = it.name;               // Load / Unload: no money moves
-  if (s.kind === 'cargo') execute('unload', { good: s.good, quantity: q }, () => 'Unloaded ' + q + ' ' + nm + ' into storage.');
-  else execute('load', { good: s.good, quantity: q }, () => 'Loaded ' + q + ' ' + nm + ' into the hold.');
+  if (s.kind === 'cargo') enqueue({ type: 'move', dir: 'unload', loc: s.loc, good: s.good, q, proto: { ...it, quantity: 0 }, ok: () => 'Unloaded ' + q + ' ' + nm + ' into storage.' });
+  else enqueue({ type: 'move', dir: 'load', loc: s.loc, good: s.good, q, proto: { ...it, quantity: 0 }, ok: () => 'Loaded ' + q + ' ' + nm + ' into the hold.' });
 }
-async function doUnloadAll() {
-  if (mbusy) return;
-  mbusy = true; drawMarket();
-  try { const r = await call('unload_all'); say(r.units_moved ? 'Unloaded ' + r.goods_moved + ' kinds of goods (' + whole(r.units_moved) + ' units) into storage.' : 'The hold is already empty.', 'ok'); }
-  catch (e) { say(marketError(e), 'err'); }
-  finally { mbusy = false; refreshMarket(); }
+function doUnloadAll(loc) {
+  enqueue({ type: 'unloadall', loc, ok: r => r.units_moved ? 'Unloaded ' + r.goods_moved + ' kinds of goods (' + whole(r.units_moved) + ' units) into storage.' : 'The hold is already empty.' });
 }
 
 const mpick = createPicker(v => {   /* the place picker (button list) goes into the #mloc box in index.html */
@@ -765,5 +912,6 @@ export function resetMarket() {
   mloc = null; mDockSeen = undefined; msel = null; closeConfirm(); Object.keys(selLoc).forEach(k => delete selLoc[k]); dd = null; stAll = null; hold = null; frSel = null; frBusy = false;
   Object.keys(frQty).forEach(k => delete frQty[k]);
   Object.keys(mc).forEach(k => delete mc[k]);
+  oq.length = 0; oSeq++;
   clearQuotes();
 }
