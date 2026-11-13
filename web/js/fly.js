@@ -15,6 +15,8 @@ const SHOW_FLIGHT_BUTTONS = false;     /* Hold the bar / Stop / Coast: not in th
 let deps = null, depsAt = 0, selected = null, depsLoading = false, depsOpen = false;   /* depsOpen: the destination sheet is down until the Destinations button is tapped */
 let mode = null;                       /* in flight only: null (a picked destination) | 'hold' | 'stop' | 'coast' */
 let thrustG = 3, maxG = null;          /* thrustG = the thrust every flight asks for = the ship's top thrust (maxG, from the server's answer); 3 only until the first answer */
+let depsSig = '', wantPick = null, wantTries = 0;   /* depsSig = the places the pilot could see when the destination list was asked for; wantPick = a place tapped before the list knew it (it is picked as soon as the list has it) */
+const locSig = () => ((S.last && S.last.locations) || []).map(l => l.id).sort().join(',');
 let ctlBox = null; const ctlBtn = {};
 /* time left on the CURRENT trip: the small chip above the Launch button (#actr), the same number the Launch / Confirm button shows when the current destination is picked.
    tripEndMs = the real clock time of arrival, worked out from the destination list each time it loads. (thrustTouched is always false now that the slider is gone.) */
@@ -60,7 +62,7 @@ function drawAll() { drawControls(); drawDeps(); drawEta(); map.need(); }
 /* ---------- destination list (docked: departures; in flight: course options from where the ship is now) ---------- */
 async function loadDeps() {
   if (depsLoading) return;
-  depsLoading = true;
+  depsLoading = true; depsSig = locSig();
   const asked = thrustG;
   const fl = !!flyingShip();
   try {
@@ -72,12 +74,18 @@ async function loadDeps() {
       if (cur) tripEndMs = depsAt + Number(cur.eta_real_minutes) * 60000;
     }
     drawAll();
+    if (wantPick) {                                           /* a place was tapped before the list knew it: pick it now, or look once more */
+      const d = (deps.departures || []).find(x => x.id === wantPick);
+      if (d) { selected = d.id; mode = null; wantPick = null; drawAll(); }
+      else if (--wantTries <= 0) { wantPick = null; say('That place is not a destination from here.', 'muted'); }
+    }
   }
   catch (e) {
+    wantPick = null;
     if (e.message === 'bad_thrust' && e.data && e.data.max_g) { maxG = Number(e.data.max_g); thrustG = maxG; }   /* the server says what the top is: ask again with that */
     else say('Error: ' + e.message, 'err');
   }
-  finally { depsLoading = false; if (thrustG !== asked) loadDeps(); }
+  finally { depsLoading = false; if (thrustG !== asked || locSig() !== depsSig || wantPick) loadDeps(); }   /* also again when new places appeared meanwhile */
 }
 function selectedBody() {
   const id = mode === 'hold' && deps ? deps.dest : selected;
@@ -275,7 +283,9 @@ const map = createMap($('map'), {
   pickPlace: id => {
     if (zoneShip && zoneShip.location_id === id && zonePlace(zoneShip)) { openChipMenu(); return; }   /* the place the ship is docked at: the ship menu (it holds the zone choices) */
     const d = deps && deps.departures && deps.departures.find(x => x.id === id);
-    if (d) { selected = d.id; mode = null; drawAll(); } else say('That place is not a destination from here.', 'muted');
+    if (d) { selected = d.id; mode = null; drawAll(); }
+    else if (locById(id) && S.last && S.last.ships && S.last.ships[0]) { wantPick = id; wantTries = 2; say('Updating the destinations...', 'muted'); if (!depsLoading) loadDeps(); }   /* visible, but the list is older than the place: fetch it again and pick it */
+    else say('That place is not a destination from here.', 'muted');
   },
   pickShip: () => toggleChipMenu(),                           /* the ship itself was touched: the ship menu (at a zone place it holds the zone choices) */
   pick: name => {
@@ -488,7 +498,7 @@ addScreen('travel', 'Fly', $('scr-travel'), {
     /* the list on screen must match the ship's state: docked list for a docked ship, course options for a flying one */
     const fits = deps && (fl ? deps.flying : (deps.docked && deps.from === ship.location_id));
     if (deps && !fits) { deps = null; mode = null; drawAll(); }
-    if (!deps || Date.now() - depsAt > 30000) loadDeps();
+    if (!deps || Date.now() - depsAt > 30000 || locSig() !== depsSig) loadDeps();   /* a new place (a job opened it): the list is asked for again at once */
     map.need();
   },
 });
@@ -502,8 +512,21 @@ function courseMessage(r) {
     (r.pulsed ? ' (pulsing, average ' + r.g_avg.toFixed(1) + ' g)' : '') + '. Trip takes ' + r.duration_real_minutes.toFixed(1) + ' real minutes.' +
     (r.sun_danger ? ' WARNING: passes close to the Sun.' : '');
 }
+/* the ship starts moving AT ONCE: the blue preview course becomes the ship's course in the page's copy. The server's answer replaces it a moment later
+   (its own plan can differ a little). Returns the old ship record, to put back if the server refuses. */
+function startNow() {
+  const ship = S.last && (S.last.ships || [])[0];
+  if (!ship || !selected || mode) return null;
+  let plan = null; pv.key = '';                                 /* a fresh preview for this very moment */
+  try { plan = previewPlan(); } catch (e) { plan = null; }
+  if (!plan) return null;
+  S.last.ships[0] = { ...ship, state: plan.frame != null ? 'hopping' : 'traveling', plan };
+  depsOpen = false; showDeps(); map.need();
+  return ship;
+}
 $('go').onclick = async () => {
   const go = $('go'); go.disabled = true;
+  const undo = startNow();
   try {
     if (isFlying()) {
       const r = await call('course_change', mode ? { mode } : { mode: 'go', to: selected, g: thrustG });
@@ -518,6 +541,7 @@ $('go').onclick = async () => {
     deps = null; selected = null; mode = null; depsOpen = false; showDeps(); drawAll();   /* a launched trip closes the list */
     await S.refresh();
   } catch (e) {
+    if (undo && S.last && S.last.ships) S.last.ships[0] = undo;   /* refused: the ship goes back to what it was */
     say('Error: ' + (e.message === 'arrived' ? 'the ship has just arrived; look again.' : e.message), 'err');
     deps = null; mode = null; await S.refresh(); loadDeps();
   }
@@ -525,6 +549,6 @@ $('go').onclick = async () => {
 
 /* called by main.js */
 export function invalidateDeps() { deps = null; }                      /* ETAs changed (game speed): fetch them again */
-export function resetFly() { tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; maxG = null; if (ctlBox) ctlBox.hidden = true; if (chipBox) { chipBox.hidden = true; chipMenu.hidden = true; } condNow = null; condKey = null; zoneOpenFor = null; zoneShip = null; }   /* log out */
+export function resetFly() { depsSig = ''; wantPick = null; wantTries = 0; tripEndMs = null; thrustTouched = false; deps = null; selected = null; mode = null; thrustG = 3; maxG = null; if (ctlBox) ctlBox.hidden = true; if (chipBox) { chipBox.hidden = true; chipMenu.hidden = true; } condNow = null; condKey = null; zoneOpenFor = null; zoneShip = null; }   /* log out */
 
 setInterval(drawEta, 1000);                                     /* the countdown ticks once a second (does nothing unless the ship is flying) */
