@@ -23,6 +23,7 @@ let rAt = 0, rLoading = false, rbusy = false;
 let ops = [];                   // the DRAFT: [{ op: 'fit' | 'unfit', rig }] in the order the pilot did them
 let rerr = '';                  // why the server refused the last Apply (shown in the bottom bar)
 let rdiscard = false;           // Back was tapped once with changes waiting: tap again to leave
+let bannerEl = null, bannerId = null;   // the hull picture across the top: made once per hull, reused at every redraw (no reload, no flicker)
 
 /* ---------- screen block + styles ---------- */
 const scr = document.createElement('div'); scr.id = 'scr-rigging'; scr.hidden = true;
@@ -43,6 +44,7 @@ $('scr-market').after(scr);
     '#rbody .msec + .msec { margin-top: 10px !important; }',
     '#rbody .rtop { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 6px; }',
     '#rbody .rcard { display: flex; gap: 10px; align-items: center; padding: 6px 8px; border: 1px solid #333d57; border-radius: 10px; background: #131a2a; }',
+    '#rbody .hpic.banner { border-radius: 0; margin: 0 0 8px; }',
     '#rbody .rname { font-size: 16px; font-weight: 500; color: #fff; }',
     '#rbody .rstats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin: 8px 4px 0; }',
     '#rbody .rstat .k { font-size: 11px; color: #8d98b2; font-weight: 400; }',
@@ -174,11 +176,13 @@ function drawRig() {
     ops = []; rerr = ''; say('The ship changed since you started, so your changes were cleared.', 'err'); drawRig(); return;
   }
   if (docked) top.appendChild(el('span', 'sub', 'Docked at ' + locName(s.location_id)));
+  if (!bannerEl || bannerId !== s.hull_id) { bannerEl = hullPic(s.hull_id, 'banner'); bannerId = s.hull_id; }
+  b.insertBefore(bannerEl, b.firstChild);                       // the ship picture: full width at the very top, above the Back row
 
   const card = el('div', 'rcard'), mid = el('div', '');
   mid.append(el('div', 'rname', (s.hull_name || hullName(s.hull_id)) + (s.is_active ? ' (flying)' : ' (parked)')),
     el('div', 'sub', docked ? s.class + ' hull, weapons up to ' + String(s.max_weapon_tier).toLowerCase() : 'Travelling: rigs can only be changed while the ship is docked.'));
-  card.append(hullPic(s.hull_id, 'thumb'), mid); b.appendChild(card);
+  card.append(mid); b.appendChild(card);
 
   const stats = el('div', 'rstats');
   stat(stats, 'Max accel', maxGOf(s.id), false);
@@ -288,6 +292,6 @@ addScreen('rigging', 'Rigging', scr, {
 
 /* called by main.js on log out */
 export function resetRigging() {
-  rid = null; rback = null; rdata = null; yards = null; rbusy = false; ops = []; rerr = ''; rdiscard = false;
+  bannerEl = null; bannerId = null; rid = null; rback = null; rdata = null; yards = null; rbusy = false; ops = []; rerr = ''; rdiscard = false;
   rbody.replaceChildren();
 }
