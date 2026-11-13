@@ -382,9 +382,20 @@ function intendMove(body) {
   let ux = 0, uy = 0, lim;
   if (body.kind === 'heading') { const r = body.dir_deg * Math.PI / 180; ux = Math.cos(r); uy = Math.sin(r); }
   else if (body.kind === 'stop') { if (sp > 0.2) { ux = -vel.x / sp; uy = -vel.y / sp; lim = sp / gk; } }
-  else if (body.kind !== 'drift') {                                       // attack / follow = toward the ship, flee = away from it
-    const t = view.ships.find(x => x.id === body.target), tp = t && P(t), dd = tp ? Math.hypot(tp.x - mp.x, tp.y - mp.y) : 0;
-    if (tp && dd > (body.hold_km || 1)) { const sg = body.kind === 'flee' ? -1 : 1; ux = sg * (tp.x - mp.x) / dd; uy = sg * (tp.y - mp.y) / dd; }
+  else if (body.kind !== 'drift') {                                       // attack / follow = toward the ship, flee = away from the nearest enemy
+    let t = view.ships.find(x => x.id === body.target);
+    if (!t && body.kind === 'flee') {                                     // a flee order carries no target: the nearest hostile ship
+      let bd = Infinity; view.ships.forEach(x => { if (x.hostile) { const q = P(x), d = Math.hypot(q.x - mp.x, q.y - mp.y); if (d < bd) { bd = d; t = x; } } });
+    }
+    const tp = t && P(t), dd = tp ? Math.hypot(tp.x - mp.x, tp.y - mp.y) : 0;
+    if (tp && dd > 0) {
+      const tv = velOf(t.id) || { x: t.vx, y: t.vy }, rx = vel.x - tv.x, ry = vel.y - tv.y, rs = Math.hypot(rx, ry);
+      const ws = m.weapons || [], far = ws.reduce((x, w) => Math.max(x, w.max_km || 0), 0), best = ws.reduce((x, w) => Math.max(x, w.opt_km || 0), 0);
+      const hold = body.hold_km || (body.kind === 'attack_max' ? far : body.kind === 'attack_opt' ? best : 50);   // the distance to keep (follow: close)
+      if (body.kind === 'flee') { ux = -(tp.x - mp.x) / dd; uy = -(tp.y - mp.y) / dd; }
+      else if (dd > hold * 1.02) { ux = (tp.x - mp.x) / dd; uy = (tp.y - mp.y) / dd; }              // too far: close in
+      else if (rs > 0.2) { ux = -rx / rs; uy = -ry / rs; lim = rs / gk; }                            // at the distance: brake against the target's speed
+    }
   }
   intent = { t: Date.now(), prevAcc: acc.get(m.id) || { ax: 0, ay: 0 }, lim, settled: false };
   rebase(m.id, ux * gk, uy * gk, lim);
