@@ -413,3 +413,83 @@ export async function unloadAll(db, user) {
   if (error) throw error;
   return json(data, data && data.ok ? 200 : 400);
 }
+
+// ----------------------------------------------------------------------
+// "sell_all" (2026-11-12): body = { location, dry?, expect_total? }. Sells what the pilot keeps at ONE place in a single request:
+// the hold first (only when the ship is docked there), then storage there. Each good is sold only until the place holds 50% of its
+// target stock (the same rule as the Sell box's starting number); goods the place does not buy, or already holds half of, are skipped.
+// dry = true: nothing is sold; the answer is the plan with the exact quotes (the confirmation box shows it).
+// Otherwise: expect_total (the plan total the page showed) is the price guard: more than 10% worse = nothing is sold, error 'price_changed'.
+// Each sale is the same SQL trade_market as trade_at; if one stops, the earlier sales stand and the answer says where it stopped (`stopped`).
+// ----------------------------------------------------------------------
+// SELL_ALL_PLAN_START
+async function sellAllPlan(db, ch, ship, loc) {
+  const here = ship.state === 'docked' && ship.location_id === loc;
+  const { data: mv, error: mvErr } = await db.rpc('market_view_at', { p_character: ch.id, p_location: loc });
+  if (mvErr) throw mvErr;
+  const mg = {};
+  for (const g of (mv && mv.goods) || []) mg[g.good_id] = { stock: Number(g.stock), target: Number(g.target_stock) };
+  const stacks = [];
+  if (here) { const { cargo } = await loadCargo(db, ship); for (const c of cargo || []) stacks.push({ stack: 'cargo', c }); }
+  for (const c of (await storageAt(db, ch.id, loc)) || []) stacks.push({ stack: 'storage', c });
+  const room = {}, lines = [], skipped = [];
+  let total = 0;
+  for (const { stack, c } of stacks) {
+    const id = c.good_id;
+    if (String(id).startsWith('rig_')) continue;
+    const have = Math.floor(Number(c.quantity));
+    if (!(have >= 1)) continue;
+    const m = mg[id], name = c.name || id;
+    if (!m) { skipped.push({ good_id: id, name, why: 'not_bought' }); continue; }
+    if (room[id] === undefined) room[id] = m.target > 0 ? Math.floor(0.5 * m.target - m.stock + 1e-9) : Infinity;
+    const q = Math.min(have, room[id]);
+    if (!(q >= 1)) { skipped.push({ good_id: id, name, why: 'above_half' }); continue; }
+    const { data: qs, error: qe } = await db.rpc('market_quote', { p_character: ch.id, p_location: loc, p_kind: 'sell', p_good: id, p_quantity: q, p_stack: stack });
+    if (qe) throw qe;
+    if (!qs || !qs.ok || qs.total == null) { skipped.push({ good_id: id, name, why: 'not_bought' }); continue; }
+    if (room[id] !== Infinity) room[id] -= q;
+    lines.push({ stack, good_id: id, name, quantity: q, total: Number(qs.total) });
+    total += Number(qs.total);
+  }
+  return { lines, skipped, total };
+}
+// SELL_ALL_PLAN_END
+export async function sellAll(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const loc = String(body.location ?? '');
+  if (!LOC_RE.test(loc)) return json({ error: 'unknown_location' }, 400);
+  await resolveFor(db, ch.id);
+  const ship = await getShip(db, ch.id);
+  if (!ship) return json({ error: 'no_ship' }, 400);
+  const plan = await sellAllPlan(db, ch, ship, loc);
+  if (body.dry) return json({ ok: true, dry: true, location: loc, ...plan });
+  const expect = body.expect_total == null ? null : Number(body.expect_total);
+  if (expect !== null && Number.isFinite(expect) && expect > 0 && plan.total < expect * 0.9 - 1) return json({ error: 'price_changed', expected: expect, now: plan.total }, 400);
+  const sold = []; let total = 0, stopped = null;
+  for (const l of plan.lines) {
+    let data = null;
+    try {
+      const r = await db.rpc('trade_market', { p_character: ch.id, p_location: loc, p_kind: 'sell', p_good: l.good_id, p_quantity: l.quantity, p_stack: l.stack });
+      if (r.error) throw r.error;
+      data = r.data;
+    } catch (e) { console.error('sell_all step failed', e); stopped = { good_id: l.good_id, error: 'server_error' }; break; }
+    if (!data || !data.ok) { stopped = { good_id: l.good_id, error: (data && data.error) || 'failed', data }; break; }
+    const t = Number(data.total);
+    sold.push({ stack: l.stack, good_id: l.good_id, name: l.name, quantity: Number(data.quantity ?? l.quantity), total: t });
+    total += t;
+  }
+  if (!sold.length && stopped) return json({ error: stopped.error, data: stopped.data ?? null }, 400);
+  if (sold.length) {
+    try {
+      const { data: lo } = await db.from('locations').select('name').eq('id', loc).maybeSingle();
+      const where = (lo && lo.name) || loc;
+      await db.from('event_log').insert({
+        character_id: ch.id, kind: 'trade',
+        message: 'Sold ' + sold.length + (sold.length === 1 ? ' good' : ' goods') + ' at ' + where + ' for ' + Math.round(total).toLocaleString('en-US') + ' Cr (sell all)',
+        data: { location: loc, kind: 'sell_all', total, goods: sold.length },
+      });
+    } catch (_) { /* the sales are done: ignore */ }
+  }
+  return json({ ok: true, total, sold, skipped: plan.skipped, stopped });
+}
