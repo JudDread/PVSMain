@@ -7,7 +7,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 import { J2000_MS, G0, AU_M, DAY_S, KMS, C_KMS, KM_PER_AU, DOCK_RADIUS_AU, DOCK_SPEED_KMS, SUN_DANGER_AU, BODIES, BODY_INDEX, bodyId, bodyName, mag, gToAuDay2, bodyAngle, bodyPos, bodyVel, targetState, segmentEnd, stateAt, solvePlan, stopPlan, coastPlan, sunClearance, shipStateAt, planTravel, planTravelBar, planTravelPulse, pulseState, shipStateAbs, LAUNCH_MS, CLOCK, gameDaysAt, realMsAt, rescale, gameDate } from './physics_bundle.ts';
 
 import { cors, json, getCharacter, getLocation, getLocationFor, visibleLocations, resolveFor, getShip, planTrip, pilotNumbers, getMaxG, calcMaxG, spendEndurance } from './common.ts';
-import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll } from './market.ts';
+import { routes, cargoRoutes, cargoDest, storageView, storageMove, marketAt, tradeAt, quote, unloadAll, sellAll } from './market.ts';
 import { freightResolve, freightPost, freightCancel, freightBoard, freightAccept, freightAbandon, freightList } from './freight.ts';
 import { shipLeave, shipBoard, insuranceChoose } from './ships.ts';
 import { gate, placeServices } from './services.ts';          // 077: what a place offers
@@ -29,7 +29,7 @@ async function combatCall(fn, ...args) {
 
 // ---------- server ----------
 // Actions that count as the pilot DOING something: they set characters.last_action_at (the 'Last active' time on a profile).
-const ACTIVE_ACTIONS = new Set(['queue_travel', 'course_change', 'trade_at', 'load', 'unload', 'unload_all', 'freight_post', 'freight_cancel',
+const ACTIVE_ACTIONS = new Set(['queue_travel', 'course_change', 'trade_at', 'sell_all', 'load', 'unload', 'unload_all', 'freight_post', 'freight_cancel',
   'freight_accept', 'freight_abandon', 'ship_leave', 'ship_board', 'insurance_choose', 'skill_buy', 'mission_accept', 'mission_claim',
   'rig_fit', 'rig_unfit', 'rig_unfit_all', 'rig_apply', 'rig_buy', 'rig_sell', 'hull_buy', 'hull_sell',
   'combat_enter', 'combat_order', 'combat_target', 'combat_stance', 'combat_module', 'combat_batch']);
@@ -337,6 +337,7 @@ Deno.serve(async (req) => {
       case 'market_at': return await marketAt(db, user, body);
       case 'trade_at': return await tradeAt(db, user, body);
       case 'quote': return await quote(db, user, body);
+      case 'sell_all': return await sellAll(db, user, body);
       case 'unload_all': return await unloadAll(db, user);
       case 'freight_post': return await freightPost(db, user, body);
       case 'freight_cancel': return await freightCancel(db, user, body);
