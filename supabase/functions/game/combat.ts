@@ -17,7 +17,7 @@
 // ======================================================================
 import { json, getCharacter, getLocation, getShip, resolveFor, placeXY, pilotNumbers, UUID_RE } from './common.ts';
 import { CLOCK, gameDaysAt, bodyId, coastPlan, KMS, KM_PER_AU } from './physics_bundle.ts';
-import { DEFAULTS, ORDER_KINDS, STANCES, resolveBase, newShip, advance, statsOf, dpsAt, hpsOf } from './combat_bundle.ts';
+import { DEFAULTS, ORDER_KINDS, STANCES, resolveBase, newShip, advance, statsOf, dpsAt, hpsOf, relation } from './combat_bundle.ts';
 import { storeCondition, applyStored, entryHullFrac } from './ship_state.ts';
 import { can } from './services.ts';                           // 077: what a place offers   // 076 lasting states: shield / armor / hull / ammo are kept on the ship
 
@@ -60,6 +60,52 @@ function fromRow(r) {
     alive: true, left: false, ship_id: r.ship_id || null, drone_type: r.drone_type || null, ai: r.ai || null,
   };
 }
+// ---------- 2026-11-14 RELATIONS (ally / neutral / hostile; fleets; first-strike records; see shared/combat.js) ----------
+// who flies each player ship (a character) and which fleet that character is in, for a list of combat_ships rows
+async function relData(db, rows) {
+  const pilot = new Map(), fleet = new Map();
+  const withShip = rows.filter((r) => r.ship_id);
+  if (!withShip.length) return { pilot, fleet };
+  const { data: sh } = await db.from('ships').select('id,character_id').in('id', withShip.map((r) => r.ship_id));
+  const cOfShip = new Map((sh ?? []).map((x) => [x.id, x.character_id]));
+  const cids = [...new Set([...cOfShip.values()])];
+  const { data: fm } = cids.length ? await db.from('fleet_members').select('character_id,fleet_id').in('character_id', cids) : { data: [] };
+  const fOf = new Map((fm ?? []).map((x) => [x.character_id, x.fleet_id]));
+  for (const r of withShip) { const c = cOfShip.get(r.ship_id) || null; pilot.set(r.id, c); fleet.set(r.id, c ? (fOf.get(c) || null) : null); }
+  return { pilot, fleet };
+}
+function tagShips(ships, rd) {
+  for (const s of ships) if (s.ship_id) { s.pilot = rd.pilot.get(s.id) || null; s.fleet = rd.fleet.get(s.id) || null; }
+}
+// the first-strike records of one fight; a record with no damage for aggr_expire_s (default 180) real seconds is deleted. A fault only logs (no table = no records).
+async function loadAggr(db, zoneId, instance, cfg, nowMs) {
+  const keepMs = Math.max(10, num(cfg.aggr_expire_s, 180)) * 1000;
+  const { data, error } = await db.from('combat_aggression').select('*').eq('zone_id', zoneId).eq('instance', instance || '');
+  if (error) { console.error('combat_aggression not read', error); return []; }
+  const live = [], old = [];
+  for (const r of data ?? []) {
+    if (nowMs - Date.parse(r.last_hit_at) > keepMs) old.push(r.id);
+    else live.push({ id: r.id, a: r.aggressor, v: r.victim, vf: r.victim_fleet || null, lastMs: Date.parse(r.last_hit_at) });
+  }
+  if (old.length) await db.from('combat_aggression').delete().in('id', old);
+  return live;
+}
+const plainAggr = (list) => list.map((x) => ({ a: x.a, v: x.v, vf: x.vf }));
+// how ship row a sees ship row b right now
+async function relPair(ctx, a, b) {
+  const rd = await relData(ctx.db, [a, b]);
+  const aggr = await loadAggr(ctx.db, ctx.zone.location_id, ctx.instance, ctx.cfg, Date.now());
+  const tag = (r) => ({ side: r.side, pilot: rd.pilot.get(r.id) || null, fleet: rd.fleet.get(r.id) || null });
+  return relation(tag(a), tag(b), { aggr: plainAggr(aggr) });
+}
+// null = the attack may go ahead
+function attackRefusal(rl, ctx, confirm) {
+  if (rl === 'ally') return refuse('bad_target', 'You cannot attack a friendly ship.');
+  if (rl === 'neutral' && ctx.pvp === false) return refuse('no_pilot_fights', 'Pilots cannot attack each other in this zone.');
+  if (rl === 'neutral' && !confirm) return refuse('confirm_needed', 'Confirm the attack first: you would be the aggressor.');
+  return null;
+}
+
 // a full combat_ships row for a NEW ship (a pilot entering, or a drone spawning)
 function shipInsertRow(s, zoneId, instance, nowMs, extra) {
   const nowIso = new Date(nowMs).toISOString();
@@ -176,6 +222,8 @@ async function workZone(db, zoneId, instance, nowMs) {
   const { data: claim, error: ce } = await db.rpc('combat_instance_claim', { p_zone: zoneId, p_instance: instance || '', p_now: new Date(nowMs).toISOString() });
   if (ce) throw ce;
   const ctx = { zone, cfg, pilotCfg, instance: instance || '' };
+  const pl = await getLocation(db, zoneId);
+  ctx.pvp = !pl || pl.pvp !== false;                             // may pilots fight each other here? (locations.pvp, default true)
   if (claim && claim.work) await advanceZone(db, ctx, nowMs);
   return ctx;
 }
@@ -300,6 +348,9 @@ async function advanceZone(db, ctx, nowMs) {
   const scriptNew = [];
   const total = Math.max(0, Math.min(elapsed, cfg.catchup_max_s));
   const res = { ships: rows.map(fromRow), events: [] };
+  tagShips(res.ships, await relData(db, rows));                 // 2026-11-14: each pilot ship carries its pilot and fleet
+  const pvp = ctx.pvp !== false;
+  const aggr = await loadAggr(db, zone.location_id, instance, cfg, nowMs);   // first-strike records [{id, a, v, vf, lastMs}]
   // a zone with drone_per_pilot (the combat range) grows its drones with the pilots: every spawn CYCLE (5 real seconds) ONE drone spawns at the centre
   // while the live drones are fewer than TWICE the live pilots (settings key 'combat': drones_per_pilot 2, spawn_cycle_s 5, drone_cap 40)
   const respawnType = zone.drone_per_pilot && zone.default_drone ? (await db.from('drone_types').select('*').eq('id', zone.default_drone).maybeSingle()).data : null;
@@ -308,8 +359,13 @@ async function advanceZone(db, ctx, nowMs) {
   for (let t = 0; total - t > 1e-9;) {
     const dt = Math.min(cfg.step_s, total - t);
     const tPrev = t;
-    const r = advance(res.ships, dt, { scale: CLOCK.scale, cfg, zone: { exit_km: num(zone.exit_radius_km) } });
+    const r = advance(res.ships, dt, { scale: CLOCK.scale, cfg, zone: { exit_km: num(zone.exit_radius_km) }, pvp, aggr: plainAggr(aggr) });
     for (const e of r.events) res.events.push({ ...e, t: e.t + t });
+    for (const ra of r.aggr) {                                  // new first strikes and records that took damage in this step
+      const x = aggr.find((y) => y.a === ra.a && y.v === ra.v), tEndMs = snapMs + (t + dt) * 1000;
+      if (!x) aggr.push({ id: null, a: ra.a, v: ra.v, vf: ra.vf || null, lastMs: tEndMs, dirty: true });
+      else if (ra.hit) { x.lastMs = tEndMs; x.dirty = true; }
+    }
     res.ships = r.ships;
     t += dt;
     if (leaveMs > 0) {
@@ -530,11 +586,26 @@ async function advanceZone(db, ctx, nowMs) {
           if (qe) console.error('quest_step (kill) failed', qe);
         }
         if (Number(info.xp_reward) > 0) {                       // every drone kill pays its XP to the pilot who destroyed it
-          const { error: xe } = await db.rpc('combat_xp_add', { p_character: cid, p_xp: Number(info.xp_reward) });
-          if (xe) console.error('combat_xp_add failed', xe);
+          // 2026-11-14 FLEETS: the XP is shared equally between the killer's fleet mates who are in this fight (a lone pilot keeps it all); the remainder goes to the killer
+          const xp = Math.round(Number(info.xp_reward));
+          const ids = [cid];
+          if (killer.fleet) for (const m of res.ships) { const mc = m.ship_id ? owner.get(m.ship_id) : null; if (mc && m.fleet === killer.fleet && !ids.includes(mc)) ids.push(mc); }
+          const each = Math.floor(xp / ids.length), rem = xp - each * ids.length;
+          for (const id of ids) {
+            const give = each + (id === cid ? rem : 0);
+            if (give <= 0) continue;
+            const { error: xe } = await db.rpc('combat_xp_add', { p_character: id, p_xp: give });
+            if (xe) console.error('combat_xp_add failed', xe);
+          }
         }
       }
     }
+  }
+
+  const aggrSave = aggr.filter((x) => x.dirty);
+  if (aggrSave.length) {
+    const { error: ae } = await db.from('combat_aggression').upsert(aggrSave.map((x) => ({ zone_id: zone.location_id, instance, aggressor: x.a, victim: x.v, victim_fleet: x.vf, last_hit_at: new Date(Math.min(nowMs, x.lastMs)).toISOString() })), { onConflict: 'zone_id,instance,aggressor,victim' });
+    if (ae) console.error('combat_aggression not saved', ae);
   }
 
   // END OF A FIGHT (test rules). In an NPC-only zone a player with no opponent left is released: the zone is CLEARED and the ship stays docked.
@@ -558,6 +629,7 @@ async function advanceZone(db, ctx, nowMs) {
   if (!playersLeft.length) {
     const { error: re } = await db.from('combat_ships').delete().eq('zone_id', zone.location_id).eq('instance', instance).is('ship_id', null);
     if (re) console.error('zone reset failed', re);
+    await db.from('combat_aggression').delete().eq('zone_id', zone.location_id).eq('instance', instance);     // 2026-11-14: nobody is left: the first-strike records go
   }
 }
 
@@ -590,6 +662,8 @@ async function buildView(db, ctx, myShipId) {
   if (!myRow) return null;
   const names = await nameMap(db, rows);
   const ships = rows.map(fromRow);
+  tagShips(ships, await relData(db, rows));                      // 2026-11-14: relations as the viewing pilot sees them
+  const rc = { aggr: plainAggr(await loadAggr(db, zone.location_id, instance, cfg, Date.now())) };
   const me = ships.find((s) => s.id === myRow.id);
   const tgt = me.targetId ? ships.find((s) => s.id === me.targetId) : null;
   const ss = statsOf(me, cfg);
@@ -597,9 +671,9 @@ async function buildView(db, ctx, myShipId) {
 
   const dps = tgt ? dpsAt(me, tgt, dist(me, tgt), cfg) : { total: 0, list: [] };
   const others = ships.filter((s) => s.id !== me.id).map((s) => {
-    const st = statsOf(s, cfg);
+    const st = statsOf(s, cfg), rl = relation(me, s, rc);
     return {
-      id: s.id, name: names.get(s.id) || 'Ship', side: s.side, hostile: s.side !== me.side, drone: s.drone_type || null,
+      id: s.id, name: names.get(s.id) || 'Ship', side: s.side, hostile: rl === 'hostile', rel: rl === 'hostile' ? 'hos' : rl === 'ally' ? 'ally' : 'neu', pilot: !!s.ship_id, drone: s.drone_type || null,
       hull_id: s.base.hull.id, class: s.base.hull.class,
       x: Math.round(s.x), y: Math.round(s.y), vx: r3(s.vx), vy: r3(s.vy),
       dist_km: Math.round(dist(me, s)),
@@ -615,7 +689,7 @@ async function buildView(db, ctx, myShipId) {
   return {
     ok: true, in_zone: true,
     run_failed: !!myRow.run_failed, fail_text: myRow.run_failed ? (zone.fail_text || null) : null, success_text: zone.success_text || null,
-    zone: { id: zone.location_id, instanced: !!zone.instanced, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100) },
+    zone: { id: zone.location_id, instanced: !!zone.instanced, pvp: ctx.pvp !== false, entry_km: num(zone.entry_radius_km), exit_km: num(zone.exit_radius_km), retreat_pct: zone.retreat_hull_frac == null ? null : Math.round(num(zone.retreat_hull_frac) * 100) },
     now_ms: Date.now(), scale: CLOCK.scale, step_s: cfg.step_s,
     me: {
       id: me.id, side: me.side, x: Math.round(me.x), y: Math.round(me.y), vx: r3(me.vx), vy: r3(me.vy),
@@ -882,11 +956,12 @@ function stepOrder(body) {
     const patch = { order_kind: kind, order_at: new Date().toISOString(), hold_km: own ? null : hold, order_dir: kind === 'heading' ? dir : null, follow_id: null };
     if (hold != null && hold > num(ctx.zone.exit_radius_km)) return { err: refuse('bad_distance', 'That distance is larger than the zone.') };
     if (target && !own) {
-      const { data: t, error } = await ctx.db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
+      const { data: t, error } = await ctx.db.from('combat_ships').select('id,side,zone_id,instance,ship_id').eq('id', target).maybeSingle();
       if (error) throw error;
       if (!t || t.zone_id !== row.zone_id || t.instance !== row.instance || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
-      if (kind === 'follow' && t.side !== row.side) return { err: refuse('bad_target', 'You can only follow a friendly ship.') };
-      if (kind !== 'follow' && t.side === row.side) return { err: refuse('bad_target', 'You cannot attack a friendly ship.') };
+      const rl = await relPair(ctx, row, t);                       // 2026-11-14: ally / neutral / hostile
+      if (kind === 'follow' && rl === 'hostile') return { err: refuse('bad_target', 'You can only follow a friendly ship.') };
+      if (kind !== 'follow') { const bad = attackRefusal(rl, ctx, body.confirm); if (bad) return { err: bad }; }
       if (kind === 'follow') patch.follow_id = t.id;                 // 2026-11-02: following a friend does not touch the weapons target
       else patch.target_id = t.id;
     }
@@ -899,10 +974,11 @@ function stepTarget(body) {
   const target = String(body.target ?? '');
   if (!UUID_RE.test(target)) return null;
   return async (row, ctx) => {
-    const { data: t, error } = await ctx.db.from('combat_ships').select('id,side,zone_id,instance').eq('id', target).maybeSingle();
+    const { data: t, error } = await ctx.db.from('combat_ships').select('id,side,zone_id,instance,ship_id').eq('id', target).maybeSingle();
     if (error) throw error;
     if (!t || t.zone_id !== row.zone_id || t.instance !== row.instance || t.id === row.id) return { err: refuse('bad_target', 'That ship is not here any more.') };
-    if (t.side === row.side) return { err: refuse('bad_target', 'You cannot target a friendly ship.') };
+    const bad = attackRefusal(await relPair(ctx, row, t), ctx, body.confirm);   // 2026-11-14
+    if (bad) return { err: bad };
     return { patch: { target_id: t.id } };
   };
 }
