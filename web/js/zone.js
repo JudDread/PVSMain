@@ -15,6 +15,7 @@ const POLL_MS = 5000;
 const KEEPALIVE_MS = 20000;        // a HIDDEN zone screen still polls this slowly: the server takes a pilot out of the zone after 60 s of silence (084)
 const G_KMS2 = 0.00980665;                     // 1 g in km/s^2
 let view = null, recv = 0, root = null, pollT = 0, raf = 0, busy = false, tick = 0;
+let armed = null;                                                    // 2026-11-14: an attack on a NEUTRAL pilot needs a second tap: 'id|kind' of the first one
 let sel = null, menuFor = null, pending = null, showRanges = true, lastCheck = 0, away = false, lastEv = null, lastMe = null, failShown = false;
 let outInfo = null, lastDrone = null, lastInstanced = false, lastSuccess = null, endWant = null, endAt = 0, endBusy = false, endSt = null, heatSt = null, lastAmmo = null, cam = null, cw = 0, ch = 0, modSig = '', zoomMode = 0, logOpen = false, heatOpen = false, lastTap = null, bgc = null, bgW = 0, bgH = 0, bgZone = '';
 const R = {};                                  // the elements we keep
@@ -134,7 +135,7 @@ const kshort = n => n >= 100000 ? Math.round(n / 1000) + 'k' : n >= 10000 ? (n /
 const n0 = n => n >= 10000 ? Math.round(n / 1000) + 'k' : String(Math.round(n));
 const pct = f => Math.round(Math.max(0, f) * 100);
 const errText = e => (e && e.data && e.data.message) || (e && e.message) || 'error';
-const rel = s => s.hostile ? 'hos' : (view && s.side === view.me.side ? 'ally' : 'neu');
+const rel = s => s.rel || (s.hostile ? 'hos' : (view && s.side === view.me.side ? 'ally' : 'neu'));   // 2026-11-14: the server says: hos / ally (fleet mate) / neu (another pilot)
 const CLS = { light: 'lgt', medium: 'med', heavy: 'hvy', super: 'spr', capital: 'spr' };
 const FAB = { railgun: 'RAIL', laser: 'LAS', plasma: 'PLS', missile: 'MSL', torpedo: 'TPD', drone: 'DRN' };
 function abbr(name) {                                   // short names for the small menu: 'Armor Plating' -> 'AP', 'Shield' -> 'SHIE'
@@ -253,7 +254,7 @@ function ui() {
   bindMap();
   window.addEventListener('resize', () => { if (root && !root.hidden) { sizeChips(); frame(true); } });
 }
-function closeMenus() { R.menu.hidden = true; R.sets.hidden = true; R.pop.hidden = true; R.combo.hidden = true; R.log.hidden = true; menuFor = null; pending = null; logOpen = false; heatOpen = false; comboFor = null; }
+function closeMenus() { R.menu.hidden = true; R.sets.hidden = true; R.pop.hidden = true; R.combo.hidden = true; R.log.hidden = true; menuFor = null; pending = null; logOpen = false; heatOpen = false; comboFor = null; armed = null; }
 function placeBelow(menu, anchor) {
   const a = anchor.getBoundingClientRect(), W = root.clientWidth, w = menu.offsetWidth || 160;
   menu.style.right = 'auto'; menu.style.bottom = 'auto'; menu.style.top = Math.round(a.bottom + 6) + 'px';
@@ -405,8 +406,9 @@ function revertIntent() {                        // the order did not go through
   const a = intent.prevAcc; intent = null;
   if (view) rebase(view.me.id, a.ax, a.ay);
 }
-function order(kind, targetId, deg) {
+function order(kind, targetId, deg, confirm) {
   const body = { kind };
+  if (confirm) body.confirm = true;                                      // the pilot confirmed an attack on a neutral pilot
   if (kind === 'heading') body.dir_deg = deg;
   else if (kind !== 'stop' && kind !== 'flee' && kind !== 'drift') {
     const tgt = targetId || sel || (view && view.me.target_id);
@@ -794,8 +796,13 @@ function makeShipChip(s) {
 function menuItems(id) {
   if (id === view.me.id) return { title: 'Your ship', items: [['stop', 'Stop'], ['drift', 'Drift']] };
   const s = view.ships.find(x => x.id === id); if (!s) return null;
-  return s.hostile ? { ship: s, title: s.name + ' (hostile)', items: [['target', 'Set as target'], ['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']] }
-                   : { ship: s, title: s.name + ' (friendly)', items: [['follow', 'Follow']] };
+  if (s.hostile) return { ship: s, title: s.name + ' (hostile)', items: [['target', 'Set as target'], ['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range'], ['flee', 'Flee']] };
+  if (s.rel === 'neu') {                                  // another pilot: follow always; attacks only where pilots may fight, and each needs a confirming second tap
+    const items = [['follow', 'Follow']];
+    if (view.zone && view.zone.pvp) items.push(['target', 'Set as target'], ['attack_max', 'Attack: long range'], ['attack_opt', 'Attack: best range']);
+    return { ship: s, title: s.name + ' (neutral)', items };
+  }
+  return { ship: s, title: s.name + (s.pilot ? ' (fleet)' : ' (friendly)'), items: [['follow', 'Follow']] };
 }
 function buildMenu() {
   const d = view && menuFor && menuItems(menuFor);
@@ -813,11 +820,14 @@ function buildMenu() {
   }
   d.items.forEach(([k, label]) => {
     const wait = pending && pending.kind === k && pending.id === menuFor;
-    const b = el('button', wait ? 'pend' : (orderActive(k, menuFor) ? '' : 'alt'), wait ? label + ' ...' : label);
+    const neutralHit = !!(d.ship && d.ship.rel === 'neu' && k !== 'follow');          // attacking a neutral pilot: you become the aggressor
+    const isArmed = neutralHit && armed === menuFor + '|' + k;
+    const b = el('button', wait ? 'pend' : (isArmed ? '' : (orderActive(k, menuFor) ? '' : 'alt')), wait ? label + ' ...' : (isArmed ? 'Confirm: you will be the aggressor' : label));
     b.onclick = ev => {
       ev.stopPropagation();
-      if (k === 'target') { const tid = menuFor; view.me.target_id = tid; closeMenus(); frame(true); queueStep({ op: 'target', target: tid }); }   // shown at once
-      else order(k, menuFor === view.me.id ? null : menuFor);
+      if (neutralHit && !isArmed) { armed = menuFor + '|' + k; buildMenu(); return; }   // the first tap only asks
+      if (k === 'target') { const tid = menuFor; view.me.target_id = tid; closeMenus(); frame(true); queueStep({ op: 'target', target: tid, ...(neutralHit ? { confirm: true } : {}) }); }   // shown at once
+      else order(k, menuFor === view.me.id ? null : menuFor, undefined, neutralHit);
     };
     rows.push(b);
   });
