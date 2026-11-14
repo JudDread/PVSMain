@@ -22,7 +22,7 @@
 <script type="module">
 import {
   resolveBase, activeStats, newShip, advance, rangeAccuracy, hitChance,
-  heatEffectiveness, drainPerRealSec, dpsAt, DEFAULTS, G_KMS2
+  heatEffectiveness, drainPerRealSec, dpsAt, relation, DEFAULTS, G_KMS2
 } from '../shared/combat.js';
 
 // ---- real numbers copied from the database (hulls and rigs) ----
@@ -169,6 +169,51 @@ try {
     const r2 = advance([a2, e2], 5, { zone });
     eq('12 enemy on the exit side: runs away from it (vx < 0)', r2.ships[0].vx < 0, true);
     eq('12 the chosen heading is kept on the order', typeof r2.ships[0].order.flee_deg, 'number');
+  }
+
+  // 13 RELATIONS (2026-11-14): pilots pa, pb (own fleet f2 with pd), pc (fleet f1 with pa). Other side = hostile; two pilots = neutral until a strike.
+  { const P = (pilot, fleet) => ({ side:'players', pilot, fleet });
+    const pa = P('pa', 'f1'), pc = P('pc', 'f1'), pb = P('pb', 'f2'), pd = P('pd', 'f2'), px = P('px', null);
+    eq('13 a pirate is hostile', relation({ side:'players', pilot:'pa' }, { side:'drones' }), 'hostile');
+    eq('13 two NPCs of one side are allies', relation({ side:'drones' }, { side:'drones' }), 'ally');
+    eq('13 a pilot and a friendly NPC are allies', relation(pa, { side:'players' }), 'ally');
+    eq('13 fleet mates are allies', relation(pa, pc), 'ally');
+    eq('13 strangers are neutral', relation(pa, pb), 'neutral');
+    const rc = { aggr: [{ a:'pa', v:'pb', vf:'f2' }] };         // pa struck pb first (pb is in fleet f2)
+    eq('13 the victim sees the aggressor as hostile', relation(pb, pa, rc), 'hostile');
+    eq('13 a fleet mate of the victim sees the aggressor as hostile', relation(pd, pa, rc), 'hostile');
+    eq('13 the aggressor sees the victim as hostile', relation(pa, pb, rc), 'hostile');
+    eq('13 the aggressor sees a fleet mate of the victim as hostile', relation(pa, pd, rc), 'hostile');
+    eq('13 a fleet mate of the aggressor is still neutral to the victim', relation(pb, pc, rc), 'neutral');
+    eq('13 ... and the victim to him', relation(pc, pb, rc), 'neutral');
+    eq('13 a stranger stays neutral to both', relation(px, pa, rc), 'neutral');
+  }
+
+  // 14 PILOT FIGHTS: a (pilot pa, Railgun) aimed at b (pilot pb, Railgun) 100000 km away; one 5 s step = 16.875 damage on the shield (as in 7).
+  { const mk = (pvpTarget, fleetB) => [
+      ship('a', 'players', 'courier', [R.railgun], { x:0, y:0, pilot:'pa', fleet:'f1', targetId: pvpTarget ? 'b' : null }),
+      ship('b', 'players', 'courier', [R.railgun], { x:100000, y:0, pilot:'pb', fleet: fleetB || 'f2' })];
+    eq('14 a stranger is not shot at without an order', advance(mk(false), 5, { pvp:true }).ships[1].shield, 200);
+    eq('14 no pilot fights where the zone forbids them', advance(mk(true), 5, { pvp:false }).ships[1].shield, 200);
+    eq('14 fleet mates never hit each other', advance(mk(true, 'f1'), 5, { pvp:true }).ships[1].shield, 200);
+    const r = advance(mk(true), 5, { pvp:true });
+    eq('14 a manual target is hit (200 - 16.875)', r.ships[1].shield, 183.125);
+    eq('14 ... and the other pilot does not shoot back in the same step', r.ships[0].shield, 200);
+    eq('14 the first strike is recorded', r.aggr.length === 1 && r.aggr[0].a === 'pa' && r.aggr[0].v === 'pb' && r.aggr[0].vf === 'f2', true);
+    const r2 = advance(r.ships, 5, { pvp:true, aggr: r.aggr });
+    eq('14 next step the victim fires back (200 - 16.875)', r2.ships[0].shield, 183.125);
+    eq('14 only one record', r2.aggr.length, 1);
+  }
+
+  // 15 KILL NOTES: the victim has 1 hull point left. Unprovoked when nobody had struck first; lawful when the victim had struck the killer first.
+  { const weak = () => { const b = ship('b', 'players', 'courier', [], { x:100000, y:0, pilot:'pb', fleet:'f2' }); Object.assign(b, { shield:0, armor:0, hull:1 }); return b; };
+    const a = () => ship('a', 'players', 'courier', [R.railgun], { x:0, y:0, pilot:'pa', fleet:'f1', targetId:'b' });
+    const k1 = advance([a(), weak()], 5, { pvp:true }).events.find(e => e.kind === 'kill');
+    eq('15 a first strike that kills is unprovoked', k1 && k1.note, 'unprovoked');
+    const k2 = advance([a(), weak()], 5, { pvp:true, aggr:[{ a:'pb', v:'pa', vf:'f1' }] }).events.find(e => e.kind === 'kill');
+    eq('15 killing the pilot who struck first is lawful', k2 && k2.note, 'lawful');
+    const k3 = advance([a(), weak()], 5, { pvp:true, aggr:[{ a:'pb', v:'pz', vf:'f1' }] }).events.find(e => e.kind === 'kill');
+    eq('15 ... also when the victim had struck a fleet mate of the killer', k3 && k3.note, 'lawful');
   }
 } catch (e) {
   bad++; rows.push({ ok:false, text:'ERROR: ' + (e && e.stack || e) });
