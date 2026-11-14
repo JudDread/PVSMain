@@ -26,6 +26,13 @@ async function combatCall(fn, ...args) {
   catch (e) { console.error('combat.ts failed to load', e); return json({ error: 'combat_load_failed', message: String((e && e.message) || e).slice(0, 400) }, 500); }
   return await m[fn](...args);
 }
+// fleet.ts (migrations 105 + 106) is loaded the same way: only when a fleet action runs.
+async function fleetRun(db, user, body) {
+  let m;
+  try { m = await import('./fleet.ts'); }
+  catch (e) { console.error('fleet.ts failed to load', e); return json({ error: 'fleet_load_failed', message: String((e && e.message) || e).slice(0, 400) }, 500); }
+  return await m.fleetCall(db, user, body);
+}
 
 // ---------- server ----------
 // Actions that count as the pilot DOING something: they set characters.last_action_at (the 'Last active' time on a profile).
@@ -218,6 +225,10 @@ async function me(db, user) {
         return { id: c.id, name: c.name, hull: hullName[s.hull_id] || s.hull_id, state: s.state, loc: s.state === 'docked' ? s.location_id : null, plan: s.state === 'docked' ? null : s.plan, fight: fight.has(s.id) };
       }).filter(Boolean);
     } catch (e) { console.error('other pilots skipped', e); out.others = []; }
+    // 105/106 FLEETS: members (with their ship), invitations and the 'removed' notice; a fault only logs
+    try {
+      out.fleet = await (await import('./fleet.ts')).fleetForMe(db, ch, new Set((out.locations ?? []).map((l) => l.id)));
+    } catch (e) { console.error('fleet skipped', e); out.fleet = null; }
     // 076 LASTING STATES: the flown ship's shield / armor / hull for the chip on the Fly screen (loaded on demand; a fault only logs)
     try {
       if (out.ships[0]) out.ships[0].cond = await (await import('./ship_state.ts')).shipCondition(db, out.ships[0], Date.now());
@@ -377,6 +388,8 @@ Deno.serve(async (req) => {
       case 'combat_stance': return await combatCall('combatStance', db, user, body);
       case 'combat_module': return await combatCall('combatModule', db, user, body);
       case 'combat_batch': return await combatCall('combatBatch', db, user, body);
+      case 'fleet_create': case 'fleet_invite': case 'fleet_accept': case 'fleet_decline': case 'fleet_leave': case 'fleet_kick': case 'fleet_seen':
+        return await fleetRun(db, user, body);   // 105/106: the rules are in SQL (fleet_*), the wording in fleet.ts
       default: return json({ error: 'unknown_action' }, 400);
     }
   } catch (e) {
