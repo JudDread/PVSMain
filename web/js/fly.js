@@ -337,6 +337,8 @@ function drawZone(ship) {                                      /* called on ever
 
 const SHIP_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5 20 21l-8-4.2L4 21z"/></svg>';
 let chipBox = null, chipBtn = null, chipBars = [], chipMenu = null, condNow = null, condRecv = 0, condKey = null;
+let menuMode = 'ship', kickedLine = false, inviteText = '', chipDot = null, allyBox = null;   /* menuMode: 'ship' | 'fleet' | 'ally:<pilot id>' (fleets, migrations 105 + 106) */
+const allyEls = new Map();
 function mkChipBar(color) {
   const w = document.createElement('div'), f = document.createElement('i'), t = document.createElement('span');
   w.className = 'shb'; f.style.background = color; w.append(f, t);
@@ -351,8 +353,10 @@ function ensureChip() {
   chipBtn.onclick = ev => { ev.stopPropagation(); toggleChipMenu(); };
   chipBars = [mkChipBar('#3f8cff'), mkChipBar('#c9a24a'), mkChipBar('#4cd37a')];      /* shield, armor, hull: the same colors as the combat screen */
   chipBox.append(chipBtn, ...chipBars.map(b => b.w));
+  chipDot = document.createElement('i'); chipDot.className = 'fld'; chipDot.hidden = true; chipBox.append(chipDot);     /* the notification dot: an invitation or a removal from a fleet */
   chipMenu = document.createElement('div'); chipMenu.className = 'shm'; chipMenu.hidden = true;
   wrap.append(chipBox, chipMenu);
+  allyBox = document.createElement('div'); allyBox.className = 'flc'; allyBox.hidden = true; wrap.append(allyBox);        /* fleet mates: chips to the left of the ship chip */
   document.addEventListener('click', ev => {                   /* a touch anywhere else closes the menu */
     if (chipMenu && !chipMenu.hidden && !chipMenu.contains(ev.target) && !chipBox.contains(ev.target)) chipMenu.hidden = true;
   });
@@ -409,37 +413,187 @@ function zoneRows(l) {
 }
 function drawChipMenu() {
   if (!chipMenu) return;
+  if (menuMode === 'fleet') { chipMenu.replaceChildren(...fleetRows()); return; }
+  if (menuMode.startsWith('ally:')) { const ar = allyRows(menuMode.slice(5)); if (ar) { chipMenu.replaceChildren(...ar); return; } menuMode = 'ship'; }
   const pname = (S.last && S.last.character && S.last.character.name) || 'Pilot';
   const c = condNow;
   const zl = zonePlace(zoneShip);
   const rows = zl ? zoneRows(zl) : [];
   rows.push(...shipRows({ pilot: pname, hull: c && c.name, maxG, weapons: c && c.weapons, rigs: c && c.rigs, am: c ? c.am : 0, amm: c ? c.amm : 0 }));
+  rows.push(fleetButton());
   const set = document.createElement('button'); set.className = 'alt'; set.textContent = 'Settings (coming soon)'; set.disabled = true;
   rows.push(set);
   chipMenu.replaceChildren(...rows);
   chipBtn.title = pname;
 }
-function openChipMenu() { if (ensureChip() && !chipBox.hidden) { closeDeps(); drawChipMenu(); chipMenu.hidden = false; } }
+function openChipMenu() { if (ensureChip() && !chipBox.hidden) { closeDeps(); menuMode = 'ship'; kickedLine = false; drawChipMenu(); chipMenu.hidden = false; } }
 function toggleChipMenu() {
   if (!ensureChip() || chipBox.hidden) return;
   if (chipMenu.hidden) openChipMenu(); else chipMenu.hidden = true;
 }
 function drawChip(ship) {
   if (!ensureChip()) return;
-  if (!ship) { chipBox.hidden = true; chipMenu.hidden = true; condNow = null; zoneOpenFor = null; return; }
+  if (!ship) { chipBox.hidden = true; chipMenu.hidden = true; allyBox.hidden = true; condNow = null; zoneOpenFor = null; return; }
   const c = ship.cond || null;
   const key = c ? c.at + '|' + ship.id : null;
   if (key !== condKey) { condKey = key; condNow = c; condRecv = Date.now(); }       /* a new answer: the local seconds start again from it */
   if (!c) condNow = null;
   chipBox.hidden = false;
   drawChipBars();
+  drawFleetBits();
   /* ARRIVAL at a zone place: the menu opens by itself, once per stay (not while the ship is inside a fight: zone.js has its own screen then) */
   const zl = zonePlace(ship);
   if (!zl) zoneOpenFor = null;
   else if (zoneOpenFor !== zl.id && zoneInfoKnown()) { zoneOpenFor = zl.id; if (!zoneIn()) { openChipMenu(); return; } }
-  if (!chipMenu.hidden) drawChipMenu();
+  if (!chipMenu.hidden && !typing()) drawChipMenu();       /* not while the pilot is typing a name: a redraw would wipe the box */
 }
 setInterval(drawChipBars, 1000);
+/* FLEETS (migrations 105 + 106; fleet.ts). The Fleet button sits in the ship menu; the fleet menu is the same sheet. Fleet mates are chips to the left of the ship chip
+   (name + the same three bars); a touch on one opens that ship's menu. A red dot shows on the ship chip and on the Fleet button while an invitation waits or the pilot was removed. */
+const flSt = document.createElement('style');
+flSt.textContent = '#scr-travel .flc{position:absolute;top:6px;right:62px;left:80px;display:flex;flex-direction:row-reverse;gap:4px;overflow-x:auto;z-index:6;pointer-events:none}'
+  + '#scr-travel .flc .fa{width:48px;flex:none;display:flex;flex-direction:column;gap:2px;pointer-events:auto}'
+  + '#scr-travel .flc button{width:48px;height:48px;min-height:0;padding:0;margin:0;border:2px solid #4cd37a;border-radius:8px;background:rgba(19,26,42,.88);color:#e3e9f7;font-size:11px;font-weight:bold;position:relative;overflow:hidden;box-sizing:border-box;touch-action:manipulation}'
+  + '#scr-travel .flc button.lead::after,#scr-travel .shc button.shq.lead::after{content:"\\2605";position:absolute;top:1px;right:3px;font-size:11px;color:#e8b64a}'
+  + '.fld{position:absolute;top:-4px;right:-4px;width:12px;height:12px;border-radius:50%;background:#ff7b6b;border:2px solid #0b1020;box-sizing:border-box;pointer-events:none}'
+  + '.shm button.fleetb{position:relative}.shm button.fleetb .fld{top:12px;right:12px}'
+  + '.shm .flh{display:flex;justify-content:space-between;align-items:center;margin:-10px -10px 0;padding:8px 10px;background:#1d2c55;border-top:2px solid #3d5aa8;border-radius:12px 12px 0 0;font-size:14px;font-weight:bold;color:#e3e9f7}'
+  + '.shm .flg{font-size:11px;color:#8d99b8;font-weight:normal}'
+  + '.shm .flr{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid #2c3a52;padding:4px 0;min-height:44px}'
+  + '.shm .flr>div:first-child{min-width:0}.shm .flb{display:flex;gap:6px}'
+  + '.shm .fli{flex:1;min-width:0;height:34px;box-sizing:border-box;margin:0;padding:0 10px;font-size:14px}'
+  + '.shm button.fb{align-self:flex-start;min-height:34px;height:34px;padding:0 12px;font-size:12px;text-align:center;width:auto;white-space:nowrap}'
+  + '.shm button.fbd{background:transparent;border:1px solid #7a3a44;color:#ff7b6b}.shm button.fbg{background:transparent;border:1px solid #3f8f5f;color:#6be08f}.shm button.fbn{background:transparent;border:1px solid #2f3a58;color:#8d99b8}'
+  + '.shm .flo{font-size:12px;color:#e8b64a;white-space:nowrap}';
+document.head.appendChild(flSt);
+const fleetNow = () => (S.last && S.last.fleet) || null;
+const myId = () => (S.last && S.last.character && S.last.character.id) || null;
+const fleetDot = () => { const f = fleetNow(); return !!(f && ((f.invites || []).length || f.notice)); };
+const typing = () => menuMode === 'fleet' && !!document.activeElement && !!document.activeElement.classList && document.activeElement.classList.contains('fli');
+const mmss = ms => { const t = Math.max(0, Math.floor(ms / 1000)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); };
+const endsIn = iso => iso ? ' · ' + mmss(new Date(iso).getTime() - nowMs()) : '';
+const mkSpan = (text, cls) => { const e = document.createElement('span'); if (cls) e.className = cls; e.textContent = text; return e; };
+function fbtn(label, cls, fn) {                                 /* a small fleet button; it stops the touch so the menu is not closed when the rows are redrawn */
+  const b = document.createElement('button'); b.className = 'fb ' + cls; b.textContent = label;
+  b.onclick = ev => { ev.stopPropagation(); fn(); };
+  return b;
+}
+async function fleetDo(action, extra) {
+  try {
+    const r = await call(action, extra);
+    if (r && r.fleet && S.last) S.last.fleet = r.fleet;
+    kickedLine = false; drawChipMenu(); drawFleetBits();
+    return true;
+  } catch (e) {
+    say((e.data && (e.data.message || e.data.error)) || e.message, 'err');
+    return false;
+  }
+}
+function memberLine(m) {                                        /* 'Courier · Luna · docked' */
+  const where = m.fight ? 'in a fight' : m.state === 'docked' ? (m.loc ? locName(m.loc) + ' · docked' : 'docked') : m.state ? 'flying' : '';
+  return [m.hull, where].filter(Boolean).join(' · ');
+}
+function fleetButton() {
+  const f = fleetNow(), fl = f && f.fleet;
+  const b = document.createElement('button'); b.className = 'alt fleetb';
+  b.textContent = fl ? 'Fleet ' + fl.members.length + '/' + f.max : 'Fleet';
+  if (fleetDot()) { const d = document.createElement('i'); d.className = 'fld'; b.append(d); }
+  b.onclick = ev => { ev.stopPropagation(); openFleetMenu(); };
+  return b;
+}
+function openFleetMenu() {
+  const f = fleetNow();
+  kickedLine = !!(f && f.notice);
+  if (f && f.notice) { f.notice = null; call('fleet_seen').catch(() => {}); }      /* seen: the dot goes (an invitation keeps its dot until it is answered) */
+  menuMode = 'fleet'; drawChipMenu(); drawFleetBits();
+}
+function openAllyMenu(id) {
+  if (!ensureChip()) return;
+  closeDeps(); menuMode = 'ally:' + id; drawChipMenu(); chipMenu.hidden = false;
+}
+function allyRows(id) {
+  const f = fleetNow(), m = f && f.fleet && f.fleet.members.find(x => x.id === id);
+  if (!m) return null;
+  const c = m.cond;
+  const rows = shipRows({ pilot: m.name, hull: (c && c.name) || m.hull, weapons: c && c.weapons, rigs: c && c.rigs, am: c ? c.am : 0, amm: c ? c.amm : 0 });
+  rows.push(mkDiv('shd', ''), mkDiv('shl', memberLine(m)));
+  return rows;
+}
+function fleetRows() {
+  const f = fleetNow(), fl = f && f.fleet, me = myId();
+  const hd = mkDiv('flh', '');
+  hd.append(mkSpan('Fleet'), mkSpan(fl ? fl.members.length + ' / ' + f.max : 'none', 'flg'));
+  const rows = [hd];
+  if (kickedLine) rows.push(mkDiv('shl', 'You were removed from your fleet.'));
+  if (!f) { rows.push(mkDiv('shl', 'Not available now.')); return rows; }
+  if (!fl) {                                                    /* no fleet: form one, or answer an invitation */
+    rows.push(fbtn('Form fleet', '', () => fleetDo('fleet_create')), mkDiv('shs', 'Invitations'));
+    if (!f.invites.length) rows.push(mkDiv('shl', 'None'));
+    f.invites.forEach(iv => {
+      const r = mkDiv('flr', ''), t = document.createElement('div'), bx = mkDiv('flb', '');
+      t.append(mkDiv('shn', iv.from), mkDiv('shh', 'invites you' + endsIn(iv.expires)));
+      bx.append(fbtn('Join', 'fbg', () => fleetDo('fleet_accept', { fleet: iv.fleet_id })), fbtn('Decline', 'fbn', () => fleetDo('fleet_decline', { fleet: iv.fleet_id })));
+      r.append(t, bx); rows.push(r);
+    });
+    return rows;
+  }
+  const lead = fl.leader_id === me;
+  if (lead) {                                                   /* the leader invites by pilot name (the box is at the top so the keyboard does not cover it) */
+    const ir = mkDiv('flr', ''), inp = document.createElement('input');
+    inp.className = 'fli'; inp.placeholder = 'Pilot name'; inp.maxLength = 24; inp.value = inviteText;
+    inp.oninput = () => { inviteText = inp.value; };
+    const go = fbtn('Invite', '', async () => { const n = inp.value.trim(); if (!n) return; if (await fleetDo('fleet_invite', { name: n })) inviteText = ''; });
+    inp.onkeydown = ev => { if (ev.key === 'Enter') go.click(); };
+    ir.append(inp, go); rows.push(ir);
+  }
+  if ((fl.invited || []).length) rows.push(mkDiv('shh', 'Invited: ' + fl.invited.map(i => i.name + endsIn(i.expires)).join(', ')));
+  fl.members.forEach(m => {
+    const r = mkDiv('flr', ''), t = document.createElement('div');
+    t.append(mkDiv('shn', m.name + (m.id === me ? ' (you)' : '')), mkDiv('shh', memberLine(m)));
+    r.append(t);
+    if (m.leader) r.append(mkDiv('flo', '\u2605 Leader'));
+    else if (lead) r.append(fbtn('Kick', 'fbd', () => fleetDo('fleet_kick', { name: m.name })));
+    rows.push(r);
+  });
+  rows.push(fbtn('Leave fleet', 'fbd', () => fleetDo('fleet_leave')));
+  return rows;
+}
+function drawFleetBits() {                                      /* the dot, the leader star and the ally chips; called on every update */
+  if (!chipBox) return;
+  const f = fleetNow(), fl = f && f.fleet, me = myId();
+  chipDot.hidden = !fleetDot();
+  chipBtn.classList.toggle('lead', !!(fl && fl.leader_id === me));
+  const list = fl ? fl.members.filter(m => m.id !== me) : [];
+  allyBox.hidden = !list.length;
+  const keep = new Set(list.map(m => m.id));
+  for (const [id, e] of allyEls) if (!keep.has(id)) { e.box.remove(); allyEls.delete(id); }
+  for (const m of list) {
+    let e = allyEls.get(m.id);
+    if (!e) {
+      const box = document.createElement('div'), btn = document.createElement('button');
+      const bars = [mkChipBar('#3f8cff'), mkChipBar('#c9a24a'), mkChipBar('#4cd37a')];
+      box.className = 'fa'; btn.onclick = ev => { ev.stopPropagation(); openAllyMenu(m.id); };
+      box.append(btn, ...bars.map(b => b.w)); allyBox.append(box);
+      e = { box, btn, bars, c: null, recv: 0, key: null }; allyEls.set(m.id, e);
+    }
+    e.btn.textContent = m.name.slice(0, 4); e.btn.title = m.name; e.btn.classList.toggle('lead', !!m.leader);
+    const key = m.cond ? m.cond.at + '|' + m.id : null;
+    if (key !== e.key) { e.key = key; e.c = m.cond || null; e.recv = Date.now(); }
+    drawAllyBars(e);
+  }
+}
+function drawAllyBars(e) {
+  const c = e.c;
+  e.bars.forEach(b => { b.w.style.visibility = c ? 'visible' : 'hidden'; });
+  if (!c) return;
+  const dt = c.fight || c.hangar ? 0 : Math.max(0, (Date.now() - e.recv) / 1000);
+  const sh = Math.min(c.shm, c.sh + c.shr * dt), ar = Math.min(c.arm, c.ar + c.arr * dt);
+  e.bars[0].set(c.shm > 0 ? sh / c.shm : 0, String(Math.round(sh)));
+  e.bars[1].set(c.arm > 0 ? ar / c.arm : 0, String(Math.round(ar)));
+  e.bars[2].set(c.hum > 0 ? c.hu / c.hum : 0, String(Math.round(c.hu)));
+}
+setInterval(() => allyEls.forEach(drawAllyBars), 1000);
+
 
 /* 086: TIMERS of timed missions. One touchable chip for each running timer (they stack downward, top left of the map, under the zoom buttons). A touch shows the mission's name for 4 seconds.
    The list comes from the server (me.mission_timers); when a clock reaches zero the page asks the server once, which marks the mission failed and removes the chip. */
