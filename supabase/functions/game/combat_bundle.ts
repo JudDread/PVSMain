@@ -1,6 +1,6 @@
 // @ts-nocheck
 // AUTO-BUNDLE of shared/combat.js: do not edit here. Edit shared/combat.js, then rebuild this file (same text, this header on top) and redeploy.
-// Rebuilt 2026-11-14: + the EXIT WALL (every ship keeps inside 90% of the exit radius unless it flees or flies a heading) and the smarter FLEE (it picks the heading that takes the least enemy fire on the way out). Before (2026-11-02 (2)): + when a pilot's endurance runs out the END switch goes to 'free' (OFF). Before (2026-11-02): FOLLOW has its own subject (order.follow_id), a friendly ship is never a weapons target; (2026-11-01): ai 'raider'; (2026-10-31): the DRIFT order, one additive stat rule, thrust heat from the hull's own power, power_pct, no thrust cap.
+// Rebuilt 2026-11-14 (2): + RELATIONS (ally / neutral / hostile between pilots, fleets, first-strike records, lawful / unprovoked kill notes). Before: 2026-11-14: + the EXIT WALL (every ship keeps inside 90% of the exit radius unless it flees or flies a heading) and the smarter FLEE (it picks the heading that takes the least enemy fire on the way out). Before (2026-11-02 (2)): + when a pilot's endurance runs out the END switch goes to 'free' (OFF). Before (2026-11-02): FOLLOW has its own subject (order.follow_id), a friendly ship is never a weapons target; (2026-11-01): ai 'raider'; (2026-10-31): the DRIFT order, one additive stat rule, thrust heat from the hull's own power, power_pct, no thrust cap.
 //
 //
 //
@@ -288,17 +288,42 @@ export function drainPerRealSec(g, maxBar, pilot, useMult, scale) {
 // A FIGHT STATE (one per combat_ships row)
 // ---------------------------------------------------------------------
 export function newShip({ id, side = 'players', base, x = 0, y = 0, vx = 0, vy = 0,
-  endurance, stance = 'economy', on = null, targetId = null, order = { kind: 'stop' }, cfg = DEFAULTS }) {
+  endurance, stance = 'economy', on = null, targetId = null, order = { kind: 'stop' }, pilot = null, fleet = null, cfg = DEFAULTS }) {
   const onArr = on || base.modules.map(() => 1);
   const st = activeStats(base, onArr, false, cfg);
   return {
-    id, side, base, on: onArr, x, y, vx, vy,
+    id, side, base, on: onArr, x, y, vx, vy, pilot, fleet,
     shield: st.shield_max, armor: st.armor_max, hull: st.hull_max,
     heat: 0, tripped: false, shutdown_left: 0,
     ammo: base.ammo,
     endurance: endurance ?? base.pilot.endurance_max, drained: false,
     stance, targetId, order, alive: true, left: false,
   };
+}
+
+// ---------------------------------------------------------------------
+// RELATIONS (2026-11-14). Every pair of ships is 'ally', 'neutral' or 'hostile' (never 'self'):
+//   - another SIDE is hostile (pirates and drones against pilots);
+//   - two NPCs of one side are allies;
+//   - two pilots (ships that carry `pilot`, the character id) are allies when they share a `fleet`, otherwise NEUTRAL, until somebody strikes first.
+// FIRST STRIKE: the first damage a pilot deals to a neutral pilot (only where the zone allows pilot fights: opts.pvp) writes a record {a: aggressor, v: victim,
+// vf: the victim's fleet then}. Because of it the victim and his whole fleet may hit back, and the aggressor sees the victim's whole fleet as hostile;
+// the aggressor's own fleet mates stay neutral, and if one of them strikes too he gets a record of his own. Hitting back never changes who started it.
+// A KILL of a pilot by a pilot gets the note 'lawful' (the victim had struck the killer or the killer's fleet first) or 'unprovoked'.
+// Records are passed in (opts.aggr) and handed back (result.aggr, with hit: true on those that took damage in this stretch and fresh: true on new ones).
+// ---------------------------------------------------------------------
+function hostileVia(s, o, aggr) {
+  for (const r of aggr) {
+    if (r.a === s.pilot && (r.v === o.pilot || (o.fleet && r.vf === o.fleet))) return r;     // I struck first: the victim and his fleet are red to me
+    if (r.a === o.pilot && (r.v === s.pilot || (s.fleet && r.vf === s.fleet))) return r;     // he struck me or my fleet first
+  }
+  return null;
+}
+export function relation(s, o, rc = {}) {
+  if (s.side !== o.side) return 'hostile';
+  if (!s.pilot || !o.pilot) return 'ally';
+  if (s.fleet && s.fleet === o.fleet) return 'ally';
+  return hostileVia(s, o, rc.aggr || []) ? 'hostile' : 'neutral';
 }
 
 // BEST SHOT (drones with ai 'best_shot'): keep the current target while it is inside the optimal range of one of my weapons,
@@ -332,10 +357,10 @@ function raiderTarget(s, live, ss) {
   return player ? player.id : null;
 }
 
-function nearestHostile(s, ships) {
+function nearestHostile(s, ships, isFoe) {
   let best = null, bd = Infinity;
   for (const o of ships) {
-    if (o.id === s.id || o.side === s.side) continue;
+    if (o.id === s.id || !isFoe(s, o)) continue;
     const d = dist(s, o);
     if (d < bd || (d === bd && best && o.id < best.id)) { bd = d; best = o; }
   }
@@ -511,8 +536,9 @@ function fleeGuide(s0, ss, foes, exitKm, cfg, dt, scale) {
 // ONE STEP for every ship (simultaneous: all damage is worked out from the
 // positions and heat at the START of the step, then applied).
 // ---------------------------------------------------------------------
-function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
+function stepAll(ships, dt, scale, cfg, zone, events, tEnd, rc) {
   const live = ships.filter((s) => s.alive && !s.left);
+  const isFoe = (a, b) => relation(a, b, rc) === 'hostile';
   const byId = new Map(live.map((s) => [s.id, s]));
   const start = new Map(live.map((s) => [s.id, { id: s.id, x: s.x, y: s.y, vx: s.vx, vy: s.vy }]));
   const stat = new Map(live.map((s) => [s.id, statsOf(s, cfg)]));
@@ -525,8 +551,10 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
   for (const s of live) {
     if (s.ai === 'best_shot') { s.targetId = bestShotTarget(s, live, byId, stat.get(s.id), cfg); continue; }
     if (s.ai === 'raider') { s.targetId = raiderTarget(s, live, stat.get(s.id)); continue; }
-    if (!(s.targetId && byId.has(s.targetId) && byId.get(s.targetId).side !== s.side)) {   // a friendly ship is never a weapons target (2026-11-02)
-      const n = nearestHostile(s, live);
+    // a target stays while it is hostile (or neutral, where pilots may fight: the pilot chose it by hand; the auto-target never picks a neutral); an ally never is one
+    const keep = s.targetId && byId.has(s.targetId) ? relation(s, byId.get(s.targetId), rc) : null;
+    if (!(keep === 'hostile' || (keep === 'neutral' && rc.pvp))) {
+      const n = nearestHostile(s, live, isFoe);
       s.targetId = n ? n.id : null;
     }
   }
@@ -535,11 +563,14 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
   const incoming = new Map();   // target id -> total damage this step
   const plan = new Map();       // shooter id -> {heat, ammo}
   const best = new Map();       // target id -> {actor, amount} (the biggest hitter)
+  const newRecs = [];           // first strikes of this step (added after everybody has fired, so the order of the ships does not matter)
   for (const s of live) {
     const out = { heat: 0, ammo: 0 };
     plan.set(s.id, out);
     const tgt = s.targetId ? byId.get(s.targetId) : null;
-    if (!tgt || tgt.side === s.side || s.tripped) continue;
+    if (!tgt || s.tripped) continue;
+    const rl = relation(s, tgt, rc);
+    if (rl === 'ally' || (rl === 'neutral' && !rc.pvp)) continue;
     const ss = stat.get(s.id), ts = stat.get(tgt.id);
     const r = Math.hypot(start.get(tgt.id).x - start.get(s.id).x, start.get(tgt.id).y - start.get(s.id).y);
     const eff = heatEffectiveness(s.heat, ss.heatCap, cfg);
@@ -562,8 +593,12 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
       const b = best.get(tgt.id);
       if (!b || dmg > b.amount) best.set(tgt.id, { actor: s.id, amount: dmg });
       events.push({ t: tEnd, kind: 'damage', actor_id: s.id, target_id: tgt.id, amount: dmg, note: null });
+      if (rl === 'neutral') {
+        if (!newRecs.some((q) => q.a === s.pilot && q.v === tgt.pilot)) newRecs.push({ a: s.pilot, v: tgt.pilot, vf: tgt.fleet || null, hit: true, fresh: true });
+      } else { const rr = hostileVia(s, tgt, rc.aggr); if (rr) rr.hit = true; }
     }
   }
+  for (const q of newRecs) rc.aggr.push(q);
 
   // 2. MOVE, HEAT, REGEN, DAMAGE for each ship
   for (const s of live) {
@@ -579,7 +614,7 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
     if (kind === 'flee' && zone && zone.exit_km > 0) {            // the smarter flee: the enemies as the weapons see them right now
       const foes = [];
       for (const o of live) {
-        if (o.side === s.side || o.tripped) continue;
+        if (!isFoe(s, o) || o.tripped) continue;
         const so = stat.get(o.id);
         if (!so.weapons.length) continue;
         foes.push({ ...start.get(o.id), weapons: so.weapons, maxR: Math.max(...so.weapons.map((w) => w.maxR)),
@@ -635,8 +670,10 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
     const t3 = Math.min(d, s.hull); s.hull -= t3; d -= t3;
     if (s.hull <= 1e-9) {
       s.hull = 0; s.alive = false;
-      const b = best.get(s.id);
-      events.push({ t: tEnd, kind: 'kill', actor_id: b ? b.actor : null, target_id: s.id, amount: 0, note: null });
+      const b = best.get(s.id), killer = b ? byId.get(b.actor) : null;
+      let note = null;
+      if (killer && killer.pilot && s.pilot) note = rc.aggr.some((q) => q.a === s.pilot && (q.v === killer.pilot || (killer.fleet && q.vf === killer.fleet))) ? 'lawful' : 'unprovoked';
+      events.push({ t: tEnd, kind: 'kill', actor_id: b ? b.actor : null, target_id: s.id, amount: 0, note });
     } else if (zone && Math.hypot(s.x, s.y) >= zone.exit_km) {
       s.left = true;
       events.push({ t: tEnd, kind: 'exit', actor_id: s.id, target_id: null, amount: Math.hypot(s.vx, s.vy), note: null });
@@ -649,19 +686,21 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
 // (the last step may be shorter). Returns NEW ship objects (the input is not
 // changed), the summary events (one per attacker / target pair per step, plus
 // shutdown, resume, kill and exit rows), and how many seconds were worked.
-//   opts: {scale (default 60), cfg (merged over DEFAULTS), zone: {exit_km}}
+//   opts: {scale (default 60), cfg (merged over DEFAULTS), zone: {exit_km}, pvp (pilots may fight each other), aggr (first-strike records)}
 // ---------------------------------------------------------------------
 export function advance(ships, seconds, opts = {}) {
   const cfg = { ...DEFAULTS, ...(opts.cfg || {}) };
   const scale = opts.scale ?? 60;
   const total = Math.max(0, Math.min(seconds, cfg.catchup_max_s));
   let cur = JSON.parse(JSON.stringify(ships));
+  const aggr = JSON.parse(JSON.stringify(opts.aggr || []));        // first-strike records (see RELATIONS)
+  const rc = { aggr, pvp: !!opts.pvp };                           // pvp: pilots may fight each other in this zone
   const events = [];
   let t = 0;
   while (total - t > 1e-9) {
     const dt = Math.min(cfg.step_s, total - t);
-    stepAll(cur, dt, scale, cfg, opts.zone || null, events, t + dt);
+    stepAll(cur, dt, scale, cfg, opts.zone || null, events, t + dt, rc);
     t += dt;
   }
-  return { ships: cur, events, advanced: total };
+  return { ships: cur, events, advanced: total, aggr };
 }
