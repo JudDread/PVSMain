@@ -1,6 +1,6 @@
 // @ts-nocheck
 // AUTO-BUNDLE of shared/combat.js: do not edit here. Edit shared/combat.js, then rebuild this file (same text, this header on top) and redeploy.
-// Rebuilt 2026-11-02 (2): + when a pilot's endurance runs out the END switch goes to 'free' (OFF). Before (2026-11-02): FOLLOW has its own subject (order.follow_id), a friendly ship is never a weapons target; (2026-11-01): ai 'raider'; (2026-10-31): the DRIFT order, one additive stat rule, thrust heat from the hull's own power, power_pct, no thrust cap.
+// Rebuilt 2026-11-14: + the EXIT WALL (every ship keeps inside 90% of the exit radius unless it flees or flies a heading) and the smarter FLEE (it picks the heading that takes the least enemy fire on the way out). Before (2026-11-02 (2)): + when a pilot's endurance runs out the END switch goes to 'free' (OFF). Before (2026-11-02): FOLLOW has its own subject (order.follow_id), a friendly ship is never a weapons target; (2026-11-01): ai 'raider'; (2026-10-31): the DRIFT order, one additive stat rule, thrust heat from the hull's own power, power_pct, no thrust cap.
 //
 //
 //
@@ -67,6 +67,9 @@ export const DEFAULTS = {
   hold_factor: 0.98,       // 'attack at MAX range' holds this share of the max range (when the weapon still hits well out there)
   long_acc_frac: 0.5,      // 'attack long' holds at the farthest range where a weapon keeps at least this share of its best-range accuracy
   follow_km: 50000,        // distance kept by the FOLLOW order
+  wall_frac: 0.9,          // 2026-11-14: the EXIT WALL: ships keep inside this share of the zone's exit radius (flee and heading orders are the only ways out)
+  flee_time_w: 0.05,       // the flee planner: damage-equivalent of one real second spent getting out (damage taken on the way matters far more)
+  flee_horizon: 60,        // the flee planner looks this many steps ahead
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -430,6 +433,81 @@ function thrustBudget(s, ss, gCmd, closing, dtReal, scale, cfg) {
 }
 
 // ---------------------------------------------------------------------
+// EXIT WALL (2026-11-14). Station keeping moves a ship away from its target to hold range, and it knew nothing about the edge of the zone, so
+// pirates and pilots drifted out of the fight. Now every ship keeps inside a soft wall at cfg.wall_frac (0.9) of the exit radius, whatever its order,
+// EXCEPT flee and heading (the two ways a pilot leaves on purpose). The OUTWARD speed a ship may end a step with is limited to what it can brake from
+// (the same sqrt(a x distance) rule as guide(), braking at the sustained thrust), so near the wall it slides along it and fights closer than its
+// hold range instead of leaving. Beyond the wall (a drone that starts at the edge) the allowed speed points inward. Sideways speed is never touched.
+// ---------------------------------------------------------------------
+function wallClamp(s0, gd, ss, wallKm, dtG) {
+  const r = Math.hypot(s0.x, s0.y);
+  if (!(wallKm > 0) || r < 1) return gd;
+  const rx = s0.x / r, ry = s0.y / r;
+  const aB = Math.max(1e-9, (ss.free_g || 3) * G_KMS2);
+  const a0 = gd.gCmd * G_KMS2;                                   // what the order wants (the thrust budget may only lower it)
+  const ux = s0.vx + gd.dx * a0 * dtG, uy = s0.vy + gd.dy * a0 * dtG;   // the velocity it wants to end the step with
+  const ur = ux * rx + uy * ry;                                  // ... and its outward part
+  const room = wallKm - r;
+  const vOk = room >= 0 ? Math.min(Math.sqrt(aB * room), room / dtG) : -Math.min(Math.sqrt(aB * -room), -room / dtG);
+  if (ur <= vOk) return gd;
+  const cx = ux - (ur - vOk) * rx, cy = uy - (ur - vOk) * ry;    // same sideways speed, outward speed cut to the allowed one
+  const dvx = cx - s0.vx, dvy = cy - s0.vy, mag = Math.hypot(dvx, dvy);
+  if (mag < 1e-12) return { dx: 0, dy: 0, gCmd: 0, closing: gd.closing };
+  return { dx: dvx / mag, dy: dvy / mag, gCmd: (mag / dtG) / G_KMS2, closing: gd.closing };
+}
+
+// ---------------------------------------------------------------------
+// SMARTER FLEE (2026-11-14). The old flee was full thrust straight out from the zone centre: it ran INTO enemies that sat on the exit side and wasted
+// time braking when the ship was moving inward. Now the ship tries 24 headings (every 15 degrees), the straight-out one and the heading it used last step.
+// Each is flown forward in the same steps as the fight: full thrust, from the ship's position AND velocity, until the exit radius, with each enemy
+// assumed to keep its present course and speed. A heading's score = the damage the enemies' weapons would do on the way + a little for the time taken
+// (cfg.flee_time_w per real second); the lowest score wins, so with no enemy near it is simply the fastest way out. The old heading is kept unless
+// the new one is clearly better (10%), so the ship does not dither. The chosen heading is stored on the order as flee_deg.
+// Needs a zone (the exit radius); without one the old straight-out flee in guide() is used.
+// ---------------------------------------------------------------------
+function foeDamage(f, x, y, t, me, cfg) {                        // damage per REAL second that enemy f does to me at its position after t game seconds
+  const r = Math.hypot(x - (f.x + f.vx * t), y - (f.y + f.vy * t));
+  if (r > f.maxR) return 0;
+  let d = 0;
+  for (const w of f.weapons) d += weaponDps(w, hitChance(w, r, me.mobility, f.steps, cfg), f.eff, me.pd);
+  return d;
+}
+function fleeScore(deg, s0, a, exitKm, cfg, dt, dtG, foes, me) {
+  const ang = deg * Math.PI / 180, ax = Math.cos(ang) * a, ay = Math.sin(ang) * a;
+  let x = s0.x, y = s0.y, vx = s0.vx, vy = s0.vy, dmg = 0;
+  for (let k = 1; k <= cfg.flee_horizon; k++) {
+    const px = x, py = y;
+    x = px + vx * dtG + 0.5 * ax * dtG * dtG; y = py + vy * dtG + 0.5 * ay * dtG * dtG;
+    vx += ax * dtG; vy += ay * dtG;
+    for (const f of foes) dmg += foeDamage(f, x, y, k * dtG, me, cfg) * dt;
+    const rr = Math.hypot(x, y);
+    if (rr >= exitKm) {
+      const r0 = Math.hypot(px, py);
+      const frac = rr > r0 ? clamp((exitKm - r0) / (rr - r0), 0, 1) : 1;      // where inside the step it crosses
+      return dmg + cfg.flee_time_w * (k - 1 + frac) * dt;
+    }
+  }
+  return 1e9 + (exitKm - Math.hypot(x, y));                      // not out within the horizon: worse than any way that gets out
+}
+function fleeGuide(s0, ss, foes, exitKm, cfg, dt, scale) {
+  const dtG = dt * scale, a = ss.max_g * G_KMS2;
+  const prev = s0.order && typeof s0.order.flee_deg === 'number' ? s0.order.flee_deg : null;
+  const cands = [];
+  for (let k = 0; k < 24; k++) cands.push(k * 15);
+  if (Math.hypot(s0.x, s0.y) > 1) cands.push(Math.atan2(s0.y, s0.x) * 180 / Math.PI);   // straight out from the centre
+  if (prev !== null) cands.push(prev);
+  let best = null, keep = null;
+  for (const deg of cands) {
+    const sc = fleeScore(deg, s0, a, exitKm, cfg, dt, dtG, foes, ss);
+    if (best === null || sc < best.sc) best = { deg, sc };
+    if (prev !== null && deg === prev) keep = { deg, sc };
+  }
+  const pick = keep && keep.sc <= best.sc * 1.1 + 0.5 ? keep : best;
+  const rad = pick.deg * Math.PI / 180;
+  return { dx: Math.cos(rad), dy: Math.sin(rad), gCmd: ss.max_g, closing: false, deg: pick.deg };
+}
+
+// ---------------------------------------------------------------------
 // ONE STEP for every ship (simultaneous: all damage is worked out from the
 // positions and heat at the START of the step, then applied).
 // ---------------------------------------------------------------------
@@ -440,6 +518,7 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
   const stat = new Map(live.map((s) => [s.id, statsOf(s, cfg)]));
   const wasTripped = new Map(live.map((s) => [s.id, s.tripped]));
   const dtG = dt * scale;
+  const wallKm = zone && zone.exit_km > 0 ? zone.exit_km * (zone.wall_frac ?? cfg.wall_frac) : 0;   // the exit wall (see wallClamp)
 
   // AUTO-TARGET: only when there is no valid target; it stays until it dies or leaves
   // (a ship with ai 'best_shot', a drone of the combat range, is different: see bestShotTarget)
@@ -495,7 +574,23 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd) {
     // movement
     // 2026-11-02: the FOLLOW order has its own subject (order.follow_id), so following a friend no longer replaces the weapons target
     const mvt = s.order && s.order.kind === 'follow' && s.order.follow_id ? (start.get(s.order.follow_id) || null) : tgt;
-    const gd = guide({ ...st0, order: s.order }, mvt, ss, cfg, dtG);
+    const kind = s.order && s.order.kind;
+    let gd;
+    if (kind === 'flee' && zone && zone.exit_km > 0) {            // the smarter flee: the enemies as the weapons see them right now
+      const foes = [];
+      for (const o of live) {
+        if (o.side === s.side || o.tripped) continue;
+        const so = stat.get(o.id);
+        if (!so.weapons.length) continue;
+        foes.push({ ...start.get(o.id), weapons: so.weapons, maxR: Math.max(...so.weapons.map((w) => w.maxR)),
+          eff: heatEffectiveness(o.heat, so.heatCap, cfg), steps: classSteps(o, s) });
+      }
+      gd = fleeGuide({ ...st0, order: s.order }, ss, foes, zone.exit_km, cfg, dt, scale);
+      s.order = { ...s.order, flee_deg: gd.deg };
+    } else {
+      gd = guide({ ...st0, order: s.order }, mvt, ss, cfg, dtG);
+      if (wallKm > 0 && kind !== 'flee' && kind !== 'heading') gd = wallClamp(st0, gd, ss, wallKm, dtG);
+    }
     const tb = thrustBudget(s, ss, gd.gCmd, gd.closing, dt, scale, cfg);
     const a = tb.gEff * G_KMS2;
     const ax = gd.dx * a, ay = gd.dy * a;
