@@ -147,6 +147,29 @@ try {
     eq('10 bar emptied flag', r.ships[0].drained, true);
     eq('10 bar after (refill 2.3 s x 1/3 per s)', r.ships[0].endurance, 2.3 * 20 * 60 / 3600, 1e-6);
   }
+
+  // 11 EXIT WALL (2026-11-14), zone exit 1000000 km -> wall at 900000 km. A ship drifting outward at 50 km/s from 800000 km would leave the zone
+  //   in about 67 real seconds; with the wall it brakes and stays inside. A heading order is not stopped (it is a way out on purpose).
+  { const zone = { exit_km: 1000000 };
+    const a = ship('a', 'players', 'courier', [], { x:800000, y:0, vx:50, order:{ kind:'drift' } });
+    const r = advance([a], 300, { zone });
+    eq('11 drifting ship stays inside the zone', r.ships[0].left, false);
+    eq('11 ... and inside the wall (radius <= 910000 km)', Math.hypot(r.ships[0].x, r.ships[0].y) <= 910000, true);
+    const h = ship('h', 'players', 'courier', [], { x:800000, y:0, vx:50, order:{ kind:'heading', dir_deg:0 } });
+    eq('11 a heading order may leave', advance([h], 300, { zone }).ships[0].left, true);
+  }
+
+  // 12 SMARTER FLEE, zone exit 1000000 km, ship at 500000 km on the +x side. Alone: straight out (+x). With an armed enemy at 800000 km, between it and
+  //   the exit: the other way (-x), away from the guns. The chosen heading is kept on the order.
+  { const zone = { exit_km: 1000000 };
+    const a1 = ship('a', 'players', 'courier', [], { x:500000, y:0, stance:'full', order:{ kind:'flee' } });
+    eq('12 alone: runs out (vx > 0)', advance([a1], 5, { zone }).ships[0].vx > 0, true);
+    const a2 = ship('a', 'players', 'courier', [], { x:500000, y:0, stance:'full', order:{ kind:'flee' } });
+    const e2 = ship('e', 'drones', 'courier', [R.railgun], { x:800000, y:0 });
+    const r2 = advance([a2, e2], 5, { zone });
+    eq('12 enemy on the exit side: runs away from it (vx < 0)', r2.ships[0].vx < 0, true);
+    eq('12 the chosen heading is kept on the order', typeof r2.ships[0].order.flee_deg, 'number');
+  }
 } catch (e) {
   bad++; rows.push({ ok:false, text:'ERROR: ' + (e && e.stack || e) });
 }
