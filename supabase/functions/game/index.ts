@@ -67,6 +67,10 @@ async function createCharacter(db, user, body) {
 async function queueTravel(db, user, body) {
   const ch = await getCharacter(db, user);
   if (!ch) return json({ error: 'no_character' }, 400);
+  return await travelFor(db, ch, body);
+}
+// the launch itself, for any pilot (queueTravel for the pilot who asked, fleetLaunch for the whole fleet)
+async function travelFor(db, ch, body) {
   await resolveFor(db, ch.id); // settle any finished trip first
   await db.rpc('xp_settle', { p_character: ch.id }); // pay XP for trips that just finished
   const ship = await getShip(db, ch.id); // the ACTIVE ship
@@ -119,6 +123,50 @@ async function queueTravel(db, user, body) {
     duration_real_minutes: r.durationDays * 1440 / CLOCK.scale,
     sun_danger: t.sun_danger,
   });
+}
+
+// 2026-11-14 FLEET LAUNCH: the fleet LEADER launches every fleet member whose ship is docked at the same place as his, to the same destination at one thrust:
+// the lowest hull limit in the crew (or the leader's own choice if that is lower), so the ships fly alike. Each ship is launched exactly like a single launch (travelFor):
+// its own endurance, its own view of the destination. The leader goes first; if his launch is refused nobody goes. Members who cannot go are listed with a reason.
+async function fleetLaunch(db, user, body) {
+  const ch = await getCharacter(db, user);
+  if (!ch) return json({ error: 'no_character' }, 400);
+  const { data: v, error: ve } = await db.rpc('fleet_view', { p_character: ch.id });
+  if (ve) throw ve;
+  const fl = v && v.fleet;
+  if (!fl) return json({ error: 'no_fleet', message: 'You are not in a fleet.' }, 409);
+  if (fl.leader_id !== ch.id) return json({ error: 'not_leader', message: 'Only the fleet leader can do that.' }, 409);
+  await resolveFor(db, ch.id);
+  const mine = await getShip(db, ch.id);
+  if (!mine || mine.state !== 'docked') return json({ error: 'ship_busy', message: 'Your ship must be docked to launch the fleet.' }, 409);
+  const crew = [], skipped = [];
+  for (const m of fl.members) {
+    const { data: mch } = await db.from('characters').select('*').eq('id', m.id).maybeSingle();
+    if (!mch) continue;
+    let sh = mine;
+    if (m.id !== ch.id) { await resolveFor(db, m.id); sh = await getShip(db, m.id); }
+    if (!sh) skipped.push({ name: m.name, why: 'no ship' });
+    else if (sh.state !== 'docked') skipped.push({ name: m.name, why: 'not docked' });
+    else if (sh.location_id !== mine.location_id) skipped.push({ name: m.name, why: 'at another place' });
+    else crew.push({ m, mch, sh });
+  }
+  let g = body.g == null ? Number(mine.thrust_g) : Number(body.g);
+  for (const c of crew) g = Math.min(g, await getMaxG(db, c.sh));
+  if (!(g >= 1)) return json({ error: 'bad_thrust', message: 'That thrust is not possible.' }, 400);
+  const launched = [];
+  let to = null;
+  for (const c of crew) {                                         // the leader is first in the member list
+    const res = await travelFor(db, c.mch, { to: body.to, g });
+    const out = await res.json();
+    if (res.status >= 400) {
+      if (c.m.id === ch.id) return json({ error: out.error || 'launch_failed', message: out.error === 'bad_destination' ? 'You cannot go there.' : out.error === 'already_here' ? 'You are already there.' : 'The fleet could not launch.' }, res.status);
+      skipped.push({ name: c.m.name, why: out.error === 'bad_destination' ? 'cannot see that place' : 'could not launch' });
+    } else {
+      to = out.to;
+      launched.push({ name: c.m.name, eta_real_minutes: out.duration_real_minutes, pulsed: !!out.pulsed });
+    }
+  }
+  return json({ ok: true, to, g, launched, skipped });
 }
 
 // "departures": where can my docked ship go right now, and how long would each trip take?
@@ -388,6 +436,7 @@ Deno.serve(async (req) => {
       case 'combat_stance': return await combatCall('combatStance', db, user, body);
       case 'combat_module': return await combatCall('combatModule', db, user, body);
       case 'combat_batch': return await combatCall('combatBatch', db, user, body);
+      case 'fleet_launch': return await fleetLaunch(db, user, body);
       case 'fleet_create': case 'fleet_invite': case 'fleet_accept': case 'fleet_decline': case 'fleet_leave': case 'fleet_kick': case 'fleet_seen':
         return await fleetRun(db, user, body);   // 105/106: the rules are in SQL (fleet_*), the wording in fleet.ts
       default: return json({ error: 'unknown_action' }, 400);
