@@ -139,6 +139,19 @@ async function pickInstance(db, zone, ch) {
   return crypto.randomUUID();
 }
 
+// 2026-11-14 FLEETS: the rows of the fleet mates who are already in this fight ([] when none)
+async function fleetMatesHere(db, ch, pilotRows) {
+  if (!pilotRows.length) return [];
+  const { data: me } = await db.from('fleet_members').select('fleet_id').eq('character_id', ch.id).maybeSingle();
+  if (!me || !me.fleet_id) return [];
+  const { data: mates } = await db.from('fleet_members').select('character_id').eq('fleet_id', me.fleet_id);
+  const ids = (mates ?? []).map((m) => m.character_id).filter((c) => c !== ch.id);
+  if (!ids.length) return [];
+  const { data: msh } = await db.from('ships').select('id').in('character_id', ids);
+  const mine = new Set((msh ?? []).map((x) => x.id));
+  return pilotRows.filter((r) => mine.has(r.ship_id));
+}
+
 // a full combat_ships row for a NEW ship (a pilot entering, or a drone spawning)
 function shipInsertRow(s, zoneId, instance, nowMs, extra) {
   const nowIso = new Date(nowMs).toISOString();
@@ -876,13 +889,28 @@ export async function combatEnter(db, user, body = {}) {
   const base = resolveBase({ hull, rigs, skillFx: await skillEffects(db, ch.id), pilot });
 
   // where I appear
-  const { data: existing, error: ee } = await db.from('combat_ships').select('x_km,y_km,side,ship_id').eq('zone_id', zone.location_id).eq('instance', instance);
+  const { data: existing, error: ee } = await db.from('combat_ships').select('x_km,y_km,vx_kms,vy_kms,side,ship_id').eq('zone_id', zone.location_id).eq('instance', instance);
   if (ee) throw ee;
   const R = num(zone.entry_radius_km);
   const players = (existing ?? []).filter((r) => r.ship_id).map((r) => ({ x: num(r.x_km), y: num(r.y_km) }));
-  const ang = zone.random_entry && !players.length ? Math.random() * 2 * Math.PI : spawnAngle(R, players, ship.id);   // 086: random_entry = a new direction every run (when alone)
+  let ang = zone.random_entry && !players.length ? Math.random() * 2 * Math.PI : spawnAngle(R, players, ship.id);   // 086: random_entry = a new direction every run (when alone)
+  let sx = R * Math.cos(ang), sy = R * Math.sin(ang);
+  const pilotRows = (existing ?? []).filter((r) => r.ship_id);
+  const mates = await fleetMatesHere(db, ch, pilotRows);
+  if (mates.length) {                                            // 2026-11-14 FLEETS: still on the entry circle (speed 0), at the point closest to the nearest fleet mate that is at least 10000 km from every pilot
+    let best = null;
+    for (let k = 0; k < 1440; k++) {
+      const a = k * Math.PI / 720, x = R * Math.cos(a), y = R * Math.sin(a);
+      let dm = Infinity, dp = Infinity;
+      for (const r of mates) dm = Math.min(dm, Math.hypot(num(r.x_km) - x, num(r.y_km) - y));
+      for (const r of pilotRows) dp = Math.min(dp, Math.hypot(num(r.x_km) - x, num(r.y_km) - y));
+      if (dp >= 10000 && (best === null || dm < best.dm)) best = { a, dm };
+    }
+    if (best) { ang = best.a; sx = R * Math.cos(ang); sy = R * Math.sin(ang); }
+  }
+  const svx = 0, svy = 0;
   const id = crypto.randomUUID();
-  const me = newShip({ id, side: 'players', base, x: R * Math.cos(ang), y: R * Math.sin(ang), endurance: pilot.bar, stance: 'full', order: { kind: 'stop' }, cfg });
+  const me = newShip({ id, side: 'players', base, x: sx, y: sy, vx: svx, vy: svy, endurance: pilot.bar, stance: 'full', order: { kind: 'stop' }, cfg });
   // LASTING STATES (076): start with the numbers the ship was left with (full when nothing is stored, or when this place has a hangar)
   const ssMe = statsOf(me, cfg);
   const mxMe = { shield_max: ssMe.shield_max, armor_max: ssMe.armor_max, hull_max: ssMe.hull_max, shield_regen: ssMe.shield_regen, armor_repair: ssMe.armor_repair, ammo_max: num(base.ammo) };
