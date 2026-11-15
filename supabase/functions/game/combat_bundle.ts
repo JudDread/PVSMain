@@ -1,6 +1,6 @@
 // @ts-nocheck
 // AUTO-BUNDLE of shared/combat.js: do not edit here. Edit shared/combat.js, then rebuild this file (same text, this header on top) and redeploy.
-// Rebuilt 2026-11-14 (2): + RELATIONS (ally / neutral / hostile between pilots, fleets, first-strike records, lawful / unprovoked kill notes). Before: 2026-11-14: + the EXIT WALL (every ship keeps inside 90% of the exit radius unless it flees or flies a heading) and the smarter FLEE (it picks the heading that takes the least enemy fire on the way out). Before (2026-11-02 (2)): + when a pilot's endurance runs out the END switch goes to 'free' (OFF). Before (2026-11-02): FOLLOW has its own subject (order.follow_id), a friendly ship is never a weapons target; (2026-11-01): ai 'raider'; (2026-10-31): the DRIFT order, one additive stat rule, thrust heat from the hull's own power, power_pct, no thrust cap.
+// Rebuilt 2026-11-14 (3): + NPC sleep and wake-together, NPC burst windows. Before: 2026-11-14 (2): + RELATIONS (ally / neutral / hostile between pilots, fleets, first-strike records, lawful / unprovoked kill notes). Before: 2026-11-14: + the EXIT WALL (every ship keeps inside 90% of the exit radius unless it flees or flies a heading) and the smarter FLEE (it picks the heading that takes the least enemy fire on the way out). Before (2026-11-02 (2)): + when a pilot's endurance runs out the END switch goes to 'free' (OFF). Before (2026-11-02): FOLLOW has its own subject (order.follow_id), a friendly ship is never a weapons target; (2026-11-01): ai 'raider'; (2026-10-31): the DRIFT order, one additive stat rule, thrust heat from the hull's own power, power_pct, no thrust cap.
 //
 //
 //
@@ -288,11 +288,11 @@ export function drainPerRealSec(g, maxBar, pilot, useMult, scale) {
 // A FIGHT STATE (one per combat_ships row)
 // ---------------------------------------------------------------------
 export function newShip({ id, side = 'players', base, x = 0, y = 0, vx = 0, vy = 0,
-  endurance, stance = 'economy', on = null, targetId = null, order = { kind: 'stop' }, pilot = null, fleet = null, cfg = DEFAULTS }) {
+  endurance, stance = 'economy', on = null, targetId = null, order = { kind: 'stop' }, pilot = null, fleet = null, npc = null, cfg = DEFAULTS }) {
   const onArr = on || base.modules.map(() => 1);
   const st = activeStats(base, onArr, false, cfg);
   return {
-    id, side, base, on: onArr, x, y, vx, vy, pilot, fleet,
+    id, side, base, on: onArr, x, y, vx, vy, pilot, fleet, npc,
     shield: st.shield_max, armor: st.armor_max, hull: st.hull_max,
     heat: 0, tripped: false, shutdown_left: 0,
     ammo: base.ammo,
@@ -533,12 +533,32 @@ function fleeGuide(s0, ss, foes, exitKm, cfg, dt, scale) {
 }
 
 // ---------------------------------------------------------------------
+// NPC SLEEP AND BURSTS (2026-11-14). A ship with `npc` (drone types carry it: {asleep, wake_km, burst_every_s, burst_for_s}) behaves like this:
+//   - SLEEP: while npc.asleep it holds still and does not fire. It wakes when a hostile ship comes within npc.wake_km of it, or when any sleeper takes damage;
+//     when one sleeper wakes, ALL sleeping NPCs of the fight wake together.
+//   - BURSTS: no endurance bar is simulated for it. Outside a burst window it flies at its free thrust; inside a window (burst_for_s of every burst_every_s
+//     real seconds, started at a different offset for every ship so they do not move in step) it flies at full thrust. The window is worked out from the
+//     fight clock (opts.clock_s + time worked), never from a random number, so the fight stays deterministic.
+// ---------------------------------------------------------------------
+function burstOn(s, clk) {
+  const e = Math.round(s.npc.burst_every_s), f = s.npc.burst_for_s;
+  if (!(e > 0) || !(f > 0)) return false;
+  let h = 0;
+  for (const c of String(s.id)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return ((clk + (h % e)) % e) < f;
+}
+
+// ---------------------------------------------------------------------
 // ONE STEP for every ship (simultaneous: all damage is worked out from the
 // positions and heat at the START of the step, then applied).
 // ---------------------------------------------------------------------
 function stepAll(ships, dt, scale, cfg, zone, events, tEnd, rc) {
   const live = ships.filter((s) => s.alive && !s.left);
   const isFoe = (a, b) => relation(a, b, rc) === 'hostile';
+  const sleepers = live.filter((x) => x.npc && x.npc.asleep);
+  if (sleepers.length && sleepers.some((x) => live.some((o) => o !== x && isFoe(x, o) && dist(x, o) <= (x.npc.wake_km || 0)))) {
+    for (const x of sleepers) x.npc = { ...x.npc, asleep: false };                  // one woke: all wake
+  }
   const byId = new Map(live.map((s) => [s.id, s]));
   const start = new Map(live.map((s) => [s.id, { id: s.id, x: s.x, y: s.y, vx: s.vx, vy: s.vy }]));
   const stat = new Map(live.map((s) => [s.id, statsOf(s, cfg)]));
@@ -568,7 +588,7 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd, rc) {
     const out = { heat: 0, ammo: 0 };
     plan.set(s.id, out);
     const tgt = s.targetId ? byId.get(s.targetId) : null;
-    if (!tgt || s.tripped) continue;
+    if (!tgt || s.tripped || (s.npc && s.npc.asleep)) continue;
     const rl = relation(s, tgt, rc);
     if (rl === 'ally' || (rl === 'neutral' && !rc.pvp)) continue;
     const ss = stat.get(s.id), ts = stat.get(tgt.id);
@@ -610,8 +630,12 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd, rc) {
     // 2026-11-02: the FOLLOW order has its own subject (order.follow_id), so following a friend no longer replaces the weapons target
     const mvt = s.order && s.order.kind === 'follow' && s.order.follow_id ? (start.get(s.order.follow_id) || null) : tgt;
     const kind = s.order && s.order.kind;
+    if (s.npc && s.npc.burst_every_s > 0) {                       // no endurance bar for NPCs: full thrust in the burst window, free thrust outside it
+      s.stance = burstOn(s, rc.clk || 0) ? 'full' : 'free'; s.endurance = s.base.pilot.endurance_max; s.drained = false;
+    }
     let gd;
-    if (kind === 'flee' && zone && zone.exit_km > 0) {            // the smarter flee: the enemies as the weapons see them right now
+    if (s.npc && s.npc.asleep) gd = { dx: 0, dy: 0, gCmd: 0, closing: false };    // asleep: no thrust
+    else if (kind === 'flee' && zone && zone.exit_km > 0) {            // the smarter flee: the enemies as the weapons see them right now
       const foes = [];
       for (const o of live) {
         if (!isFoe(s, o) || o.tripped) continue;
@@ -679,6 +703,9 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd, rc) {
       events.push({ t: tEnd, kind: 'exit', actor_id: s.id, target_id: null, amount: Math.hypot(s.vx, s.vy), note: null });
     }
   }
+  if (sleepers.length && sleepers.some((x) => (incoming.get(x.id) || 0) > 0)) {   // a sleeper was hit: all wake (they act from the next step)
+    for (const x of live) if (x.npc && x.npc.asleep) x.npc = { ...x.npc, asleep: false };
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -686,7 +713,7 @@ function stepAll(ships, dt, scale, cfg, zone, events, tEnd, rc) {
 // (the last step may be shorter). Returns NEW ship objects (the input is not
 // changed), the summary events (one per attacker / target pair per step, plus
 // shutdown, resume, kill and exit rows), and how many seconds were worked.
-//   opts: {scale (default 60), cfg (merged over DEFAULTS), zone: {exit_km}, pvp (pilots may fight each other), aggr (first-strike records)}
+//   opts: {scale (default 60), cfg (merged over DEFAULTS), zone: {exit_km}, pvp (pilots may fight each other), aggr (first-strike records), clock_s (real seconds on the fight clock at the start)}
 // ---------------------------------------------------------------------
 export function advance(ships, seconds, opts = {}) {
   const cfg = { ...DEFAULTS, ...(opts.cfg || {}) };
@@ -699,6 +726,7 @@ export function advance(ships, seconds, opts = {}) {
   let t = 0;
   while (total - t > 1e-9) {
     const dt = Math.min(cfg.step_s, total - t);
+    rc.clk = (opts.clock_s || 0) + t;                              // the fight clock in real seconds (for the NPC burst windows)
     stepAll(cur, dt, scale, cfg, opts.zone || null, events, t + dt, rc);
     t += dt;
   }
