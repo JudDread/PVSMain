@@ -59,8 +59,8 @@ export const DEFAULTS = {
   laser_mob_mult: 0.5,     // lasers take this share of the target's mobility penalty
   hold_factor: 0.98,       // 'attack at MAX range' holds this share of the max range (when the weapon still hits well out there)
   long_acc_frac: 0.5,      // 'attack long' holds at the farthest range where a weapon keeps at least this share of its best-range accuracy
-  follow_km: 75000,        // distance kept by the FOLLOW order (and by an unarmed ship that attacks); 2026-11-14: 75000 km, was 50000
-  entry_gap_km: 75000,     // a pilot entering a zone appears at least this far from every pilot already there (closest to the nearest fleet mate)
+  follow_km: 35000,        // distance kept by the FOLLOW order (and by an unarmed ship that attacks); 2026-11-14: 35000 km, was 50000
+  entry_gap_km: 35000,     // a pilot entering a zone appears at least this far from every pilot already there (closest to the nearest fleet mate)
   wall_frac: 0.9,          // 2026-11-14: the EXIT WALL: ships keep inside this share of the zone's exit radius (flee and heading orders are the only ways out)
   flee_time_w: 0.05,       // the flee planner: damage-equivalent of one real second spent getting out (damage taken on the way matters far more)
   flee_horizon: 60,        // the flee planner looks this many steps ahead
