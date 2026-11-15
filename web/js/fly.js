@@ -490,6 +490,18 @@ async function fleetDo(action, extra) {
     return false;
   }
 }
+async function fleetGo() {                                      /* the leader launches the whole fleet to the destination picked on the map */
+  if (!selected) { say('Pick a destination on the map first.', 'err'); return; }
+  try {
+    const r = await call('fleet_launch', { to: selected, g: thrustG });
+    say('Fleet launched to ' + r.to + ' at ' + r.g + ' g: ' + r.launched.map(x => x.name + ' ' + x.eta_real_minutes.toFixed(1) + ' min').join(', ') + '.' +
+      (r.skipped.length ? ' Not launched: ' + r.skipped.map(x => x.name + ' (' + x.why + ')').join(', ') + '.' : ''), 'ok');
+    thrustTouched = false; tripEndMs = null; deps = null; selected = null; mode = null; depsOpen = false; showDeps(); chipMenu.hidden = true; drawAll();
+    await S.refresh();
+  } catch (e) {
+    say('Error: ' + ((e.data && (e.data.message || e.data.error)) || e.message), 'err');
+  }
+}
 function memberLine(m) {                                        /* 'Courier · Luna · docked' */
   const where = m.fight ? 'in a fight' : m.state === 'docked' ? (m.loc ? locName(m.loc) + ' · docked' : 'docked') : m.state ? 'flying' : '';
   return [m.hull, where].filter(Boolean).join(' · ');
@@ -556,6 +568,7 @@ function fleetRows() {
     else if (lead) r.append(fbtn('Kick', 'fbd', () => fleetDo('fleet_kick', { name: m.name })));
     rows.push(r);
   });
+  if (lead && fl.members.length > 1 && !isFlying()) rows.push(fbtn(selected ? 'Launch fleet to ' + locName(selected) : 'Launch fleet', '', fleetGo));
   rows.push(fbtn('Leave fleet', 'fbd', () => fleetDo('fleet_leave')));
   return rows;
 }
