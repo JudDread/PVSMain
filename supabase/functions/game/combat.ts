@@ -897,9 +897,9 @@ export async function combatEnter(db, user, body = {}) {
   let sx = R * Math.cos(ang), sy = R * Math.sin(ang);
   const pilotRows = (existing ?? []).filter((r) => r.ship_id);
   const mates = await fleetMatesHere(db, ch, pilotRows);
-  if (mates.length) {                                            // 2026-11-14 FLEETS: still on the entry circle (speed 0), at the point closest to the nearest fleet mate that is at least entry_gap_km (75000) from every pilot
+  if (mates.length) {                                            // 2026-11-14 FLEETS: still on the entry circle (speed 0), at the point closest to the nearest fleet mate that is at least entry_gap_km (35000) from every pilot
     let best = null;
-    const gap = num(cfg.entry_gap_km, 75000);
+    const gap = num(cfg.entry_gap_km, 35000);
     for (let k = 0; k < 1440; k++) {
       const a = k * Math.PI / 720, x = R * Math.cos(a), y = R * Math.sin(a);
       let dm = Infinity, dp = Infinity;
