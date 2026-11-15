@@ -215,6 +215,27 @@ try {
     const k3 = advance([a(), weak()], 5, { pvp:true, aggr:[{ a:'pb', v:'pz', vf:'f1' }] }).events.find(e => e.kind === 'kill');
     eq('15 ... also when the victim had struck a fleet mate of the killer', k3 && k3.note, 'lawful');
   }
+
+  // 16 SLEEPING NPCs: pirates p1 (Railgun) and p2 sleep (wake_km 1000). A pilot 100000 km away does not wake them, they do not fire. A shot at one wakes both.
+  { const pir = (id, x) => ship(id, 'drones', 'courier', [R.railgun], { x, y:0, order:{ kind:'attack_opt' }, npc:{ asleep:true, wake_km:1000, burst_every_s:0, burst_for_s:0 } });
+    const me = () => ship('me', 'players', 'courier', [], { x:0, y:0, pilot:'pa' });          // no weapons: it must not wake anybody by shooting
+    let r = advance([me(), pir('p1', 100000), pir('p2', 600000)], 5);
+    eq('16 far away: still asleep', r.ships[1].npc.asleep, true);
+    eq('16 ... and no damage to the pilot', r.ships[0].shield, 200);
+    const near = ship('me', 'players', 'courier', [], { x:500, y:0, pilot:'pa' });
+    r = advance([near, pir('p1', 0), pir('p2', 600000)], 5);
+    eq('16 a pilot inside wake_km wakes the sleeper', r.ships[1].npc.asleep, false);
+    eq('16 ... and the other sleeper wakes with it', r.ships[2].npc.asleep, false);
+    const shooter = ship('me', 'players', 'courier', [R.railgun], { x:0, y:0, pilot:'pa', targetId:'p1' });
+    r = advance([shooter, pir('p1', 100000), pir('p2', 600000)], 5);
+    eq('16 a hit on a sleeper wakes the other one too', r.ships[2].npc.asleep, false);
+  }
+
+  // 17 NPC BURST WINDOWS: ship id 'a' (code 97) every 60 s for 10 s: offset 97 % 60 = 37, so the window is open when (clock + 37) % 60 < 10, e.g. clock 23.
+  { const n = (clock) => advance([ship('a', 'drones', 'courier', [], { x:0, y:0, order:{ kind:'heading', dir_deg:0 }, npc:{ asleep:false, wake_km:0, burst_every_s:60, burst_for_s:10 } })], 5, { clock_s: clock }).ships[0];
+    eq('17 outside the window: free thrust (3 g for 300 game s)', n(0).vx, 3 * G_KMS2 * 300, 1e-6);
+    eq('17 inside the window: full thrust (6 g)', n(23).vx, 6 * G_KMS2 * 300, 1e-6);
+  }
 } catch (e) {
   bad++; rows.push({ ok:false, text:'ERROR: ' + (e && e.stack || e) });
 }
