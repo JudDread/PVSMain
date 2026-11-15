@@ -175,6 +175,7 @@ function otherPoints() {
   const arr = (S.last && S.last.others) || [];
   if (!arr.length) return [];
   const gd = curGd(), locs = S.last.locations || [], out = [];
+  const mates = new Set(((S.last.fleet && S.last.fleet.fleet && S.last.fleet.fleet.members) || []).map(m => m.name));   /* fleet mates: ally = true (the map draws them green) */
   for (const o of arr) {
     let p = null;
     try {
@@ -185,12 +186,12 @@ function otherPoints() {
         if (i > 0) { const b = bodyPos(BODIES[i], gd), off = placeXY(l); p = { x: b[0] + off.x, y: b[1] + off.y }; }
       }
     } catch (e) { p = null; }
-    if (p) out.push({ x: p.x, y: p.y, name: o.name, hull: o.hull, fight: o.fight, docked: !!o.loc });
+    if (p) out.push({ x: p.x, y: p.y, name: o.name, hull: o.hull, fight: o.fight, docked: !!o.loc, ally: mates.has(o.name) });
   }
   return out;
 }
 function pilotsText(list) {
-  if (list.length === 1) return list[0].name + ' · ' + list[0].hull + (list[0].fight ? ' (in combat)' : '');
+  if (list.length === 1) return list[0].name + ' · ' + list[0].hull + (list[0].ally ? ' (fleet)' : '') + (list[0].fight ? ' (in combat)' : '');
   return list.length + ' pilots: ' + list.slice(0, 8).map(o => o.name).join(', ') + (list.length > 8 ? ' and ' + (list.length - 8) + ' more' : '');
 }
 
