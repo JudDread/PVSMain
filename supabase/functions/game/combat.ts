@@ -302,7 +302,7 @@ async function scriptDrones(db, dtId, ang, cfg, pilotCfg, t, entry, zone) {
     return d ? [d] : [];
   }
   const spawn = Array.isArray(dt.spawn) && dt.spawn.length ? dt.spawn : [{ past_center_km: 0 }];
-  const pts = spawnPts(dt, ang);
+  const pts = spawnPts(entry && Array.isArray(entry.spawn) && entry.spawn.length ? { spawn: entry.spawn } : dt, ang);   // 2026-11-14: a script entry may bring its own spawn list (same drone type, other places / more drones)
   const sp = num(dt.start_speed_kms);
   const out = [];
   for (const p of pts) {
@@ -400,7 +400,8 @@ async function advanceZone(db, ctx, nowMs) {
   // 085: scripted zones. script entries due later (after_s > 0) spawn at their exact time inside the loop below; scriptDone remembers which already did.
   const pilotRows = rows.filter((r) => r.ship_id);
   const scriptList = hasScript(zone) ? zone.script.filter((e) => e && e.key && e.drone) : [];
-  const scriptLater = scriptList.filter((e) => num(e.after_s) > 0);
+  const scriptLater = scriptList.filter((e) => num(e.after_s) > 0 && !(num(e.every_s) > 0));
+  const reinf = scriptList.filter((e) => num(e.every_s) > 0);       // 2026-11-14: REINFORCEMENTS (every_s, max_alive, max_total, while_alive): see the loop
   const scriptDone = new Set(pilotRows.flatMap((r) => r.script_done || []));
   const scriptEnter = pilotRows.length ? Math.min(...pilotRows.map((r) => Date.parse(r.entered_at))) : null;
   const scriptAng = pilotRows.length && pilotRows[0].entry_ang != null ? num(pilotRows[0].entry_ang) : null;
@@ -471,6 +472,25 @@ async function advanceZone(db, ctx, nowMs) {
             if (d) { res.ships.push(d); newDrones.add(d.id); }
           }
         }
+      }
+    }
+    if (reinf.length && scriptAng != null) {
+      // REINFORCEMENTS: while the drone type named in while_alive (the base) is alive AND awake, an entry with every_s adds one drone every every_s real seconds at its spawn
+      // spot, as long as fewer than max_alive of its type live and fewer than max_total have come. The clock starts when the base is first seen awake (a marker 'key#0@ms' in
+      // script_done); every spawn is 'key#n@ms', so later polls know the count and the time of the last one.
+      const nowT = snapMs + t * 1000;
+      for (const e of reinf) {
+        const base = res.ships.find((q) => q.drone_type === e.while_alive && q.alive && !q.left);
+        if (!base || (base.npc && base.npc.asleep)) continue;
+        const mine = [...scriptDone].filter((k) => k.startsWith(e.key + '#'));
+        if (!mine.length) { const mk = e.key + '#0@' + Math.round(nowT); scriptDone.add(mk); scriptNew.push(mk); continue; }
+        const last = Math.max(...mine.map((k) => Number(k.split('@')[1])));
+        const count = mine.filter((k) => !k.startsWith(e.key + '#0@')).length;
+        const alive = res.ships.filter((q) => q.drone_type === e.drone && q.alive && !q.left).length;
+        if (count >= num(e.max_total, 1e9) || alive >= num(e.max_alive, 1e9) || nowT < last + num(e.every_s) * 1000) continue;
+        const mk = e.key + '#' + (count + 1) + '@' + Math.round(nowT);
+        scriptDone.add(mk); scriptNew.push(mk);
+        for (const d of await scriptDrones(db, e.drone, scriptAng, cfg, ctx.pilotCfg, gameDaysAt(nowMs), e, zone)) { res.ships.push(d); newDrones.add(d.id); }
       }
     }
     if (scriptLater.length && scriptAng != null && scriptEnter != null) {
@@ -936,7 +956,7 @@ export async function combatEnter(db, user, body = {}) {
   const scripted = hasScript(zone);
   if (scripted) {
     inserts[0].entry_ang = ang;
-    const now0 = zone.script.filter((e) => e && e.key && e.drone && !(num(e.after_s) > 0));
+    const now0 = zone.script.filter((e) => e && e.key && e.drone && !(num(e.after_s) > 0) && !(num(e.every_s) > 0));
     inserts[0].script_done = now0.map((e) => e.key);
     if (npcZone(zone, loc) && !hasDrone) {                       // the first pilot of a fight sets up its NPCs (a pilot joining a capped fight does not)
       for (const e of now0) {
