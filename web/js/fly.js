@@ -96,6 +96,7 @@ function selectedBody() {
 function setGo(main, sub) {
   const go = $('go'); go.replaceChildren(document.createTextNode(main));
   if (sub) { const s = document.createElement('small'); s.textContent = sub; go.appendChild(s); }
+  drawFleetGo();                                              /* the Fleet launch button above it follows the same picked destination */
 }
 function drawDeps() {
   const box = $('deps'), go = $('go');
@@ -434,7 +435,7 @@ function toggleChipMenu() {
 }
 function drawChip(ship) {
   if (!ensureChip()) return;
-  if (!ship) { chipBox.hidden = true; chipMenu.hidden = true; allyBox.hidden = true; condNow = null; zoneOpenFor = null; return; }
+  if (!ship) { chipBox.hidden = true; chipMenu.hidden = true; allyBox.hidden = true; if (fgoBtn) fgoBtn.hidden = true; condNow = null; zoneOpenFor = null; return; }
   const c = ship.cond || null;
   const key = c ? c.at + '|' + ship.id : null;
   if (key !== condKey) { condKey = key; condNow = c; condRecv = Date.now(); }       /* a new answer: the local seconds start again from it */
@@ -465,7 +466,8 @@ flSt.textContent = '#scr-travel .flc{position:absolute;top:6px;right:62px;left:8
   + '.shm .fli{flex:1;min-width:0;height:34px;box-sizing:border-box;margin:0;padding:0 10px;font-size:14px}'
   + '.shm button.fb{align-self:flex-start;min-height:34px;height:34px;padding:0 12px;font-size:12px;text-align:center;width:auto;white-space:nowrap}'
   + '.shm button.fbd{background:transparent;border:1px solid #7a3a44;color:#ff7b6b}.shm button.fbg{background:transparent;border:1px solid #3f8f5f;color:#6be08f}.shm button.fbn{background:transparent;border:1px solid #2f3a58;color:#8d99b8}'
-  + '.shm .flo{font-size:12px;color:#e8b64a;white-space:nowrap}';
+  + '.shm .flo{font-size:12px;color:#e8b64a;white-space:nowrap}'
+  + '#fgo{flex:none;width:96px;height:44px;margin:0;padding:2px 4px;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.15;font-size:14px}#fgo small{font-size:11px;font-weight:600}';
 document.head.appendChild(flSt);
 const fleetNow = () => (S.last && S.last.fleet) || null;
 const myId = () => (S.last && S.last.character && S.last.character.id) || null;
@@ -490,13 +492,29 @@ async function fleetDo(action, extra) {
     return false;
   }
 }
+let fgoBtn = null;
+function drawFleetGo() {                                        /* the Fleet launch button above Launch: the fleet leader, with fleet mates docked at the same place as his docked ship */
+  const bar = document.querySelector('#scr-travel .fbar');
+  if (!bar) return;
+  const f = fleetNow(), fl = f && f.fleet, me = myId(), ship = S.last && (S.last.ships || [])[0];
+  const mates = fl && ship && ship.state === 'docked' && fl.leader_id === me ? fl.members.filter(m => m.id !== me && m.state === 'docked' && m.loc && m.loc === ship.location_id) : [];
+  if (!mates.length) { if (fgoBtn) fgoBtn.hidden = true; return; }
+  if (!fgoBtn) {
+    fgoBtn = document.createElement('button'); fgoBtn.id = 'fgo';
+    bar.insertBefore(fgoBtn, bar.querySelector('.frow')); fgoBtn.onclick = fleetGo;
+  }
+  fgoBtn.hidden = false;
+  fgoBtn.disabled = !(deps && (deps.departures || []).some(d => d.id === selected));
+  fgoBtn.replaceChildren(document.createTextNode('Fleet launch'));
+  const sm = document.createElement('small'); sm.textContent = '+' + mates.length + (mates.length === 1 ? ' ship' : ' ships'); fgoBtn.append(sm);
+}
 async function fleetGo() {                                      /* the leader launches the whole fleet to the destination picked on the map */
   if (!selected) { say('Pick a destination on the map first.', 'err'); return; }
   try {
     const r = await call('fleet_launch', { to: selected, g: thrustG });
     say('Fleet launched to ' + r.to + ' at ' + r.g + ' g: ' + r.launched.map(x => x.name + ' ' + x.eta_real_minutes.toFixed(1) + ' min').join(', ') + '.' +
       (r.skipped.length ? ' Not launched: ' + r.skipped.map(x => x.name + ' (' + x.why + ')').join(', ') + '.' : ''), 'ok');
-    thrustTouched = false; tripEndMs = null; deps = null; selected = null; mode = null; depsOpen = false; showDeps(); chipMenu.hidden = true; drawAll();
+    thrustTouched = false; tripEndMs = null; deps = null; selected = null; mode = null; depsOpen = false; showDeps(); if (chipMenu) chipMenu.hidden = true; drawAll();
     await S.refresh();
   } catch (e) {
     say('Error: ' + ((e.data && (e.data.message || e.data.error)) || e.message), 'err');
@@ -576,6 +594,7 @@ function drawFleetBits() {                                      /* the dot, the 
   if (!chipBox) return;
   const f = fleetNow(), fl = f && f.fleet, me = myId();
   chipDot.hidden = !fleetDot();
+  drawFleetGo();
   chipBtn.classList.toggle('lead', !!(fl && fl.leader_id === me));
   const list = fl ? fl.members.filter(m => m.id !== me) : [];
   allyBox.hidden = !list.length;
