@@ -395,7 +395,7 @@ async function advanceZone(db, ctx, nowMs) {
   // a pilot whose hull falls below zone.retreat_hull_frac leaves the fight at once (the ship stays docked, nothing is lost).
   const retreatFrac = zone.retreat_hull_frac == null ? null : num(zone.retreat_hull_frac);
   // 084: a pilot who has not been heard from for leave_after_s real seconds (0 = never) leaves the fight safely, at exactly seen_at + that time
-  const leaveMs = Math.max(0, num(cfg.leave_after_s, 0)) * 1000;      // 2026-11-02: OFF by default (0); set leave_after_s in the combat settings to switch it on again
+  const leaveMs = Math.max(0, num(zone.leave_after_s != null ? zone.leave_after_s : cfg.leave_after_s, 0)) * 1000;      // 2026-11-02: OFF by default (0); 2026-11-14: a zone's own combat_zones.leave_after_s wins over the combat setting (the Combat Range: 300)
   const seenMs = new Map(rows.filter((r) => r.ship_id).map((r) => [r.id, Date.parse(r.seen_at || r.entered_at || r.snap_at)]));
   // 085: scripted zones. script entries due later (after_s > 0) spawn at their exact time inside the loop below; scriptDone remembers which already did.
   const pilotRows = rows.filter((r) => r.ship_id);
